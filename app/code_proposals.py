@@ -16,23 +16,13 @@ from app.code_proposal_previews import (
     validate_patch_preview,
 )
 from app.code_proposal_test_commands import normalize_suggested_test_commands
+from app.secret_redaction import redact_secret_values
 
 
 CODE_PROPOSAL_ACTION_TYPE = "propose_code_change"
 MAX_TEXT_LENGTH = 4000
 MAX_LIST_ITEMS = 20
 PATCH_MARKER_PATTERN = re.compile(r"(?m)^(?:diff --git|@@\s|---\s|\+\+\+\s)|```diff\b")
-SECRET_VALUE_PATTERNS = (
-    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
-    re.compile(r"\b(?:sk|xox[pbar]|gh[pousr])[_-][A-Za-z0-9_=-]{20,}\b"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
-    re.compile(
-        r"\b(api[_ -]?key|password|passwd|pwd|secret|token)\b"
-        r"(\s*(?:is|=|:)\s*)\S{8,}",
-        re.IGNORECASE,
-    ),
-)
 
 
 @dataclass(frozen=True)
@@ -178,7 +168,7 @@ def _validated_relevant_files(
 
 
 def _required_text(value: object, field_name: str) -> str:
-    text = _redact_secret_values(str(value or "").strip())
+    text = redact_secret_values(str(value or "").strip())
     if not text:
         raise ValueError(f"{field_name} is required.")
     if len(text) > MAX_TEXT_LENGTH:
@@ -187,7 +177,7 @@ def _required_text(value: object, field_name: str) -> str:
 
 
 def _optional_text(value: object | None, field_name: str) -> str:
-    text = _redact_secret_values(str(value or "").strip())
+    text = redact_secret_values(str(value or "").strip())
     if len(text) > MAX_TEXT_LENGTH:
         raise ValueError(f"{field_name} is too long.")
     return text
@@ -200,7 +190,7 @@ def _normalized_text_list(
         raise ValueError(f"Code proposal {field_name} must be a list.")
     normalized: list[str] = []
     for value in values or []:
-        text = _redact_secret_values(str(value).strip())
+        text = redact_secret_values(str(value).strip())
         if not text:
             continue
         if len(text) > MAX_TEXT_LENGTH:
@@ -216,18 +206,6 @@ def _reject_patch_content(text: str, field_name: str) -> None:
         raise ValueError(
             f"Code proposal {field_name} must be planning text, not a patch or diff."
         )
-
-
-def _redact_secret_values(text: str) -> str:
-    redacted = text
-    for pattern in SECRET_VALUE_PATTERNS:
-        if pattern.groups >= 2:
-            redacted = pattern.sub(
-                lambda match: f"{match[1]}{match[2]}[redacted]", redacted
-            )
-        else:
-            redacted = pattern.sub("[redacted]", redacted)
-    return redacted
 
 
 def _infer_target_surface(goal: str, approach: str, files: list[str]) -> str:

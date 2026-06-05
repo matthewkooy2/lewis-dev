@@ -53,6 +53,21 @@ def build_system_prompt(settings: Settings) -> str:
             "Use a neutral signoff like 'Best regards,' with no name beneath it."
         )
     )
+    project_inspection_instruction = (
+        "Developer/code workspace mode is enabled. When the user asks to inspect "
+        "Lewis project source files for code-planning work, you may use "
+        "list_project_files, read_project_file, and search_project. These tools "
+        "are read-only, project-relative, bounded, text-only, and separate from "
+        "document search. Do not generate patches, edit files, apply patches, run "
+        "shell commands, run tests, use browser automation, inspect runtime data, "
+        "or execute code proposals."
+        if settings.developer_code_workspace
+        else (
+            "Developer/code workspace mode is disabled. Do not inspect Lewis "
+            "repository files for code-planning work; create planning-only code "
+            "proposals instead."
+        )
+    )
     return f"""You are Lewis, {owner}'s supervised personal assistant.
 Be helpful, accurate, concise.
 You may use read-only tools.
@@ -88,6 +103,7 @@ search_documents. That tool only searches the allowlisted data/documents/
 folder and accepts a query string only, never a path. Summarize returned
 results for the user. Do not invent document contents. If the tool reports no
 documents or no clear match, say that plainly.
+{project_inspection_instruction}
 When the user asks to add, change, update, fix, or plan code or UI behavior in
 Lewis, call propose_code_change even if they do not use the phrase "code
 proposal". This creates a local planning proposal only. Do not

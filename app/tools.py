@@ -22,6 +22,7 @@ from app.dashboard import (
 from app.logging_db import RunLogger
 from app.memory_service import propose_memory
 from app.project_search import ProjectFileSearch
+from app.project_inspection import ProjectInspector
 from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
 
 
@@ -54,14 +55,20 @@ class ToolRegistry:
         logger: RunLogger | None = None,
         user_name_configured: bool = False,
         project_file_search: ProjectFileSearch | None = None,
+        developer_code_workspace: bool = False,
+        project_inspector: ProjectInspector | None = None,
     ):
         self.document_search = document_search
         self.approval_store = approval_store
         self.logger = logger or RunLogger(approval_store.db_path)
         self.user_name_configured = user_name_configured
         self.project_file_search = project_file_search or ProjectFileSearch()
+        self.developer_code_workspace = developer_code_workspace
+        self.project_inspector = project_inspector or ProjectInspector()
         self._tools: dict[str, Tool] = {}
         self._register_defaults()
+        if self.developer_code_workspace:
+            self._register_project_inspection_tools()
 
     def schemas(
         self, allowed_tool_names: frozenset[str] | None = None
@@ -205,6 +212,66 @@ class ToolRegistry:
         self._add_code_proposal_tool()
         self._add_task_proposal_tool()
         self._add_memory_proposal_tool()
+
+    def _register_project_inspection_tools(self) -> None:
+        self._add(
+            Tool(
+                name="list_project_files",
+                description=(
+                    "Developer/code workspace only: list safe, read-only Lewis "
+                    "project files under app/ and tests/ plus allowlisted top-level "
+                    "text project files. Does not read file contents."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                function=self._list_project_files,
+            )
+        )
+        self._add(
+            Tool(
+                name="read_project_file",
+                description=(
+                    "Developer/code workspace only: read one safe Lewis project "
+                    "text file by project-relative path. Read-only, bounded, "
+                    "secret-redacted, and blocked for runtime, hidden, env, "
+                    "database, binary, and external paths."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Project-relative file path.",
+                        },
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                function=self._read_project_file,
+            )
+        )
+        self._add(
+            Tool(
+                name="search_project",
+                description=(
+                    "Developer/code workspace only: bounded read-only keyword "
+                    "search over safe Lewis project text files. Separate from "
+                    "document search and never searches runtime or hidden files."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                function=self._search_project,
+            )
+        )
 
     def _add_proposal_tool(self, name: str, description: str) -> None:
         self._add(
@@ -439,6 +506,42 @@ class ToolRegistry:
                     "line_number": item.line_number,
                     "snippet": item.snippet,
                 }
+                for item in results
+            ],
+        }
+    def _list_project_files(self, args: dict[str, Any]) -> dict[str, Any]:
+        if args:
+            return {
+                "ok": False,
+                "error": "list_project_files does not accept arguments.",
+            }
+        return {"ok": True, "files": self.project_inspector.list_files()}
+
+    def _read_project_file(self, args: dict[str, Any]) -> dict[str, Any]:
+        unexpected = set(args) - {"path"}
+        if unexpected:
+            return {
+                "ok": False,
+                "error": "read_project_file only accepts a project-relative path.",
+            }
+        read = self.project_inspector.read_file(str(args.get("path", "")))
+        return {
+            "ok": True,
+            "path": read.path,
+            "content": read.content,
+            "truncated": read.truncated,
+            "size_bytes": read.size_bytes,
+        }
+
+    def _search_project(self, args: dict[str, Any]) -> dict[str, Any]:
+        unexpected = set(args) - {"query"}
+        if unexpected:
+            return {"ok": False, "error": "search_project only accepts a query."}
+        results = self.project_inspector.search(str(args.get("query", "")))
+        return {
+            "ok": True,
+            "results": [
+                {"path": item.path, "score": item.score, "snippet": item.snippet}
                 for item in results
             ],
         }

@@ -44,6 +44,7 @@ def build_agent(settings: Settings | None = None) -> LewisAgent:
         approval_store=approval_store,
         logger=logger,
         user_name_configured=settings.user_name_configured,
+        developer_code_workspace=settings.developer_code_workspace,
     )
     budget = BudgetManager(settings)
     return LewisAgent(settings=settings, tools=tools, budget=budget, logger=logger)

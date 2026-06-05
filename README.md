@@ -102,6 +102,13 @@ Lewis may use read-only tools such as document search, file listing, and current
 time lookup. It must not directly send emails, create calendar events, delete or
 edit files, submit forms, make purchases, or message people.
 
+Developer/code workspace repository inspection is off by default. Set
+`LEWIS_DEVELOPER_CODE_WORKSPACE=true` only for local development if you want
+Lewis to list, read, and keyword-search safe text files in this repository for
+code-planning work. This mode is read-only, separate from document search,
+bounded, project-relative, secret-redacted, and blocks hidden, env, runtime,
+database, binary, cache, virtualenv, and out-of-repo paths.
+
 Any action with external consequences is saved to the SQLite approval queue as
 `pending`. Approving an item only marks it as approved. It does not execute the
 action.

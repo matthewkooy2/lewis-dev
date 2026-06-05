@@ -42,6 +42,7 @@ class Settings:
     price_per_1k_input_tokens: float
     price_per_1k_output_tokens: float
     deepseek_code_model: str | None = None
+    developer_code_workspace: bool = False
 
     @property
     def has_api_key(self) -> bool:
@@ -112,4 +113,5 @@ def get_settings() -> Settings:
             "DEEPSEEK_CODE_MODEL",
             "deepseek-v4-pro",
         ),
+        developer_code_workspace=_env_bool("LEWIS_DEVELOPER_CODE_WORKSPACE"),
     )
