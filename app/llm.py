@@ -3,15 +3,43 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from openai import BadRequestError, OpenAI
 
 from app.budget import BudgetManager
+from app.code_proposal_text_tool_fallback import (
+    code_proposal_args_from_search_results,
+    extract_project_search_queries,
+)
+from app.code_proposal_tool_strategy import code_proposal_tool_strategy
+from app.code_proposal_patch_preview import (
+    PATCH_PREVIEW_REVIEW_ONLY_NOTE,
+    PATCH_PREVIEW_UNAVAILABLE_NOTE,
+    generate_grounded_patch_preview,
+)
 from app.config import MISSING_API_KEY_MESSAGE, Settings
+from app.deepseek_messages import assistant_tool_call_api_message
 from app.logging_db import RunLogger
 from app.dashboard import format_dashboard_count_lines
 from app.memory_retrieval import build_active_memory_context
+from app.model_profiles import profile_after_tool_call, profile_for_user_input
+from app.project_search_discipline import (
+    has_useful_project_search_results,
+    is_direct_code_change_request,
+    project_search_answer,
+    project_search_query,
+    project_search_synthesized_answer,
+    should_finish_project_search_turn,
+    should_suppress_project_search,
+)
+from app.search_first_code_proposal import (
+    create_search_first_code_proposal,
+    is_search_first_code_proposal_request,
+)
+from app.tool_call_limits import effective_tool_call_limit
+from app.text_tool_calls import extract_text_tool_calls, strip_tool_call_markup
 from app.tools import ToolRegistry
 
 
@@ -30,6 +58,8 @@ Be helpful, accurate, concise.
 You may use read-only tools.
 You may not take real-world actions directly.
 Any real-world action must be proposed for approval.
+Only call tools present in the provided tool schema. Never print or narrate
+tool-call markup as assistant text.
 
 Never actually send emails, create calendar events, delete files, edit files,
 submit forms, make purchases, or message people. For those actions, call the
@@ -58,8 +88,9 @@ search_documents. That tool only searches the allowlisted data/documents/
 folder and accepts a query string only, never a path. Summarize returned
 results for the user. Do not invent document contents. If the tool reports no
 documents or no clear match, say that plainly.
-When the user asks for help planning possible code changes to Lewis itself,
-call propose_code_change. This creates a local planning proposal only. Do not
+When the user asks to add, change, update, fix, or plan code or UI behavior in
+Lewis, call propose_code_change even if they do not use the phrase "code
+proposal". This creates a local planning proposal only. Do not
 read arbitrary files, expose sensitive/runtime files, run shell commands,
 generate patches, edit files, or create migrations. Make the proposal clear
 about the intended target surface when relevant: command center web UI,
@@ -69,6 +100,10 @@ they explicitly say CLI, terminal, or console. Do not reinterpret web/UI request
 as terminal ASCII features. For .env, secrets, credentials, tokens, database
 files, or runtime data, do not inspect or expose contents or secret values;
 prefer .env.example and environment-variable based runtime configuration.
+If the user asks for a code proposal using project search first, call
+search_project_files once or twice with targeted queries, then call
+propose_code_change. Do not keep searching after you have enough safe file
+context for a planning proposal.
 When the user asks what tasks they have, call list_tasks and answer only from
 the returned local data. When the user asks what calendar events or meetings
 you have proposed, call list_calendar_proposals and answer only from the
@@ -156,6 +191,39 @@ def _usage_int(source: object | None, key: str) -> int:
     return _usage_optional_int(source, key) or 0
 
 
+_EXPLICIT_CODE_PROPOSAL_PATTERN = re.compile(
+    r"\b(?:make|create|plan|propose|give me|i want)\b.{0,50}\bcode proposal\b",
+    re.IGNORECASE,
+)
+
+_PROPOSAL_FRAMING_PATTERN = re.compile(
+    r"\b(?:make|create)\b.{0,40}\b(?:a\s+)?proposal\b",
+    re.IGNORECASE,
+)
+
+_BEHAVIOR_CHANGE_SIGNAL = re.compile(
+    r"\b(?:add|build|change|create|fix|implement|modify|refactor|remove|"
+    r"replace|update|animate|adjust|convert|transform)\b"
+    r".{0,150}"
+    r"\b(?:app|backend|behavior|bug|chat|code|feature|frontend|lewis|ui|"
+    r"animation|animated|character|thinking|text|color|style|css|"
+    r"display|render|button|input|output|screen|page|html|component|widget)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_code_proposal_phrase(user_input: str) -> bool:
+    normalized = " ".join(user_input.lower().split())
+    if "project search" in normalized:
+        return False
+    if bool(_EXPLICIT_CODE_PROPOSAL_PATTERN.search(normalized)):
+        return True
+    return bool(
+        _PROPOSAL_FRAMING_PATTERN.search(normalized)
+        and _BEHAVIOR_CHANGE_SIGNAL.search(normalized)
+    )
+
+
 class LewisAgent:
     def __init__(
         self,
@@ -187,6 +255,12 @@ class LewisAgent:
     def run(self, user_input: str) -> AssistantRun:
         if not self.settings.has_api_key or self.client is None:
             raise RuntimeError(MISSING_API_KEY_MESSAGE)
+
+        search_first_code_proposal = self._maybe_run_search_first_code_proposal(
+            user_input
+        )
+        if search_first_code_proposal is not None:
+            return search_first_code_proposal
 
         local_tool_run = self._maybe_run_local_read_only_tool(user_input)
         if local_tool_run is not None:
@@ -221,6 +295,8 @@ class LewisAgent:
         messages, memory_context_count = self._messages_with_transient_memory_context(
             user_input
         )
+        model_profile = profile_for_user_input(self.settings, user_input)
+        tool_call_limit = effective_tool_call_limit(self.settings, model_profile)
         tool_records: list[dict[str, Any]] = []
         input_tokens = output_tokens = total_tokens = 0
         prompt_cache_hit_tokens = prompt_cache_miss_tokens = reasoning_tokens = 0
@@ -228,17 +304,28 @@ class LewisAgent:
         tools_enabled = bool(self.tools.schemas())
 
         while True:
+            tool_strategy = code_proposal_tool_strategy(user_input, tool_records)
+            tool_schemas = self.tools.schemas(tool_strategy.allowed_tool_names)
+            if not self._may_expose_list_local_files(user_input):
+                tool_schemas = [
+                    schema
+                    for schema in tool_schemas
+                    if schema["function"]["name"] != "list_local_files"
+                ]
+            tool_choice: str | dict[str, Any] = "auto"
+            if tool_strategy.required_tool_name is not None:
+                tool_choice = "required"
             try:
-                if tools_enabled:
+                if tools_enabled and tool_schemas:
                     response = self.client.chat.completions.create(
-                        model=self.settings.deepseek_model,
+                        model=model_profile.model,
                         messages=messages,
-                        tools=self.tools.schemas(),
-                        tool_choice="auto",
+                        tools=tool_schemas,
+                        tool_choice=tool_choice,
                     )
                 else:
                     response = self.client.chat.completions.create(
-                        model=self.settings.deepseek_model,
+                        model=model_profile.model,
                         messages=messages,
                     )
             except BadRequestError as exc:
@@ -256,7 +343,7 @@ class LewisAgent:
                     }
                 )
                 response = self.client.chat.completions.create(
-                    model=self.settings.deepseek_model,
+                    model=model_profile.model,
                     messages=messages,
                 )
             api_calls += 1
@@ -269,11 +356,80 @@ class LewisAgent:
             reasoning_tokens += token_usage.reasoning_tokens or 0
 
             message = response.choices[0].message
-            tool_calls = message.tool_calls or []
-            if not tool_calls:
-                answer = self._apply_proposal_safety(
-                    message.content or "", tool_records
+            raw_tool_calls = list(message.tool_calls or [])
+            tool_calls = self._registered_structured_tool_calls(
+                raw_tool_calls,
+                tool_schemas,
+            )
+            blocked_tool_call = len(tool_calls) != len(raw_tool_calls)
+            if not raw_tool_calls:
+                text_tool_calls = self._registered_text_tool_calls(
+                    message.content or "",
+                    tool_schemas,
                 )
+                if "DSML" in (message.content or ""):
+                    blocked_tool_call = len(text_tool_calls) != len(
+                        extract_text_tool_calls(message.content or "")
+                    )
+                if text_tool_calls:
+                    tool_calls = text_tool_calls
+            if not tool_calls:
+                fallback = self._maybe_complete_text_search_first_code_proposal(
+                    user_input=user_input,
+                    content=message.content or "",
+                    tool_records=tool_records,
+                    tool_call_limit=tool_call_limit,
+                )
+                if fallback is not None:
+                    answer = fallback
+                    assistant_message = {"role": "assistant", "content": answer}
+                    messages.append(assistant_message)
+                    self.messages.append(assistant_message)
+                    estimated_cost = self.budget.estimate_cost(
+                        input_tokens, output_tokens
+                    )
+                    run = AssistantRun(
+                        answer=answer,
+                        tool_calls=tool_records,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        api_calls=api_calls,
+                        estimated_cost=estimated_cost,
+                        memory_context_count=memory_context_count,
+                    )
+                    self.logger.log_run(
+                        user_input=user_input,
+                        model=model_profile.model,
+                        tool_calls=tool_records,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        api_calls=api_calls,
+                        estimated_cost=estimated_cost,
+                    )
+                    self._print_debug_token_summary(run)
+                    return run
+
+                content = message.content or ""
+                if (
+                    blocked_tool_call or extract_text_tool_calls(content)
+                ) and has_useful_project_search_results(tool_records):
+                    visible_answer = project_search_synthesized_answer(
+                        user_input,
+                        tool_records,
+                    )
+                elif blocked_tool_call:
+                    visible_answer = "I could not use that unavailable tool safely."
+                else:
+                    visible_answer = self._visible_assistant_content(content)
+                answer = self._apply_proposal_safety(visible_answer, tool_records)
                 assistant_message = {"role": "assistant", "content": answer}
                 messages.append(assistant_message)
                 self.messages.append(assistant_message)
@@ -293,7 +449,7 @@ class LewisAgent:
                 )
                 self.logger.log_run(
                     user_input=user_input,
-                    model=self.settings.deepseek_model,
+                    model=model_profile.model,
                     tool_calls=tool_records,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
@@ -307,14 +463,62 @@ class LewisAgent:
                 self._print_debug_token_summary(run)
                 return run
 
-            assistant_message = message.model_dump()
+            batch_decision = self.budget.can_make_tool_calls(
+                len(tool_records),
+                len(tool_calls),
+                limit=tool_call_limit,
+            )
+            if not batch_decision.allowed:
+                stop_text = self._tool_limit_stop_text(
+                    batch_decision.reason,
+                    tool_records,
+                )
+                estimated_cost = self.budget.estimate_cost(input_tokens, output_tokens)
+                tool_records.append({"name": "tool_limit", "result": stop_text})
+                self.logger.log_run(
+                    user_input=user_input,
+                    model=model_profile.model,
+                    tool_calls=tool_records,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    api_calls=api_calls,
+                    estimated_cost=estimated_cost,
+                )
+                assistant_message = {"role": "assistant", "content": stop_text}
+                messages.append(assistant_message)
+                self.messages.append(assistant_message)
+                run = AssistantRun(
+                    answer=stop_text,
+                    tool_calls=tool_records,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    api_calls=api_calls,
+                    estimated_cost=estimated_cost,
+                    memory_context_count=memory_context_count,
+                )
+                self._print_debug_token_summary(run)
+                return run
+
+            assistant_message = assistant_tool_call_api_message(message, tool_calls)
             messages.append(assistant_message)
             self.messages.append(assistant_message)
             for call in tool_calls:
-                decision = self.budget.can_make_tool_call(len(tool_records))
+                decision = self.budget.can_make_tool_call(
+                    len(tool_records),
+                    limit=tool_call_limit,
+                )
                 if not decision.allowed:
-                    stop_text = (
-                        f"{decision.reason} I stopped before making more tool calls."
+                    stop_text = self._tool_limit_stop_text(
+                        decision.reason,
+                        tool_records,
                     )
                     estimated_cost = self.budget.estimate_cost(
                         input_tokens, output_tokens
@@ -322,7 +526,7 @@ class LewisAgent:
                     tool_records.append({"name": "tool_limit", "result": stop_text})
                     self.logger.log_run(
                         user_input=user_input,
-                        model=self.settings.deepseek_model,
+                        model=model_profile.model,
                         tool_calls=tool_records,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
@@ -332,7 +536,6 @@ class LewisAgent:
                         reasoning_tokens=reasoning_tokens,
                         api_calls=api_calls,
                         estimated_cost=estimated_cost,
-                        memory_context_count=memory_context_count,
                     )
                     assistant_message = {"role": "assistant", "content": stop_text}
                     messages.append(assistant_message)
@@ -348,6 +551,7 @@ class LewisAgent:
                         reasoning_tokens=reasoning_tokens,
                         api_calls=api_calls,
                         estimated_cost=estimated_cost,
+                        memory_context_count=memory_context_count,
                     )
                     self._print_debug_token_summary(run)
                     return run
@@ -365,7 +569,30 @@ class LewisAgent:
                         ),
                     }
                 else:
-                    result = self.tools.execute(function.name, function.arguments)
+                    suppression_reason = None
+                    if function.name == "search_project_files":
+                        suppression_reason = should_suppress_project_search(
+                            project_search_query(function.arguments),
+                            tool_records,
+                        )
+                    if suppression_reason is not None:
+                        result = {
+                            "ok": False,
+                            "suppressed": True,
+                            "error": suppression_reason,
+                            "results": [],
+                        }
+                    else:
+                        result = self.tools.execute(function.name, function.arguments)
+                model_profile = profile_after_tool_call(
+                    self.settings,
+                    model_profile,
+                    function.name,
+                )
+                tool_call_limit = effective_tool_call_limit(
+                    self.settings,
+                    model_profile,
+                )
                 record = {
                     "name": function.name,
                     "arguments": function.arguments,
@@ -381,6 +608,251 @@ class LewisAgent:
                 messages.append(tool_message)
                 self.messages.append(tool_message)
 
+            if should_finish_project_search_turn(user_input, tool_records):
+                answer = project_search_answer(tool_records)
+                assistant_message = {"role": "assistant", "content": answer}
+                messages.append(assistant_message)
+                self.messages.append(assistant_message)
+                estimated_cost = self.budget.estimate_cost(input_tokens, output_tokens)
+                run = AssistantRun(
+                    answer=answer,
+                    tool_calls=tool_records,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    api_calls=api_calls,
+                    estimated_cost=estimated_cost,
+                    memory_context_count=memory_context_count,
+                )
+                self.logger.log_run(
+                    user_input=user_input,
+                    model=model_profile.model,
+                    tool_calls=tool_records,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    api_calls=api_calls,
+                    estimated_cost=estimated_cost,
+                )
+                self._print_debug_token_summary(run)
+                return run
+
+    def _maybe_run_search_first_code_proposal(
+        self, user_input: str
+    ) -> AssistantRun | None:
+        if (
+            is_search_first_code_proposal_request(user_input)
+            or is_direct_code_change_request(user_input)
+            or _has_explicit_code_proposal_phrase(user_input)
+        ):
+            return self._run_deterministic_code_proposal_path(user_input)
+
+        return None
+
+    def _run_deterministic_code_proposal_path(self, user_input: str) -> AssistantRun:
+        model_profile = profile_for_user_input(self.settings, user_input)
+        tool_call_limit = effective_tool_call_limit(self.settings, model_profile)
+        if tool_call_limit < 2:
+            answer = self._tool_limit_stop_text(
+                f"Tool call limit reached ({tool_call_limit}).",
+                [],
+            )
+            tool_records = [{"name": "tool_limit", "result": answer}]
+        else:
+            result = create_search_first_code_proposal(
+                user_input=user_input,
+                search=self.tools.project_file_search,
+                store=self.tools.approval_store,
+                max_searches=min(2, tool_call_limit - 1),
+            )
+            if result.approval is not None:
+                proposal_result = result.tool_records[-1]["result"]
+                self._track_approval("propose_code_change", proposal_result)
+            answer = result.message
+            tool_records = result.tool_records
+
+        self._append_conversation_turn(user_input, answer)
+        self.logger.log_run(
+            user_input=user_input,
+            model=model_profile.model,
+            tool_calls=tool_records,
+        )
+        return AssistantRun(answer=answer, tool_calls=tool_records)
+
+    def _maybe_complete_text_search_first_code_proposal(
+        self,
+        *,
+        user_input: str,
+        content: str,
+        tool_records: list[dict[str, Any]],
+        tool_call_limit: int,
+    ) -> str | None:
+        strategy = code_proposal_tool_strategy(user_input, tool_records)
+        if strategy.required_tool_name != "search_project_files":
+            return None
+        queries = extract_project_search_queries(content)
+        if not queries:
+            return None
+
+        search_records: list[dict[str, Any]] = []
+        for query in queries:
+            decision = self.budget.can_make_tool_call(
+                len(tool_records),
+                limit=tool_call_limit,
+            )
+            if not decision.allowed:
+                stop_text = self._tool_limit_stop_text(decision.reason, tool_records)
+                tool_records.append({"name": "tool_limit", "result": stop_text})
+                return stop_text
+            suppression_reason = should_suppress_project_search(query, tool_records)
+            if suppression_reason is not None:
+                result = {
+                    "ok": False,
+                    "suppressed": True,
+                    "error": suppression_reason,
+                    "results": [],
+                }
+            else:
+                result = self.tools.execute("search_project_files", {"query": query})
+            record = {
+                "name": "search_project_files",
+                "arguments": {"query": query},
+                "result": result,
+            }
+            tool_records.append(record)
+            search_records.append(record)
+            if isinstance(result, dict) and result.get("results"):
+                break
+
+        if not has_useful_project_search_results(tool_records):
+            return project_search_answer(tool_records)
+
+        decision = self.budget.can_make_tool_call(
+            len(tool_records),
+            limit=tool_call_limit,
+        )
+        if not decision.allowed:
+            stop_text = self._tool_limit_stop_text(decision.reason, tool_records)
+            tool_records.append({"name": "tool_limit", "result": stop_text})
+            return stop_text
+
+        proposal_args = code_proposal_args_from_search_results(
+            user_input,
+            search_records,
+        )
+        grounded_preview = generate_grounded_patch_preview(
+            requested_goal=user_input,
+            relevant_files=list(proposal_args["relevant_files"]),
+            search=self.tools.project_file_search,
+        )
+        preview_note = (
+            PATCH_PREVIEW_REVIEW_ONLY_NOTE
+            if grounded_preview is not None
+            else PATCH_PREVIEW_UNAVAILABLE_NOTE
+        )
+        proposal_args["proposed_approach"] = (
+            f"{proposal_args['proposed_approach']} {preview_note}"
+        )
+        proposal_args["safety_notes"] = [
+            *proposal_args["safety_notes"],
+            preview_note,
+        ]
+        if grounded_preview is not None:
+            proposal_args["patch_preview"] = grounded_preview.patch_preview
+        result = self.tools.execute("propose_code_change", proposal_args)
+        tool_records.append(
+            {
+                "name": "propose_code_change",
+                "arguments": proposal_args,
+                "result": result,
+            }
+        )
+        self._track_approval("propose_code_change", result)
+        if isinstance(result, dict) and result.get("ok") is True:
+            return str(result.get("message", "Saved pending code proposal."))
+        return "I could not save the code proposal."
+
+    def _registered_structured_tool_calls(
+        self,
+        tool_calls: list[Any],
+        tool_schemas: list[dict[str, Any]],
+    ) -> list[Any]:
+        allowed_names = self._allowed_registered_tool_names(tool_schemas)
+        return [
+            call
+            for call in tool_calls
+            if getattr(getattr(call, "function", None), "name", None) in allowed_names
+        ]
+
+    def _registered_text_tool_calls(
+        self,
+        content: str,
+        tool_schemas: list[dict[str, Any]],
+    ) -> list[Any]:
+        if "DSML" not in content:
+            return []
+        allowed_names = self._allowed_registered_tool_names(tool_schemas)
+        tool_calls: list[Any] = []
+        for index, call in enumerate(extract_text_tool_calls(content), start=1):
+            if call.name not in allowed_names:
+                continue
+            tool_calls.append(
+                SimpleNamespace(
+                    id=f"text_tool_call_{index}",
+                    function=SimpleNamespace(
+                        name=call.name,
+                        arguments=json.dumps(call.arguments, sort_keys=True),
+                    ),
+                )
+            )
+        return tool_calls
+
+    def _allowed_registered_tool_names(
+        self,
+        tool_schemas: list[dict[str, Any]],
+    ) -> frozenset[str]:
+        exposed_names = frozenset(
+            str(schema["function"]["name"]) for schema in tool_schemas
+        )
+        return self.tools.registered_tool_names() & exposed_names
+
+    @staticmethod
+    def _visible_assistant_content(content: str) -> str:
+        visible = strip_tool_call_markup(content)
+        visible = re.sub(
+            r"\bread_file\b",
+            "an unavailable file tool",
+            visible,
+            flags=re.IGNORECASE,
+        ).strip()
+        if visible:
+            return visible
+        if extract_text_tool_calls(content):
+            return "I could not use that unavailable tool safely."
+        return visible
+
+    @staticmethod
+    def _tool_limit_stop_text(reason: str, tool_records: list[dict[str, Any]]) -> str:
+        stop_text = f"{reason} I stopped before making more tool calls."
+        completed = [
+            str(record.get("name"))
+            for record in tool_records
+            if record.get("name") != "tool_limit"
+        ]
+        if not completed:
+            return stop_text
+        counts = {name: completed.count(name) for name in dict.fromkeys(completed)}
+        summary = ", ".join(
+            f"{name} x{count}" if count > 1 else name for name, count in counts.items()
+        )
+        return f"{stop_text} Completed tool calls this turn: {summary}."
+
     def _maybe_run_local_read_only_tool(self, user_input: str) -> AssistantRun | None:
         tool_name = self._local_read_only_tool_for(user_input)
         if tool_name is None:
@@ -395,6 +867,12 @@ class LewisAgent:
             tool_calls=tool_records,
         )
         return AssistantRun(answer=answer, tool_calls=tool_records)
+
+    @staticmethod
+    def _may_expose_list_local_files(user_input: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9\s]", " ", user_input.lower())
+        normalized = " ".join(normalized.split())
+        return "list local files" in normalized or "show local files" in normalized
 
     @staticmethod
     def _local_read_only_tool_for(user_input: str) -> str | None:

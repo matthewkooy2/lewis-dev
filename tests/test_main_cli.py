@@ -13,8 +13,10 @@ from app.main import (
     print_dashboard,
     print_memories,
     print_memory_events,
+    print_project_file_search,
     print_tasks,
 )
+from app.project_search import ProjectFileSearch
 from app.executors import execute_approved
 
 
@@ -500,6 +502,31 @@ def test_propose_code_cli_rejects_runtime_paths_without_creating_approval(
     assert exit_code == 1
     assert "Could not propose code change" in output
     assert ApprovalStore(db_path).list() == []
+
+
+def test_search_files_cli_reads_only_safe_project_files(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("app.main.ROOT_DIR", tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text(
+        "needle in source\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("needle in secret", encoding="utf-8")
+
+    exit_code = main(["search-files", "needle"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "app/main.py:1" in output
+    assert "needle in source" in output
+    assert ".env" not in output
+    assert not (tmp_path / "data" / "lewis.sqlite3").exists()
+
+
+def test_print_project_file_search_empty_state(tmp_path, capsys):
+    print_project_file_search(ProjectFileSearch(tmp_path), "missing")
+
+    assert "No safe project file matches found." in capsys.readouterr().out
 
 
 def test_approvals_display_formats_code_proposals(tmp_path, capsys):

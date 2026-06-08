@@ -15,11 +15,32 @@ class BudgetManager:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def can_make_tool_call(self, current_tool_calls: int) -> BudgetDecision:
-        if current_tool_calls >= self.settings.max_tool_calls_per_request:
+    def can_make_tool_call(
+        self, current_tool_calls: int, limit: int | None = None
+    ) -> BudgetDecision:
+        max_tool_calls = (
+            self.settings.max_tool_calls_per_request if limit is None else limit
+        )
+        if current_tool_calls >= max_tool_calls:
             return BudgetDecision(
                 allowed=False,
-                reason=f"Tool call limit reached ({self.settings.max_tool_calls_per_request}).",
+                reason=f"Tool call limit reached ({max_tool_calls}).",
+            )
+        return BudgetDecision(allowed=True)
+
+    def can_make_tool_calls(
+        self,
+        current_tool_calls: int,
+        requested_tool_calls: int,
+        limit: int | None = None,
+    ) -> BudgetDecision:
+        max_tool_calls = (
+            self.settings.max_tool_calls_per_request if limit is None else limit
+        )
+        if current_tool_calls + max(0, requested_tool_calls) > max_tool_calls:
+            return BudgetDecision(
+                allowed=False,
+                reason=f"Tool call limit reached ({max_tool_calls}).",
             )
         return BudgetDecision(allowed=True)
 

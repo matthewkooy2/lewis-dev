@@ -21,6 +21,7 @@ from app.dashboard import (
 )
 from app.logging_db import RunLogger
 from app.memory_service import propose_memory
+from app.project_search import ProjectFileSearch
 from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
 
 
@@ -52,16 +53,27 @@ class ToolRegistry:
         approval_store: ApprovalStore,
         logger: RunLogger | None = None,
         user_name_configured: bool = False,
+        project_file_search: ProjectFileSearch | None = None,
     ):
         self.document_search = document_search
         self.approval_store = approval_store
         self.logger = logger or RunLogger(approval_store.db_path)
         self.user_name_configured = user_name_configured
+        self.project_file_search = project_file_search or ProjectFileSearch()
         self._tools: dict[str, Tool] = {}
         self._register_defaults()
 
-    def schemas(self) -> list[dict[str, Any]]:
-        return [tool.openai_schema() for tool in self._tools.values()]
+    def schemas(
+        self, allowed_tool_names: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
+        return [
+            tool.openai_schema()
+            for tool in self._tools.values()
+            if allowed_tool_names is None or tool.name in allowed_tool_names
+        ]
+
+    def registered_tool_names(self) -> frozenset[str]:
+        return frozenset(self._tools)
 
     def execute(self, name: str, arguments: str | dict[str, Any]) -> dict[str, Any]:
         tool = self._tools.get(name)
@@ -163,6 +175,26 @@ class ToolRegistry:
                 ),
                 parameters={"type": "object", "properties": {}},
                 function=self._get_dashboard_summary,
+            )
+        )
+        self._add(
+            Tool(
+                name="search_project_files",
+                description=(
+                    "Search safe Lewis project file paths and text contents. "
+                    "Read-only; never reads .env, secrets, credentials, hidden "
+                    "files, runtime data, virtualenvs, git data, or files outside "
+                    "the project root."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                function=self._search_project_files,
             )
         )
         self._add_proposal_tool(
@@ -391,6 +423,26 @@ class ToolRegistry:
         del args
         return {"ok": True, "files": self.document_search.list_files()}
 
+    def _search_project_files(self, args: dict[str, Any]) -> dict[str, Any]:
+        unexpected = set(args) - {"query"}
+        if unexpected:
+            return {
+                "ok": False,
+                "error": "search_project_files only accepts a query string.",
+            }
+        results = self.project_file_search.search(str(args.get("query", "")))
+        return {
+            "ok": True,
+            "results": [
+                {
+                    "path": item.path,
+                    "line_number": item.line_number,
+                    "snippet": item.snippet,
+                }
+                for item in results
+            ],
+        }
+
     def _get_current_time(self, args: dict[str, Any]) -> dict[str, Any]:
         requested_timezone = str(args.get("timezone", "America/New_York"))
         if ZoneInfo is not None:
@@ -566,7 +618,7 @@ class ToolRegistry:
             "status": item.status,
             "action_type": item.action_type,
             "message": (
-                f"Saved pending code proposal #{item.id}: {item.title}. "
+                f"Saved pending code proposal #{item.id}: {item.title.rstrip(' .')}. "
                 "This is planning only; no files were read, edited, patched, "
                 "or executed."
             ),

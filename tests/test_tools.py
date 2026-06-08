@@ -2,6 +2,7 @@ from app.approvals import ApprovalStore
 from app.code_proposal_previews import PATCH_PREVIEW_SUSPICIOUS_PATHS_WARNING
 from app.logging_db import RunLogger
 from app.memory_store import MemoryStore
+from app.project_search import ProjectFileSearch
 from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
 from app.tools import ToolRegistry
 
@@ -82,6 +83,37 @@ def test_search_documents_rejects_arbitrary_path_argument(tmp_path):
 
     assert result["ok"] is False
     assert "only accepts a query" in result["error"]
+
+
+def test_search_project_files_tool_is_read_only_and_query_only(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "service.py").write_text(
+        "Project Alpha helper",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("Alpha secret", encoding="utf-8")
+    tools = ToolRegistry(
+        DocumentSearch(tmp_path / "documents"),
+        ApprovalStore(tmp_path / "test.sqlite3"),
+        project_file_search=ProjectFileSearch(tmp_path),
+    )
+
+    result = tools.execute("search_project_files", {"query": "Alpha"})
+    rejected = tools.execute(
+        "search_project_files",
+        {"query": "Alpha", "path": ".env"},
+    )
+
+    assert result["ok"] is True
+    assert result["results"] == [
+        {
+            "path": "app/service.py",
+            "line_number": 1,
+            "snippet": "Project Alpha helper",
+        }
+    ]
+    assert rejected["ok"] is False
+    assert "only accepts a query" in rejected["error"]
 
 
 def test_proposal_tool_creates_pending_approval(tmp_path):
@@ -332,7 +364,7 @@ def test_code_proposal_tool_rejects_unsafe_paths_and_patch_text(tmp_path):
     assert patch["ok"] is False
     assert "not a patch or diff" in patch["error"]
     assert sqlite_file["ok"] is False
-    assert "blocked file name" in sqlite_file["error"]
+    assert "blocked runtime path" in sqlite_file["error"]
     assert venv_file["ok"] is False
     assert "blocked runtime path" in venv_file["error"]
     assert store.list(status="pending") == []
@@ -404,7 +436,7 @@ def test_code_proposal_patch_preview_rejects_unsafe_paths(tmp_path):
     assert secret["ok"] is False
     assert "blocked file name" in secret["error"]
     assert sqlite_file["ok"] is False
-    assert "blocked file name" in sqlite_file["error"]
+    assert "blocked runtime path" in sqlite_file["error"]
     assert outside["ok"] is False
     assert "dot segments" in outside["error"]
     assert venv_file["ok"] is False

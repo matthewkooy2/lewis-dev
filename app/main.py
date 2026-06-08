@@ -8,7 +8,7 @@ from app.approvals import ApprovalStore
 from app.budget import BudgetManager
 from app.code_proposals import CODE_PROPOSAL_ACTION_TYPE, propose_code_change
 from app.code_proposal_previews import patch_preview_warning
-from app.config import MISSING_API_KEY_MESSAGE, Settings, get_settings
+from app.config import MISSING_API_KEY_MESSAGE, ROOT_DIR, Settings, get_settings
 from app.dashboard import (
     complete_task,
     format_dashboard_count_lines,
@@ -29,6 +29,7 @@ from app.memory_service import (
     propose_memory_update,
 )
 from app.memory_store import Memory, MemoryEvent
+from app.project_search import ProjectFileSearch
 from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
 from app.tools import ToolRegistry
 
@@ -421,6 +422,19 @@ def print_document_search(search: DocumentSearch, query: str) -> None:
         print(f"  {item.snippet}")
 
 
+def print_project_file_search(search: ProjectFileSearch, query: str) -> None:
+    results = search.search(query)
+    if not results:
+        print("No safe project file matches found.")
+        return
+    for item in results:
+        if item.line_number is None:
+            print(f"{item.path}")
+        else:
+            print(f"{item.path}:{item.line_number}")
+        print(f"  {item.snippet}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lewis")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -463,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
     archive_memory_parser.add_argument("--reason", default="")
     search_parser = subparsers.add_parser("search-docs")
     search_parser.add_argument("query")
+    project_search_parser = subparsers.add_parser("search-files")
+    project_search_parser.add_argument("query")
     approve_parser = subparsers.add_parser("approve")
     approve_parser.add_argument("approval_id", type=int)
     reject_parser = subparsers.add_parser("reject")
@@ -475,6 +491,10 @@ def main(argv: list[str] | None = None) -> int:
     reopen_parser.add_argument("approval_id", type=int)
 
     args = parser.parse_args(argv)
+    if args.command == "search-files":
+        print_project_file_search(ProjectFileSearch(ROOT_DIR), args.query)
+        return 0
+
     settings = get_settings()
     store = ApprovalStore(settings.database_path)
     logger = RunLogger(settings.database_path)

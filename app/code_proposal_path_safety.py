@@ -9,6 +9,7 @@ BLOCKED_PATH_PARTS = {
     ".pytest_cache",
     ".venv",
     "__pycache__",
+    "data",
     "env",
     "venv",
 }

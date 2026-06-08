@@ -41,6 +41,7 @@ class Settings:
     max_estimated_daily_cost: float
     price_per_1k_input_tokens: float
     price_per_1k_output_tokens: float
+    deepseek_code_model: str | None = None
 
     @property
     def has_api_key(self) -> bool:
@@ -82,6 +83,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional_text(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    text = value.strip()
+    return text or None
+
+
 def get_settings() -> Settings:
     load_dotenv()
     raw_user_name = os.getenv("LEWIS_USER_NAME")
@@ -99,4 +108,8 @@ def get_settings() -> Settings:
         max_estimated_daily_cost=_env_float("LEWIS_MAX_DAILY_COST_USD", 1.00),
         price_per_1k_input_tokens=_env_float("DEEPSEEK_PRICE_PER_1K_INPUT", 0.0),
         price_per_1k_output_tokens=_env_float("DEEPSEEK_PRICE_PER_1K_OUTPUT", 0.0),
+        deepseek_code_model=_env_optional_text(
+            "DEEPSEEK_CODE_MODEL",
+            "deepseek-v4-pro",
+        ),
     )

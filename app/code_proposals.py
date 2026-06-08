@@ -59,6 +59,7 @@ def propose_code_change(
     safety_notes: Iterable[object] | None = None,
     suggested_test_commands: Iterable[object] | None = None,
     project_root: Path = ROOT_DIR,
+    align_relevant_files: bool = True,
 ) -> ApprovalItem:
     proposal = validate_code_proposal(
         requested_goal=requested_goal,
@@ -69,6 +70,7 @@ def propose_code_change(
         safety_notes=safety_notes,
         suggested_test_commands=suggested_test_commands,
         project_root=project_root,
+        align_relevant_files=align_relevant_files,
     )
     payload = {
         "requested_goal": proposal.requested_goal,
@@ -104,6 +106,7 @@ def validate_code_proposal(
     safety_notes: Iterable[object] | None = None,
     suggested_test_commands: Iterable[object] | None = None,
     project_root: Path = ROOT_DIR,
+    align_relevant_files: bool = True,
 ) -> CodeProposal:
     goal = _required_text(requested_goal, "Code proposal requested_goal")
     _reject_patch_content(goal, "requested_goal")
@@ -132,13 +135,14 @@ def validate_code_proposal(
     tests = normalize_suggested_test_commands(tests, project_root)
     files = _validated_relevant_files(relevant_files, project_root)
     surface = _target_surface(goal, approach, files, target_surface)
-    files = align_relevant_files_with_project_structure(
-        files,
-        goal=goal,
-        approach=approach,
-        target_surface=surface,
-        project_root=project_root,
-    )
+    if align_relevant_files:
+        files = align_relevant_files_with_project_structure(
+            files,
+            goal=goal,
+            approach=approach,
+            target_surface=surface,
+            project_root=project_root,
+        )
     notes = _with_contextual_safety_notes(notes, goal, approach, surface)
     return CodeProposal(
         requested_goal=goal,
