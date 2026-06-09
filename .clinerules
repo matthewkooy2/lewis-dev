@@ -11,9 +11,11 @@ C:\Users\Example\Lewis
 
 Always run Python tools using the project venv explicitly:
 
-& .\.venv\Scripts\python.exe -m pytest
-& .\.venv\Scripts\python.exe -m ruff check .
-& .\.venv\Scripts\python.exe -m ruff format .
+ .\.venv\Scripts\python.exe -m pytest
+ .\.venv\Scripts\python.exe -m ruff check .
+ .\.venv\Scripts\python.exe -m ruff format .
+
+Commands must use .\.venv\Scripts\python.exe. The call operator & is optional for direct unquoted relative executable paths, but required if the path is quoted, stored in a variable, or otherwise rejected by PowerShell.
 
 Do not use ..\venv.
 Do not use ..venv.

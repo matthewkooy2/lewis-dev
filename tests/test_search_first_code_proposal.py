@@ -71,7 +71,10 @@ def test_unconfident_preview_saves_no_approval_and_explains_why(
 
     assert result.approval is None
     assert store.list(status="pending") == []
-    assert "Cleaned goal: Add a small label to the command center chat UI." in result.message
+    assert (
+        "Cleaned goal: Add a small label to the command center chat UI."
+        in result.message
+    )
     assert "Candidate files found: yes (app/web_components.py)." in result.message
     assert "without a patch_preview is prohibited" in result.message
     assert "No pending code proposal was saved." in result.message

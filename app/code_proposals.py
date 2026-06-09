@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from app.approvals import ApprovalItem, ApprovalStore
 from app.config import ROOT_DIR
@@ -58,6 +58,7 @@ def propose_code_change(
     target_surface: object | None = None,
     safety_notes: Iterable[object] | None = None,
     suggested_test_commands: Iterable[object] | None = None,
+    extra_payload: dict[str, Any] | None = None,
     project_root: Path = ROOT_DIR,
     align_relevant_files: bool = True,
 ) -> ApprovalItem:
@@ -90,6 +91,8 @@ def propose_code_change(
         )
         if proposal.patch_preview_warning:
             payload["patch_preview_warning"] = proposal.patch_preview_warning
+    if extra_payload:
+        payload.update(extra_payload)
     return store.create(
         action_type=CODE_PROPOSAL_ACTION_TYPE,
         title=_proposal_title(proposal.requested_goal),

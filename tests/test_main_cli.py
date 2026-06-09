@@ -21,7 +21,6 @@ from app.executors import execute_approved
 
 
 EXPECTED_CODE_PROPOSAL_TEST_COMMANDS = [
-    r".\.venv\Scripts\python.exe -m ruff format .",
     r".\.venv\Scripts\python.exe -m ruff check .",
     r".\.venv\Scripts\python.exe -m pytest",
 ]

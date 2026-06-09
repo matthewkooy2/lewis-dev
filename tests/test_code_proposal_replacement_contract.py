@@ -51,9 +51,7 @@ def _make_agent(tmp_path: Path, project_root: Path) -> LewisAgent:
         budget=BudgetManager(settings),
         logger=RunLogger(settings.database_path),
     )
-    agent.client = SimpleNamespace(
-        chat=SimpleNamespace(completions=_NoOpCompletions())
-    )
+    agent.client = SimpleNamespace(chat=SimpleNamespace(completions=_NoOpCompletions()))
     return agent
 
 
@@ -105,9 +103,7 @@ def _assert_real_inert_unified_diff(
             "Create a code proposal that makes the command center chat text blue.",
             {
                 "app/static/lewis.css": (
-                    ".chat-log .bubble {\n"
-                    "    color: var(--ink);\n"
-                    "}\n"
+                    ".chat-log .bubble {\n    color: var(--ink);\n}\n"
                 ),
                 "app/web_pages.py": (
                     "def chat_page():\n"
@@ -119,15 +115,9 @@ def _assert_real_inert_unified_diff(
             "Create a code proposal that adds a thinking animation to chat.",
             {
                 "app/static/chat.js": (
-                    "function showThinkingBubble() {\n"
-                    "    return 'thinking';\n"
-                    "}\n"
+                    "function showThinkingBubble() {\n    return 'thinking';\n}\n"
                 ),
-                "app/static/lewis.css": (
-                    ".bubble.thinking {\n"
-                    "    opacity: 0.7;\n"
-                    "}\n"
-                ),
+                "app/static/lewis.css": (".bubble.thinking {\n    opacity: 0.7;\n}\n"),
             },
         ),
     ],
@@ -341,8 +331,7 @@ def test_file_discovery_proposal_does_not_return_readme_or_manual_command_noise(
         encoding="utf-8",
     )
     (project_root / "app" / "code_proposal_engine.py").write_text(
-        "def discover_relevant_files(project_search):\n"
-        "    return project_search\n",
+        "def discover_relevant_files(project_search):\n    return project_search\n",
         encoding="utf-8",
     )
     noisy_command = r".\.venv\Scripts\python.exe -m pytest tests/manual_retest.py"
@@ -357,7 +346,10 @@ def test_file_discovery_proposal_does_not_return_readme_or_manual_command_noise(
     )
 
     assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
-    assert "Cleaned goal: Help you find relevant files so that this stops happening." in run.answer
+    assert (
+        "Cleaned goal: Help you find relevant files so that this stops happening."
+        in run.answer
+    )
     assert "app/project_search.py" in run.answer
     assert "README.md" not in run.answer
     assert noisy_command not in run.answer
@@ -439,7 +431,7 @@ def test_dashboard_chat_icon_completion_status_does_not_use_thinking_bubble_stra
     assert not run.answer.startswith(
         "Project search did not find enough relevant existing file content"
     )
-    assert "Lewis found relevant project files" in run.answer
+    assert "Lewis found candidate project files" in run.answer
     assert "no conservative proposal strategy matched" in run.answer
 
 
@@ -504,7 +496,7 @@ def test_chat_text_blue_after_done_thinking_saves_no_approval_with_strategy_diag
         "Project search did not find enough relevant existing file content"
     )
     # Must mention strategy incompatibility, not apply a static color strategy.
-    assert "Lewis found relevant project files" in run.answer
+    assert "Lewis found candidate project files" in run.answer
     assert "static chat-text-color strategy" in run.answer
     assert "after-response/completion-ready state" in run.answer
     assert all(record["name"] == "search_project_files" for record in run.tool_calls)
@@ -531,7 +523,7 @@ def test_maximum_status_badge_count_sidebar_saves_no_approval_with_target_mismat
         "Project search did not find enough relevant existing file content"
     )
     # Must mention the strategy considered and target surface mismatch.
-    assert "Lewis found relevant project files" in run.answer
+    assert "Lewis found candidate project files" in run.answer
     assert "backend setting-limit strategy" in run.answer
     assert "sidebar" in run.answer.lower() or "dashboard" in run.answer.lower()
     assert all(record["name"] == "search_project_files" for record in run.tool_calls)
@@ -550,7 +542,9 @@ def test_clear_all_approved_memories_destructive_request_gets_destructive_diagno
 
     assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
     assert "No pending code proposal was saved." in run.answer
-    assert "destructive" in run.answer.lower() or "storage-sensitive" in run.answer.lower()
+    assert (
+        "destructive" in run.answer.lower() or "storage-sensitive" in run.answer.lower()
+    )
     assert _snapshot(project_root) == before
 
 
@@ -590,5 +584,284 @@ def test_exact_valid_thinking_animation_prompt_still_creates_one_approval(
     )
     assert ".bubble.thinking" in approval.payload["patch_preview"]
     assert approval.payload["patch_preview"].startswith("diff --git ")
+    assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _assert_real_inert_unified_diff(project_root, before, approval)
+
+
+# --- Stage 6D: animation modifier semantics ---
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "make a code proposal to make the thinking animation calmer",
+        "make a code proposal to make the thinking animation slower",
+        "make a code proposal to make the thinking animation subtler",
+        "make a code proposal to make the thinking animation less distracting",
+        "make a code proposal to make the thinking animation faster",
+        "make a code proposal to make the thinking animation more noticeable",
+        "make a code proposal to make the thinking animation bouncier",
+    ],
+)
+def test_qualitative_animation_modifier_prompts_refuse_and_save_no_approval(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(prompt)
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert approvals == [], f"Expected no approval for: {prompt}"
+    assert "No pending code proposal was saved." in run.answer
+    assert "Candidate files found:" in run.answer
+    assert not run.answer.startswith(
+        "Project search did not find enough relevant existing file content"
+    )
+    # Must mention qualitative modification or modifier-specific absence.
+    assert (
+        "qualitative animation modification" in run.answer.lower()
+        or "modifier-specific strategy" in run.answer.lower()
+    )
+    # The generic lewis-thinking-pulse patch must NOT be present.
+    assert "lewis-thinking-pulse" not in run.answer.lower()
+    assert _snapshot(project_root) == before
+
+
+def test_plain_thinking_animation_prompt_still_saves_approval(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(
+        "make a code proposal to make a new animation for when youre thinking"
+    )
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert len(approvals) == 1
+    approval = approvals[0]
+    assert ".bubble.thinking" in approval.payload["patch_preview"]
+    assert "@keyframes" in approval.payload["patch_preview"]
+    assert "prefers-reduced-motion" in approval.payload["patch_preview"]
+    # No dashboard/sidebar/status-dot behavior.
+    assert "dashboard" not in approval.payload["patch_preview"].lower()
+    assert "sidebar" not in approval.payload["patch_preview"].lower()
+    assert "status" not in approval.payload["patch_preview"].lower()
+    assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _assert_real_inert_unified_diff(project_root, before, approval)
+
+
+# --- Stage 6C: Bug 1 tests — clear/remove/undo/reset chat blue prompts ---
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "make a code proposal to clear the blue highlight from completed chat messages",
+        "make a code proposal to remove the blue text from chat messages",
+        "make a code proposal to stop making chat messages blue",
+        "make a code proposal to undo the blue chat text change",
+        "make a code proposal to reset the chat text color",
+    ],
+)
+def test_removal_polarity_chat_color_prompts_refuse_and_save_no_approval(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(prompt)
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert approvals == [], f"Expected no approval for: {prompt}"
+    assert "No pending code proposal was saved." in run.answer
+    assert "Candidate files found:" in run.answer
+    # Must not claim no files.
+    assert not run.answer.startswith(
+        "Project search did not find enough relevant existing file content"
+    )
+    # Must mention the strategy and removal polarity concept blocking it.
+    assert "static chat-text-color strategy" in run.answer
+    assert "removal/clear/undo/reset polarity" in run.answer.lower()
+    assert _snapshot(project_root) == before
+
+
+# --- Stage 6C: Bug 2 tests — reset/revert/undo thinking animation prompts ---
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "make a code proposal to reset the thinking animation to a calmer pulse",
+        "make a code proposal to revert the thinking animation",
+        "make a code proposal to undo the thinking animation change",
+    ],
+)
+def test_reset_revert_undo_thinking_animation_prompts_refuse_and_save_no_approval(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(prompt)
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert approvals == [], f"Expected no approval for: {prompt}"
+    assert "No pending code proposal was saved." in run.answer
+    assert "Candidate files found:" in run.answer
+    assert not run.answer.startswith(
+        "Project search did not find enough relevant existing file content"
+    )
+    assert ".bubble.thinking" not in run.answer
+    assert "thinking-animation" in run.answer.lower() or "chat thinking-animation strategy" in run.answer.lower()
+    assert "removal/clear/undo/reset polarity" in run.answer.lower()
+    assert _snapshot(project_root) == before
+
+
+# --- Stage 6C: Bug 3 — payload structured fields are persisted ---
+
+
+def test_raw_approval_payload_includes_structured_stage_6b_fields(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    # Create a chat-color proposal (supported)
+    run = agent.run(
+        "make a code proposal to make the text blue instead of black for this chat"
+    )
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert len(approvals) == 1
+    approval = approvals[0]
+    payload = approval.payload
+
+    # Assert Stage 6B structured fields are all present in raw payload
+    assert "selected_strategy" in payload
+    assert payload["selected_strategy"] == "chat_text_color"
+
+    assert "touched_paths" in payload
+    assert isinstance(payload["touched_paths"], list)
+    assert "app/static/lewis.css" in payload["touched_paths"] or all(
+        ".css" in p for p in payload["touched_paths"]
+    )
+
+    assert "patch_preview_kind" in payload
+    assert payload["patch_preview_kind"] in ("unified diff", "unified_diff")
+
+    assert "patch_is_inert" in payload
+    assert payload["patch_is_inert"] is True
+
+    assert "commands_run" in payload
+    assert isinstance(payload["commands_run"], list)
+    # Should contain search_project_files records
+    assert all(
+        cmd in ("search_project_files", "project_search")
+        or "_search" in cmd
+        for cmd in payload["commands_run"]
+    ), f"commands_run: {payload['commands_run']}"
+
+    assert "files_modified" in payload
+    assert payload["files_modified"] == []
+
+    # Also verify the chat-color approval is still properly grounded
+    assert payload["requested_goal"].lower().startswith("make the text blue")
+    assert "patch_preview" in payload
+    assert payload["patch_preview"].startswith("diff --git ")
+    assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _assert_real_inert_unified_diff(project_root, before, approval)
+
+
+def test_raw_approval_payload_stage_6b_fields_for_thinking_animation(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(
+        "make a code proposal to make a new animation for when youre thinking"
+    )
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert len(approvals) == 1
+    approval = approvals[0]
+    payload = approval.payload
+
+    assert "selected_strategy" in payload
+    assert payload["selected_strategy"] == "thinking_animation"
+
+    assert "touched_paths" in payload
+    assert isinstance(payload["touched_paths"], list)
+    assert payload["touched_paths"]  # not empty
+
+    assert "patch_preview_kind" in payload
+    assert payload["patch_preview_kind"] in ("unified diff", "unified_diff")
+
+    assert "patch_is_inert" in payload
+    assert payload["patch_is_inert"] is True
+
+    assert "commands_run" in payload
+    assert isinstance(payload["commands_run"], list)
+    assert len(payload["commands_run"]) > 0
+
+    assert "files_modified" in payload
+    assert payload["files_modified"] == []
+
+    assert ".bubble.thinking" in payload["patch_preview"]
+    assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _assert_real_inert_unified_diff(project_root, before, approval)
+
+
+def test_raw_approval_payload_stage_6b_fields_for_tool_limit(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run("make a code proposal to increase the tool use limit")
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert len(approvals) == 1
+    approval = approvals[0]
+    payload = approval.payload
+
+    assert "selected_strategy" in payload
+    assert payload["selected_strategy"] == "setting_limit"
+
+    assert "touched_paths" in payload
+    assert isinstance(payload["touched_paths"], list)
+    assert payload["touched_paths"]
+
+    assert "patch_preview_kind" in payload
+    assert payload["patch_preview_kind"] in ("unified diff", "unified_diff")
+
+    assert "patch_is_inert" in payload
+    assert payload["patch_is_inert"] is True
+
+    assert "commands_run" in payload
+    assert isinstance(payload["commands_run"], list)
+
+    assert "files_modified" in payload
+    assert payload["files_modified"] == []
+
     assert run.tool_calls[-1]["name"] == "propose_code_change"
     _assert_real_inert_unified_diff(project_root, before, approval)

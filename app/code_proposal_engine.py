@@ -22,20 +22,20 @@ _NO_FILES_LEAD_IN = (
     "a grounded code proposal."
 )
 _NO_STRATEGY_LEAD_IN = (
-    "Lewis found relevant project files, but no conservative proposal strategy "
+    "Lewis found candidate project files, but no conservative proposal strategy "
     "matched the full requested behavior."
 )
 _NO_GROUNDED_DIFF_LEAD_IN = (
-    "Lewis found relevant project files and a compatible strategy, but no "
+    "Lewis found candidate project files and a compatible strategy, but no "
     "grounded patch could be safely generated."
 )
 _DESTRUCTIVE_LEAD_IN = (
-    "Lewis found relevant project files, but the requested behavior appears "
+    "Lewis found candidate project files, but the requested behavior appears "
     "destructive or storage-sensitive and needs explicit confirmation plus "
     "verified storage semantics before a safe proposal strategy can create a patch."
 )
 _DESTRUCTIVE_NO_FILES_LEAD_IN = (
-    "Project search did not find matching relevant project files, and the "
+    "Project search did not find matching candidate project files, and the "
     "requested behavior appears destructive or storage-sensitive. Explicit "
     "confirmation plus verified storage semantics would be required before "
     "a safe proposal strategy can be attempted."
@@ -145,6 +145,31 @@ _GENERIC_UI_PATHS = frozenset(
     }
 )
 _DESTRUCTIVE_GOAL_TERMS = ("clear", "delete", "erase", "purge", "remove", "reset")
+_ANIMATION_MODIFIER_TERMS = frozenset(
+    {
+        "bouncier",
+        "bouncy",
+        "calmer",
+        "calm",
+        "faster",
+        "fast",
+        "gentler",
+        "gentle",
+        "less distracting",
+        "less intense",
+        "less noticeable",
+        "more intense",
+        "more noticeable",
+        "slower",
+        "slow",
+        "softer",
+        "soft",
+        "smoother",
+        "smooth",
+        "subtler",
+        "subtle",
+    }
+)
 _SETTING_LIMIT_ENV_INT_PATTERN = re.compile(
     r"(?P<prefix>_env_int\(\s*(?P<quote>['\"])(?P<env_name>[A-Z0-9_]+)"
     r"(?P=quote)\s*,\s*)(?P<value>\d+)(?P<suffix>\s*\))"
@@ -183,6 +208,8 @@ _COMPLETION_CONCEPT = "after-response/completion-ready state"
 _STATUS_INDICATOR_CONCEPT = "status indicator"
 _LIMIT_INCREASE_CONCEPT = "limit increase"
 _STATIC_LABEL_CONCEPT = "static label/caption"
+_REMOVAL_POLARITY_CONCEPT = "removal/clear/undo/reset polarity"
+_ANIMATION_MODIFIER_CONCEPT = "animation modifier/qualitative tuning"
 _CHAT_CONTENT_SURFACE = "chat content/message/bubble"
 _DASHBOARD_NAV_SURFACE = "dashboard/sidebar/navigation link or icon"
 _STATUS_INDICATOR_SURFACE = "status indicator"
@@ -259,7 +286,12 @@ _STRATEGY_SPECS = (
         supported_concepts=frozenset({_ANIMATION_CONCEPT, _WHILE_THINKING_CONCEPT}),
         supported_surfaces=frozenset({_CHAT_CONTENT_SURFACE, _GENERAL_UI_SURFACE}),
         disqualifying_concepts=frozenset(
-            {_COMPLETION_CONCEPT, _STATUS_INDICATOR_CONCEPT}
+            {
+                _COMPLETION_CONCEPT,
+                _STATUS_INDICATOR_CONCEPT,
+                _REMOVAL_POLARITY_CONCEPT,
+                _ANIMATION_MODIFIER_CONCEPT,
+            }
         ),
         disqualifying_surfaces=frozenset(
             {_DASHBOARD_NAV_SURFACE, _STATUS_INDICATOR_SURFACE}
@@ -276,6 +308,7 @@ _STRATEGY_SPECS = (
                 _WHILE_THINKING_CONCEPT,
                 _COMPLETION_CONCEPT,
                 _STATUS_INDICATOR_CONCEPT,
+                _REMOVAL_POLARITY_CONCEPT,
             }
         ),
         disqualifying_surfaces=frozenset(
@@ -386,6 +419,14 @@ def create_code_proposal_if_supported(
             "No project files are modified and no commands are run.",
         ],
         suggested_test_commands=[],
+        extra_payload={
+            "selected_strategy": proposal_kind,
+            "touched_paths": [grounded_change.path],
+            "patch_preview_kind": "unified diff",
+            "patch_is_inert": True,
+            "commands_run": [record["name"] for record in search_records],
+            "files_modified": [],
+        },
         project_root=search.project_root,
         align_relevant_files=False,
     )
@@ -459,9 +500,7 @@ def clean_requested_goal(user_input: str) -> str:
     return f"{goal.rstrip(' .!?')}."
 
 
-def _select_strategy(
-    user_input: str, requested_goal: str
-) -> _StrategySelection | None:
+def _select_strategy(user_input: str, requested_goal: str) -> _StrategySelection | None:
     normalized = " ".join(user_input.lower().split())
     if "proposal" not in normalized:
         return None
@@ -510,6 +549,20 @@ def _goal_profile(requested_goal: str) -> _GoalProfile:
     concepts: set[str] = set()
     surfaces: set[str] = set()
 
+    if any(
+        term in normalized
+        for term in (
+            "clear the",
+            "remove the",
+            "undo the",
+            "unset the",
+            "stop making",
+            "revert the",
+            "reset the",
+        )
+    ):
+        concepts.add(_REMOVAL_POLARITY_CONCEPT)
+
     completion_state = any(
         phrase in normalized
         for phrase in (
@@ -534,9 +587,8 @@ def _goal_profile(requested_goal: str) -> _GoalProfile:
         and not completion_state
     ):
         concepts.add(_WHILE_THINKING_CONCEPT)
-    if (
-        any(term in normalized for term in ("color", "colour", "blue", "black"))
-        and any(term in normalized for term in ("text", "message", "caption"))
+    if any(term in normalized for term in ("color", "colour", "blue", "black")) and any(
+        term in normalized for term in ("text", "message", "caption")
     ):
         concepts.add(_COLOR_TEXT_CONCEPT)
     if any(
@@ -550,6 +602,10 @@ def _goal_profile(requested_goal: str) -> _GoalProfile:
         concepts.add(_STATIC_LABEL_CONCEPT)
     if "badge" in normalized and _STATUS_INDICATOR_CONCEPT not in concepts:
         concepts.add(_STATIC_LABEL_CONCEPT)
+    if _ANIMATION_CONCEPT in concepts and any(
+        term in normalized for term in _ANIMATION_MODIFIER_TERMS
+    ):
+        concepts.add(_ANIMATION_MODIFIER_CONCEPT)
 
     dashboard_terms = ("dashboard", "sidebar", "navigation", "nav ", "left side")
     if any(term in normalized for term in dashboard_terms) or "chat icon" in normalized:
@@ -680,7 +736,12 @@ def _generic_feature_queries(requested_goal: str) -> list[str]:
 
     phrase_terms = [
         phrase
-        for phrase in ("history tab", "command center", "relevant files", "project search")
+        for phrase in (
+            "history tab",
+            "command center",
+            "relevant files",
+            "project search",
+        )
         if phrase in normalized
     ]
     primary = " ".join([*phrase_terms, *goal_terms[:8]]).strip()
@@ -694,11 +755,7 @@ def _generic_feature_queries(requested_goal: str) -> list[str]:
 def _setting_limit_queries(requested_goal: str) -> list[str]:
     terms = _expanded_setting_terms(requested_goal)
     primary = " ".join(terms[:8])
-    secondary_terms = [
-        term
-        for term in terms
-        if "_" in term or term.isupper()
-    ]
+    secondary_terms = [term for term in terms if "_" in term or term.isupper()]
     secondary = " ".join(secondary_terms[:8])
     return list(dict.fromkeys(query for query in (primary, secondary) if query))
 
@@ -726,9 +783,7 @@ def _append_unique_term(terms: list[str], term: str) -> None:
         terms.append(term)
 
 
-def _search_record(
-    query: str, results: list[ProjectSearchResult]
-) -> dict[str, Any]:
+def _search_record(query: str, results: list[ProjectSearchResult]) -> dict[str, Any]:
     return {
         "name": "search_project_files",
         "arguments": {"query": query},
@@ -781,7 +836,8 @@ def _generic_feature_evidence(
 ) -> dict[str, str]:
     terms = _generic_goal_terms(requested_goal)
     explicitly_targets_tests = any(
-        term in requested_goal.lower() for term in ("test", "tests", "documentation", "docs")
+        term in requested_goal.lower()
+        for term in ("test", "tests", "documentation", "docs")
     )
     targets_file_discovery = any(
         term in requested_goal.lower()
@@ -1079,13 +1135,13 @@ def _chat_text_blue(content: str) -> str:
             flags=re.IGNORECASE,
         )
         if count:
-            return f"{content[:match.start('body')]}{updated_body}{content[match.end('body'):]}"
+            return f"{content[: match.start('body')]}{updated_body}{content[match.end('body') :]}"
         if "color:" not in body.lower():
             updated_body = _add_css_declaration(body, "color: #2563eb;")
-            return f"{content[:match.start('body')]}{updated_body}{content[match.end('body'):]}"
+            return f"{content[: match.start('body')]}{updated_body}{content[match.end('body') :]}"
 
     suffix = "" if content.endswith("\n") else "\n"
-    return f"{content}{suffix}\n.chat-log .bubble {{\n  color: #2563eb;\n}}\n"
+    return f"{content}{suffix}\n.chat-log .bubble:not(.thinking) {{\n  color: #2563eb;\n}}\n"
 
 
 def _thinking_animation(content: str) -> str:
@@ -1098,17 +1154,22 @@ def _thinking_animation(content: str) -> str:
         "animation: lewis-thinking-pulse 1.2s ease-in-out infinite;",
     )
     updated = (
-        f"{content[:match.start('body')]}{updated_body}{content[match.end('body'):]}"
+        f"{content[: match.start('body')]}{updated_body}{content[match.end('body') :]}"
+    )
+    reduced_block = (
+        "\n@media (prefers-reduced-motion: reduce) {\n"
+        "  .bubble.thinking { animation: none; }\n"
+        "}\n"
     )
     if "@keyframes lewis-thinking-pulse" in updated:
-        return updated
+        return updated + reduced_block
     suffix = "" if updated.endswith("\n") else "\n"
     return (
         f"{updated}{suffix}\n"
         "@keyframes lewis-thinking-pulse {\n"
         "  0%, 100% { transform: translateY(0); opacity: .7; }\n"
         "  50% { transform: translateY(-2px); opacity: 1; }\n"
-        "}\n"
+        "}\n" + reduced_block
     )
 
 
@@ -1151,7 +1212,9 @@ def _validated_grounded_patch(
         raise ValueError("Grounded patch preview is missing unified diff markers.")
     touched_paths = set(extract_patch_preview_paths(preview))
     if touched_paths != {change.path} or not touched_paths <= set(relevant_files):
-        raise ValueError("Grounded patch preview touches a file outside selected evidence.")
+        raise ValueError(
+            "Grounded patch preview touches a file outside selected evidence."
+        )
     if change.updated_text is not None and change.original_text == change.updated_text:
         raise ValueError("Grounded patch preview must describe a real change.")
     if change.updated_text is None and not _patch_has_changed_lines(preview):
@@ -1161,8 +1224,12 @@ def _validated_grounded_patch(
 
 def _patch_has_changed_lines(preview: str) -> bool:
     lines = preview.splitlines()
-    has_removal = any(line.startswith("-") and not line.startswith("---") for line in lines)
-    has_addition = any(line.startswith("+") and not line.startswith("+++") for line in lines)
+    has_removal = any(
+        line.startswith("-") and not line.startswith("---") for line in lines
+    )
+    has_addition = any(
+        line.startswith("+") and not line.startswith("+++") for line in lines
+    )
     return has_removal and has_addition
 
 
@@ -1198,9 +1265,7 @@ def _proposed_approach(
             "change shown in the patch preview."
         )
     else:
-        implementation = (
-            f"Review the grounded evidence and plan {requested_goal.rstrip('.').lower()}."
-        )
+        implementation = f"Review the grounded evidence and plan {requested_goal.rstrip('.').lower()}."
     return (
         f"{implementation} "
         f"Safe read-only project evidence selected: {evidence}. "
@@ -1217,10 +1282,9 @@ def _target_surface_for_kind(proposal_kind: str) -> str:
 
 
 def _is_setting_limit_goal(cleaned_goal: str) -> bool:
-    return (
-        any(term in cleaned_goal for term in ("increase", "raise", "bump", "expand"))
-        and any(term in cleaned_goal for term in ("limit", "cap", "maximum"))
-    )
+    return any(
+        term in cleaned_goal for term in ("increase", "raise", "bump", "expand")
+    ) and any(term in cleaned_goal for term in ("limit", "cap", "maximum"))
 
 
 def _no_grounded_diff_reason(proposal_kind: str, requested_goal: str) -> str:
@@ -1253,20 +1317,33 @@ def _failure_lead_in(
     candidate_paths: list[str], reason: str, requested_goal: str
 ) -> str:
     if not candidate_paths:
-        if any(
-            term in requested_goal.lower()
-            for term in _DESTRUCTIVE_GOAL_TERMS
-        ):
+        if any(term in requested_goal.lower() for term in _DESTRUCTIVE_GOAL_TERMS):
             return _DESTRUCTIVE_NO_FILES_LEAD_IN
         return _NO_FILES_LEAD_IN
     lowered = reason.lower()
     if "destructive" in lowered or "storage-sensitive" in lowered:
         return _DESTRUCTIVE_LEAD_IN
-    if any(
-        term in requested_goal.lower()
-        for term in _DESTRUCTIVE_GOAL_TERMS
-    ):
+    if lowered.startswith(
+        "does not support material concepts removal/clear/undo/reset polarity"
+    ) or "removal/clear/undo/reset polarity" in lowered:
+        return (
+            "Lewis found candidate project files and enough material evidence for "
+            "the target surface, but the request asks to remove/clear/reset "
+            "existing styling or animation. The supported static and "
+            "thinking-animation strategies only safely add/set when grounded. "
+            "An explicit removal/revert strategy is not currently available."
+        )
+    if any(term in requested_goal.lower() for term in _DESTRUCTIVE_GOAL_TERMS):
         return _DESTRUCTIVE_LEAD_IN
+    if _ANIMATION_MODIFIER_CONCEPT.lower() in lowered:
+        return (
+            "Lewis found candidate project files, but the request asks for "
+            "qualitative animation modification (calmer, slower, subtler, "
+            "less distracting, etc.). The current thinking-animation strategy "
+            "only safely adds a bounded waiting animation. No conservative "
+            "modifier-specific strategy is currently available for qualitative "
+            "animation tuning."
+        )
     if "strategy" in lowered:
         return _NO_STRATEGY_LEAD_IN
     return _NO_GROUNDED_DIFF_LEAD_IN
@@ -1302,7 +1379,9 @@ def _grounding_failure_message(
 def _tool_limit_result(
     limit: int, completed_records: list[dict[str, Any]]
 ) -> CodeProposalEngineResult:
-    message = f"Tool call limit reached ({limit}). I stopped before making more tool calls."
+    message = (
+        f"Tool call limit reached ({limit}). I stopped before making more tool calls."
+    )
     if completed_records:
         names = [str(record["name"]) for record in completed_records]
         summary = ", ".join(dict.fromkeys(names))
