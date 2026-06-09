@@ -1,4 +1,4 @@
-""Stage 7B — Pure validation tests for app/dev/proposal_validation.py.
+"""Stage 7B — Pure validation tests for app/dev/proposal_validation.py.
 
 Tests validate approval payloads and parse/validate unified diff metadata.
 No branch creation, patch application, git calls, subprocess calls, or file
