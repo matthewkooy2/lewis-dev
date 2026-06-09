@@ -11,6 +11,7 @@ from app.approvals import ApprovalItem, ApprovalStore
 from app.budget import BudgetManager
 from app.code_proposal_previews import extract_patch_preview_paths
 from app.config import Settings
+from app.dev.proposal_validation import validate_approved_code_proposal
 from app.llm import LewisAgent
 from app.logging_db import RunLogger
 from app.project_search import ProjectFileSearch
@@ -94,6 +95,21 @@ def _assert_real_inert_unified_diff(
 
     assert checked.returncode == 0, checked.stderr
     assert _snapshot(project_root) == before
+
+
+def _validate_persisted_replacement_payload(approval: ApprovalItem) -> None:
+    assert approval.payload["patch_preview_kind"] == "unified diff"
+    approved = ApprovalItem(
+        id=approval.id,
+        action_type=approval.action_type,
+        title=approval.title,
+        payload=approval.payload,
+        status="approved",
+        created_at=approval.created_at,
+        updated_at=approval.updated_at,
+    )
+    validated = validate_approved_code_proposal(approved)
+    assert validated.selected_strategy == approval.payload["selected_strategy"]
 
 
 @pytest.mark.parametrize(
@@ -725,7 +741,10 @@ def test_reset_revert_undo_thinking_animation_prompts_refuse_and_save_no_approva
         "Project search did not find enough relevant existing file content"
     )
     assert ".bubble.thinking" not in run.answer
-    assert "thinking-animation" in run.answer.lower() or "chat thinking-animation strategy" in run.answer.lower()
+    assert (
+        "thinking-animation" in run.answer.lower()
+        or "chat thinking-animation strategy" in run.answer.lower()
+    )
     assert "removal/clear/undo/reset polarity" in run.answer.lower()
     assert _snapshot(project_root) == before
 
@@ -762,7 +781,7 @@ def test_raw_approval_payload_includes_structured_stage_6b_fields(
     )
 
     assert "patch_preview_kind" in payload
-    assert payload["patch_preview_kind"] in ("unified diff", "unified_diff")
+    assert payload["patch_preview_kind"] == "unified diff"
 
     assert "patch_is_inert" in payload
     assert payload["patch_is_inert"] is True
@@ -771,8 +790,7 @@ def test_raw_approval_payload_includes_structured_stage_6b_fields(
     assert isinstance(payload["commands_run"], list)
     # Should contain search_project_files records
     assert all(
-        cmd in ("search_project_files", "project_search")
-        or "_search" in cmd
+        cmd in ("search_project_files", "project_search") or "_search" in cmd
         for cmd in payload["commands_run"]
     ), f"commands_run: {payload['commands_run']}"
 
@@ -784,6 +802,7 @@ def test_raw_approval_payload_includes_structured_stage_6b_fields(
     assert "patch_preview" in payload
     assert payload["patch_preview"].startswith("diff --git ")
     assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _validate_persisted_replacement_payload(approval)
     _assert_real_inert_unified_diff(project_root, before, approval)
 
 
@@ -806,13 +825,14 @@ def test_raw_approval_payload_stage_6b_fields_for_thinking_animation(
 
     assert "selected_strategy" in payload
     assert payload["selected_strategy"] == "thinking_animation"
+    assert payload["applicator_contract_version"] == 1
 
     assert "touched_paths" in payload
     assert isinstance(payload["touched_paths"], list)
     assert payload["touched_paths"]  # not empty
 
     assert "patch_preview_kind" in payload
-    assert payload["patch_preview_kind"] in ("unified diff", "unified_diff")
+    assert payload["patch_preview_kind"] == "unified diff"
 
     assert "patch_is_inert" in payload
     assert payload["patch_is_inert"] is True
@@ -825,6 +845,7 @@ def test_raw_approval_payload_stage_6b_fields_for_thinking_animation(
     assert payload["files_modified"] == []
 
     assert ".bubble.thinking" in payload["patch_preview"]
+    _validate_persisted_replacement_payload(approval)
     assert run.tool_calls[-1]["name"] == "propose_code_change"
     _assert_real_inert_unified_diff(project_root, before, approval)
 
@@ -852,7 +873,7 @@ def test_raw_approval_payload_stage_6b_fields_for_tool_limit(
     assert payload["touched_paths"]
 
     assert "patch_preview_kind" in payload
-    assert payload["patch_preview_kind"] in ("unified diff", "unified_diff")
+    assert payload["patch_preview_kind"] == "unified diff"
 
     assert "patch_is_inert" in payload
     assert payload["patch_is_inert"] is True
@@ -864,4 +885,5 @@ def test_raw_approval_payload_stage_6b_fields_for_tool_limit(
     assert payload["files_modified"] == []
 
     assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _validate_persisted_replacement_payload(approval)
     _assert_real_inert_unified_diff(project_root, before, approval)

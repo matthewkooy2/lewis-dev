@@ -420,6 +420,7 @@ def create_code_proposal_if_supported(
         ],
         suggested_test_commands=[],
         extra_payload={
+            "applicator_contract_version": 1,
             "selected_strategy": proposal_kind,
             "touched_paths": [grounded_change.path],
             "patch_preview_kind": "unified diff",
@@ -1323,9 +1324,12 @@ def _failure_lead_in(
     lowered = reason.lower()
     if "destructive" in lowered or "storage-sensitive" in lowered:
         return _DESTRUCTIVE_LEAD_IN
-    if lowered.startswith(
-        "does not support material concepts removal/clear/undo/reset polarity"
-    ) or "removal/clear/undo/reset polarity" in lowered:
+    if (
+        lowered.startswith(
+            "does not support material concepts removal/clear/undo/reset polarity"
+        )
+        or "removal/clear/undo/reset polarity" in lowered
+    ):
         return (
             "Lewis found candidate project files and enough material evidence for "
             "the target surface, but the request asks to remove/clear/reset "
