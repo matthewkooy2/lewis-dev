@@ -14,6 +14,10 @@ _CODE_PROPOSAL_PATTERNS = (
         r"replace|update)\b.{0,120}\b(?:app|backend|behavior|bug|chat|code|"
         r"feature|frontend|lewis|ui)\b"
     ),
+    re.compile(
+        r"\b(?:make|create|plan)\b.{0,80}\bproposal\b.{0,120}"
+        r"\b(?:file discovery|find relevant files|project search|relevant files)\b"
+    ),
 )
 
 
@@ -151,20 +155,6 @@ def project_search_synthesized_answer(
 def is_code_proposal_request(user_input: str) -> bool:
     normalized = " ".join(user_input.lower().split())
     return any(pattern.search(normalized) for pattern in _CODE_PROPOSAL_PATTERNS)
-
-
-def is_direct_code_change_request(user_input: str) -> bool:
-    normalized = " ".join(user_input.lower().split())
-    return bool(
-        "code proposal" not in normalized
-        and re.search(
-            r"^(?:please\s+|can you\s+|could you\s+)?"
-            r"(?:add|build|change|create|fix|implement|modify|refactor|"
-            r"remove|replace|update)\b",
-            normalized,
-        )
-        and is_code_proposal_request(user_input)
-    )
 
 
 def near_duplicate_project_search(left: str, right: str) -> bool:

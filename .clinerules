@@ -1,0 +1,165 @@
+# Lewis Project Rules
+
+Project: Lewis
+Root: C:\Users\Example\Lewis
+Environment: Windows PowerShell, Python 3.11.9
+Virtual environment: .\.venv relative to the project root
+
+Always run commands from the project root:
+
+C:\Users\Example\Lewis
+
+Always run Python tools using the project venv explicitly:
+
+& .\.venv\Scripts\python.exe -m pytest
+& .\.venv\Scripts\python.exe -m ruff check .
+& .\.venv\Scripts\python.exe -m ruff format .
+
+Do not use ..\venv.
+Do not use ..venv.
+Do not use ...venv.
+Do not use .venv without the leading .\ in PowerShell commands.
+If PowerShell rejects an executable path, use the call operator: &
+
+## Safety Rules
+
+Lewis is local-first and safety-focused.
+
+Never modify, delete, reset, rebuild, rename, clear, or migrate SQLite data unless explicitly instructed.
+
+Do not add:
+
+* runtime shell command execution
+* runtime code execution
+* patch application
+* automatic runtime file editing
+* an executor
+* browser automation
+* external email/calendar actions
+* silent durable memory writes
+
+Code proposals must remain pending/review-only unless explicitly approved by the user.
+
+Patch previews and implementation diffs must be inert text only. They must never be applied automatically.
+
+Project search and project file reads must remain read-only and path-safe.
+
+Preserve:
+
+* memory transparency
+* approval-backed memory
+* ApprovalStore behavior
+* raw DSML/XML/function-call markup suppression
+* DeepSeek reasoning_content handling
+* dashboard behavior
+* tasks/calendar/email placeholder behavior
+* model profiles
+* existing SQLite data
+
+## Code Proposal Work
+
+Lewis code proposals are not considered working unless the pending approval includes a meaningful grounded inert unified diff.
+
+No grounded unified diff in the approval payload = code proposals are still broken.
+
+A grounded/applicable diff is not sufficient if it implements the wrong feature. A proposal strategy must match the full cleaned goal’s material concepts, state timing, and target surface before saving an approval.
+
+For code-proposal tasks:
+
+* prefer narrow, test-driven fixes
+* avoid broad refactors
+* do not add another parallel proposal path
+* every new production function should make an old proposal path removable or simpler
+* do not weaken, skip, or xfail tests unless explicitly instructed
+* do not claim Lewis can code unless the proposal includes an applicable inert unified diff
+* never save a `propose_code_change` approval without a grounded `patch_preview`
+* if no conservative grounded strategy matches, save no approval and explain why
+
+The replacement proposal engine should:
+
+1. detect explicit code proposal intent
+2. clean the requested goal
+3. classify material concepts, state timing, and target surface
+4. select a compatible proposal strategy
+5. select evidence-backed relevant files
+6. read actual file contents through safe read-only mechanisms
+7. generate an inert unified diff
+8. validate touched paths
+9. store the diff in the pending approval payload
+10. never apply the diff
+
+Important routing rule:
+Do not make “create a proposal” alone sufficient. It must either include “code proposal” explicitly, or include proposal framing plus a clear code/UI/app/chat behavior-change signal.
+
+Important strategy-selection rule:
+Do not select a proposal strategy from trigger words alone. The strategy must match the full cleaned goal.
+
+Examples:
+
+* A prompt mentioning “thinking” should not automatically use the thinking-animation strategy.
+* A prompt about a sidebar/dashboard/chat-icon status dot should not generate a `.bubble.thinking` patch.
+* A prompt about “maximum” in a sidebar/status badge should not use the backend setting-limit strategy.
+* A prompt about text color “after thinking is done” should not use the static chat-text-color strategy unless the patch actually implements that state condition.
+
+## Current Code Proposal State
+
+Supported grounded proposal types include:
+
+* chat text color CSS proposals
+* thinking/waiting animation CSS proposals
+* tool-use-limit integer/config proposals
+
+Known good manual prompts include:
+
+* and then I would like you to make a separate code proposal to make the text blue instead of black for this chat
+* make a code proposal to make a new animation for when youre thinking
+* also can you make a code proposal to make the text blue instead of black for this chat
+* make a code proposal to increase the tool use limit
+
+Expected behavior:
+These create real pending code proposals with clean goals and patch previews.
+
+Negative or unsupported prompts include:
+
+* create a proposal for dinner
+* make a code proposal to add teleportation mode
+* make a code proposal to clear all approved memories
+* make a code proposal to add a little status dot to the "chat" icon on the left side dashboard, that changes to blue when you are done thinking
+
+Expected behavior:
+These must not create a `propose_code_change` approval unless a correct grounded strategy exists. If no strategy matches, Lewis should return useful diagnostics and save no approval.
+
+## Testing Expectations
+
+For normal implementation work, run:
+
+& ..venv\Scripts\python.exe -m pytest -q
+& ..venv\Scripts\python.exe -m ruff check .
+
+For code proposal replacement work, also run focused tests when relevant:
+
+& ..venv\Scripts\python.exe -m pytest tests/test_code_proposal_replacement_contract.py -q
+& ..venv\Scripts\python.exe -m pytest tests/test_llm_session.py tests/test_code_proposal_patch_preview.py tests/test_tools.py tests/test_web.py -q
+
+Only run ruff format after making code changes:
+
+& ..venv\Scripts\python.exe -m ruff format .
+
+After running ruff format, rerun:
+
+& ..venv\Scripts\python.exe -m ruff check .
+& ..venv\Scripts\python.exe -m pytest -q
+
+## Response Expectations
+
+When reporting back, include:
+
+* files changed
+* files deleted, if any
+* tests run
+* tests passed/failed
+* behavior changed
+* behavior intentionally unchanged
+* safety constraints preserved
+
+Be direct. Do not overstate progress.
