@@ -237,7 +237,7 @@ def _infer_target_surface(goal: str, approach: str, files: list[str]) -> str:
     text = _searchable_text(goal, approach, *files)
     if _mentions_database_or_migration(text):
         return "database/migrations"
-    if _mentions_cli_terminal(text):
+    if _mentions_cli_terminal(text) and not _only_web_ui_files(files):
         return "CLI/terminal UI"
     if _mentions_command_center_ui(text):
         return "command center web UI"
@@ -352,6 +352,23 @@ def _mentions_ui(text: str) -> bool:
             "component",
             "visual",
         )
+    )
+
+
+_WEB_UI_FILE_SUFFIXES = (".css", ".html", ".js")
+
+
+def _only_web_ui_files(files: list[str]) -> bool:
+    """True when every relevant file is a web UI asset, so a goal that merely
+    mentions ASCII/terminal wording must not be reported as CLI/terminal UI."""
+    if not files:
+        return False
+    normalized_paths = [path.lower() for path in files]
+    return all(
+        path.startswith("app/static/")
+        or path.endswith(_WEB_UI_FILE_SUFFIXES)
+        or path.rsplit("/", 1)[-1].startswith("web_")
+        for path in normalized_paths
     )
 
 

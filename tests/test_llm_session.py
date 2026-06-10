@@ -2122,11 +2122,11 @@ def test_code_proposal_animation_prompt_creates_real_cleaned_approval(
     assert_no_unanswered_tool_calls(agent.messages)
 
 
-def test_proposal_involving_animated_character_creates_real_approval(
+def test_proposal_involving_animated_character_refuses_without_character_strategy(
     tmp_path,
 ):
-    """Prompt #3: 'create a proposal involving...' must create a real approval,
-    not an evidence-only response."""
+    """Prompt #3: an animated character request must refuse instead of saving
+    the generic CSS pulse patch, which cannot add any character/figure."""
     settings = make_settings(tmp_path)
     agent = make_agent_from_settings(settings)
     agent.client = FailIfCalledClient()
@@ -2138,35 +2138,21 @@ def test_proposal_involving_animated_character_creates_real_approval(
     run = agent.run(prompt)
 
     names = [record["name"] for record in run.tool_calls]
-    assert names[-1] == "propose_code_change"
+    assert "propose_code_change" not in names
     assert 1 <= names.count("search_project_files") <= 2
+    assert all(name == "search_project_files" for name in names)
 
-    proposal_result = run.tool_calls[-1]["result"]
-    assert proposal_result["ok"] is True
-    approval_id = proposal_result["approval_id"]
-    assert isinstance(approval_id, int)
-
-    approval = ApprovalStore(settings.database_path).get(approval_id)
-    assert approval is not None
-    assert approval.status == "pending"
-    assert approval.action_type == "propose_code_change"
+    assert ApprovalStore(settings.database_path).list(status="pending") == []
+    assert "No pending code proposal was saved." in run.answer
+    assert "person/avatar/character figure" in run.answer
     assert (
-        approval.payload.get("requested_goal", "")
-        == "Add an animated character thinking every time Lewis is thinking."
+        "No conservative strategy exists for ASCII/person/replacement "
+        "thinking-bubble content behavior" in run.answer
     )
-    assert approval.payload["relevant_files"]
-    assert "app/static/chat.js" in approval.payload["proposed_approach"]
-    assert "app/static/lewis.css" in approval.payload["proposed_approach"]
-    assert "thinking-bubble lifecycle" in approval.payload["proposed_approach"]
-
-    assert f"#{approval_id}" in run.answer
-    assert "Project search found" not in run.answer
-    assert "Project search did not find" not in run.answer
     assert "<function_calls>" not in run.answer
     assert "<invoke" not in run.answer
     assert "DSML" not in run.answer
     assert "read_file" not in run.answer
-    assert ".." not in run.answer
     assert_no_unanswered_tool_calls(agent.messages)
 
 

@@ -40,6 +40,15 @@ _DESTRUCTIVE_NO_FILES_LEAD_IN = (
     "confirmation plus verified storage semantics would be required before "
     "a safe proposal strategy can be attempted."
 )
+_UNSUPPORTED_THINKING_CONTENT_LEAD_IN = (
+    "Lewis found candidate project files, but the request asks for ASCII art, "
+    "a person/avatar/character figure, replacement of the current thinking "
+    "animation, or a thinking-bubble content/body change. No conservative "
+    "strategy exists for ASCII/person/replacement thinking-bubble content "
+    "behavior. The current thinking-animation strategy only safely adds a "
+    "bounded CSS waiting animation to the existing thinking bubble; it cannot "
+    "draw figures, replace the existing animation, or change bubble content."
+)
 PATCH_PREVIEW_REVIEW_ONLY_NOTE = (
     "The grounded patch preview is inert review-only text; Lewis does not apply it."
 )
@@ -170,6 +179,14 @@ _ANIMATION_MODIFIER_TERMS = frozenset(
         "subtle",
     }
 )
+_ASCII_ART_PATTERN = re.compile(r"\bascii\b")
+_CHARACTER_FIGURE_PATTERN = re.compile(
+    r"\b(?:person|persons|people|avatar|avatars|character|characters"
+    r"|figure|figures|mascot|mascots)\b"
+)
+_ANIMATION_REPLACEMENT_TRIGGER_TERMS = ("replace", "replacing", "swap", "instead of")
+_ANIMATION_REPLACEMENT_TARGET_TERMS = ("animation", "animated", "animate", "thinking")
+_BUBBLE_CONTENT_CHANGE_TERMS = ("content", "body", "inside")
 _SETTING_LIMIT_ENV_INT_PATTERN = re.compile(
     r"(?P<prefix>_env_int\(\s*(?P<quote>['\"])(?P<env_name>[A-Z0-9_]+)"
     r"(?P=quote)\s*,\s*)(?P<value>\d+)(?P<suffix>\s*\))"
@@ -210,6 +227,16 @@ _LIMIT_INCREASE_CONCEPT = "limit increase"
 _STATIC_LABEL_CONCEPT = "static label/caption"
 _REMOVAL_POLARITY_CONCEPT = "removal/clear/undo/reset polarity"
 _ANIMATION_MODIFIER_CONCEPT = "animation modifier/qualitative tuning"
+_ASCII_ART_CONCEPT = "ASCII art content"
+_CHARACTER_FIGURE_CONCEPT = "person/avatar/character figure"
+_ANIMATION_REPLACEMENT_CONCEPT = "replacement of the current animation"
+_BUBBLE_CONTENT_CONCEPT = "thinking-bubble content/body change"
+_UNSUPPORTED_THINKING_CONTENT_CONCEPTS = (
+    _ASCII_ART_CONCEPT,
+    _CHARACTER_FIGURE_CONCEPT,
+    _ANIMATION_REPLACEMENT_CONCEPT,
+    _BUBBLE_CONTENT_CONCEPT,
+)
 _CHAT_CONTENT_SURFACE = "chat content/message/bubble"
 _DASHBOARD_NAV_SURFACE = "dashboard/sidebar/navigation link or icon"
 _STATUS_INDICATOR_SURFACE = "status indicator"
@@ -291,6 +318,7 @@ _STRATEGY_SPECS = (
                 _STATUS_INDICATOR_CONCEPT,
                 _REMOVAL_POLARITY_CONCEPT,
                 _ANIMATION_MODIFIER_CONCEPT,
+                *_UNSUPPORTED_THINKING_CONTENT_CONCEPTS,
             }
         ),
         disqualifying_surfaces=frozenset(
@@ -607,6 +635,18 @@ def _goal_profile(requested_goal: str) -> _GoalProfile:
         term in normalized for term in _ANIMATION_MODIFIER_TERMS
     ):
         concepts.add(_ANIMATION_MODIFIER_CONCEPT)
+    if _ASCII_ART_PATTERN.search(normalized):
+        concepts.add(_ASCII_ART_CONCEPT)
+    if _CHARACTER_FIGURE_PATTERN.search(normalized):
+        concepts.add(_CHARACTER_FIGURE_CONCEPT)
+    if any(
+        term in normalized for term in _ANIMATION_REPLACEMENT_TRIGGER_TERMS
+    ) and any(term in normalized for term in _ANIMATION_REPLACEMENT_TARGET_TERMS):
+        concepts.add(_ANIMATION_REPLACEMENT_CONCEPT)
+    if "bubble" in normalized and any(
+        term in normalized for term in _BUBBLE_CONTENT_CHANGE_TERMS
+    ):
+        concepts.add(_BUBBLE_CONTENT_CONCEPT)
 
     dashboard_terms = ("dashboard", "sidebar", "navigation", "nav ", "left side")
     if any(term in normalized for term in dashboard_terms) or "chat icon" in normalized:
@@ -1337,6 +1377,11 @@ def _failure_lead_in(
             "thinking-animation strategies only safely add/set when grounded. "
             "An explicit removal/revert strategy is not currently available."
         )
+    if any(
+        concept.lower() in lowered
+        for concept in _UNSUPPORTED_THINKING_CONTENT_CONCEPTS
+    ):
+        return _UNSUPPORTED_THINKING_CONTENT_LEAD_IN
     if any(term in requested_goal.lower() for term in _DESTRUCTIVE_GOAL_TERMS):
         return _DESTRUCTIVE_LEAD_IN
     if _ANIMATION_MODIFIER_CONCEPT.lower() in lowered:

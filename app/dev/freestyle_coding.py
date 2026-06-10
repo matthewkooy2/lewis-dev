@@ -1,0 +1,1324 @@
+"""Developer-only freestyle coding job scaffold.
+
+Creates an isolated local branch and no-checkout worktree from the active
+checkout's committed HEAD. The no-checkout form prevents repository-defined
+checkout hooks and filters from executing. The proposal slice may call DeepSeek
+after materialization, and the generate-edits slice may ask DeepSeek for a
+validated structured edit bundle, but neither edits source files. The
+apply-edits slice deterministically applies one validated structured edit
+bundle inside the job's isolated worktree only. No slice runs checks, reads
+secrets, touches SQLite, or exposes itself through normal chat/runtime/web
+paths.
+
+Invocation:
+
+    python -m app.dev.freestyle_coding create --approve --goal "<goal>"
+    python -m app.dev.freestyle_coding list
+    python -m app.dev.freestyle_coding show <job-id>
+    python -m app.dev.freestyle_coding reapprove <job-id> --approve
+    python -m app.dev.freestyle_coding materialize <job-id>
+    python -m app.dev.freestyle_coding propose <job-id>
+    python -m app.dev.freestyle_coding generate-edits <job-id>
+    python -m app.dev.freestyle_coding apply-edits <job-id> <bundle.json>
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
+import io
+import json
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import subprocess
+import tarfile
+from typing import Any
+import uuid
+
+from app.code_proposal_path_safety import (
+    BLOCKED_FILE_NAMES,
+    BLOCKED_PATH_PARTS,
+    BLOCKED_SUFFIXES,
+    SECRET_NAME_PATTERN,
+)
+from app.config import ROOT_DIR
+
+MAX_GOAL_LENGTH = 10_000
+MAX_TITLE_LENGTH = 120
+MAX_MATERIALIZED_FILES = 20_000
+MAX_MATERIALIZED_FILE_BYTES = 5_000_000
+MAX_MATERIALIZED_TOTAL_BYTES = 100_000_000
+MAX_ARCHIVE_BYTES = 125_000_000
+MAX_ARCHIVE_PATHS_PER_COMMAND = 400
+DEV_STATE_DIR_NAME = ".lewis-dev"
+BRANCH_PREFIX = "lewis/freestyle-"
+_GIT_TIMEOUT_SECONDS = 60
+_WINDOWS_RESERVED_NAMES = {
+    "aux",
+    "clock$",
+    "con",
+    "conin$",
+    "conout$",
+    "nul",
+    "prn",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
+_ALLOWED_GIT_PREFIXES = (
+    ("git", "rev-parse", "--show-toplevel"),
+    ("git", "rev-parse", "HEAD"),
+    ("git", "rev-parse", "--abbrev-ref", "HEAD"),
+)
+_MATERIALIZATION_GIT_PREFIX = (
+    "git",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+)
+
+
+class FreestyleJobRefusedError(RuntimeError):
+    """Raised when a freestyle job request or setup operation is refused."""
+
+
+@dataclass(frozen=True)
+class GitCommandResult:
+    args: tuple[str, ...]
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+@dataclass(frozen=True)
+class GitBytesCommandResult:
+    args: tuple[str, ...]
+    returncode: int
+    stdout: bytes
+    stderr: str
+
+
+@dataclass(frozen=True)
+class SnapshotBlob:
+    path: str
+    object_id: str
+    mode: int
+
+
+@dataclass(frozen=True)
+class SnapshotPaths:
+    materialized: tuple[SnapshotBlob, ...]
+    omitted: tuple[str, ...]
+
+    @property
+    def materialized_paths(self) -> tuple[str, ...]:
+        return tuple(blob.path for blob in self.materialized)
+
+
+@dataclass(frozen=True)
+class FreestyleJob:
+    job_id: str
+    title: str
+    goal: str
+    branch: str
+    worktree_path: str
+    base_commit: str
+    status: str
+    created_at: str
+    updated_at: str
+    developer_approved: Any = None
+    errors: tuple[str, ...] = ()
+    materialization_status: str = "not_materialized"
+    materialization_started_at: str | None = None
+    materialized_at: str | None = None
+    materialized_file_count: int = 0
+    proposal_status: str = "not_proposed"
+    proposal_started_at: str | None = None
+    proposal_completed_at: str | None = None
+    proposal_artifact_path: str | None = None
+    proposal_inspected_file_count: int = 0
+    proposal_model: str | None = None
+    proposal_errors: tuple[str, ...] = ()
+    edit_generation_status: str = "not_generated"
+    edit_generation_started_at: str | None = None
+    edit_generation_completed_at: str | None = None
+    edit_generation_artifact_path: str | None = None
+    edit_bundle_path: str | None = None
+    edit_bundle_validation_status: str = "not_validated"
+    edit_bundle_candidate_file_count: int = 0
+    edit_generation_model: str | None = None
+    edit_generation_errors: tuple[str, ...] = ()
+    edit_apply_status: str = "not_applied"
+    edit_apply_started_at: str | None = None
+    edit_applied_at: str | None = None
+    edit_applied_file_count: int = 0
+    edit_artifact_path: str | None = None
+    edit_errors: tuple[str, ...] = ()
+
+    @property
+    def approval_state(self) -> str:
+        if self.developer_approved is True:
+            return "approved"
+        if self.developer_approved is False:
+            return "not_approved"
+        if self.developer_approved is None:
+            return "missing"
+        return "invalid"
+
+
+def create_freestyle_job(
+    goal: str,
+    *,
+    title: str | None = None,
+    developer_approved: bool = False,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Create one approved, local-only freestyle job scaffold."""
+    if developer_approved is not True:
+        raise FreestyleJobRefusedError(
+            "Explicit developer approval is required to create a freestyle job."
+        )
+    clean_goal = validate_goal(goal)
+    clean_title = validate_title(title, clean_goal)
+    root = (project_root or ROOT_DIR).resolve()
+    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
+    _require_state_inside_project(state, root)
+    _require_git_toplevel(root)
+    base_commit = _head_commit(root)
+
+    job_id = uuid.uuid4().hex
+    branch = f"{BRANCH_PREFIX}{job_id[:12]}"
+    worktree = state / "worktrees" / job_id
+    now = _utc_now()
+    job = FreestyleJob(
+        job_id=job_id,
+        title=clean_title,
+        goal=clean_goal,
+        branch=branch,
+        worktree_path=str(worktree),
+        base_commit=base_commit,
+        status="preparing",
+        created_at=now,
+        updated_at=now,
+        developer_approved=True,
+    )
+    _write_job(job, state)
+
+    result = _run_git(
+        [
+            "git",
+            "worktree",
+            "add",
+            "--no-checkout",
+            "-b",
+            branch,
+            str(worktree),
+            base_commit,
+        ],
+        root,
+    )
+    if result.returncode != 0:
+        failed = replace(
+            job,
+            status="error",
+            updated_at=_utc_now(),
+            errors=(_bounded_error(result.stderr or result.stdout),),
+        )
+        _write_job(failed, state)
+        raise FreestyleJobRefusedError(
+            f"Could not create isolated worktree for job {job_id}; "
+            "the error was recorded in local dev state."
+        )
+
+    ready = replace(job, status="ready", updated_at=_utc_now())
+    _write_job(ready, state)
+    return ready
+
+
+def reapprove_freestyle_job(
+    job_id: str,
+    *,
+    developer_approved: bool = False,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Explicitly reapprove one existing job by updating only its dev metadata."""
+    if developer_approved is not True:
+        raise FreestyleJobRefusedError(
+            "Explicit developer approval is required to reapprove a freestyle job."
+        )
+    root = (project_root or ROOT_DIR).resolve()
+    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
+    _require_state_inside_project(state, root)
+    job = get_freestyle_job(job_id, project_root=root, state_root=state)
+    approved = replace(job, developer_approved=True, updated_at=_utc_now())
+    _write_job(approved, state)
+    return approved
+
+
+def materialize_freestyle_job(
+    job_id: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Safely populate one existing no-checkout freestyle worktree."""
+    root = (project_root or ROOT_DIR).resolve()
+    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
+    _require_state_inside_project(state, root)
+    job = get_freestyle_job(job_id, project_root=root, state_root=state)
+    _require_explicit_developer_approval(job, "materialize")
+    _require_git_toplevel(root)
+    if job.status == "materialized" and job.materialization_status == "materialized":
+        raise FreestyleJobRefusedError(
+            f"Freestyle job {job_id!r} is already materialized."
+        )
+    if job.status != "ready" or job.materialization_status != "not_materialized":
+        raise FreestyleJobRefusedError(
+            f"Freestyle job {job_id!r} is not ready for materialization."
+        )
+
+    started = replace(
+        job,
+        status="materializing",
+        materialization_status="materializing",
+        materialization_started_at=_utc_now(),
+        updated_at=_utc_now(),
+        errors=(),
+    )
+    _write_job(started, state)
+    try:
+        worktree = _validated_job_worktree(started, root, state)
+        _require_empty_no_checkout_worktree(worktree)
+        snapshot_paths = _list_snapshot_paths(started.base_commit, root)
+        archives = _archive_snapshot(snapshot_paths.materialized, root)
+        archive_members = tuple(_preflight_archive(archive) for archive in archives)
+        materialized_paths = tuple(
+            path for members in archive_members for path in members
+        )
+        if set(materialized_paths) != set(snapshot_paths.materialized_paths):
+            raise FreestyleJobRefusedError(
+                "Git archive paths did not match the validated repository snapshot."
+            )
+        file_count = 0
+        for archive, members in zip(archives, archive_members):
+            file_count += _extract_preflighted_archive(archive, members, worktree)
+        _synchronize_materialized_worktree_index(
+            started, snapshot_paths, worktree, root, state
+        )
+    except (FreestyleJobRefusedError, OSError, tarfile.TarError) as exc:
+        failed = replace(
+            started,
+            status="materialization_error",
+            materialization_status="error",
+            updated_at=_utc_now(),
+            errors=(_bounded_error(str(exc), "Materialization failed."),),
+        )
+        _write_job(failed, state)
+        raise FreestyleJobRefusedError(
+            f"Could not materialize freestyle job {job_id}; "
+            "the error was recorded in local dev state."
+        ) from exc
+
+    completed_at = _utc_now()
+    materialized = replace(
+        started,
+        status="materialized",
+        materialization_status="materialized",
+        materialized_at=completed_at,
+        materialized_file_count=file_count,
+        updated_at=completed_at,
+        errors=(),
+    )
+    _write_job(materialized, state)
+    return materialized
+
+
+def propose_freestyle_job(
+    job_id: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+    deepseek_config: Any | None = None,
+    deepseek_client: Any | None = None,
+) -> FreestyleJob:
+    """Generate a structured DeepSeek proposal for one materialized job."""
+    from app.dev.freestyle_proposal import generate_freestyle_proposal
+
+    return generate_freestyle_proposal(
+        job_id,
+        project_root=project_root,
+        state_root=state_root,
+        deepseek_config=deepseek_config,
+        deepseek_client=deepseek_client,
+    )
+
+
+def apply_freestyle_edit_bundle(
+    job_id: str,
+    bundle_path: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Apply one structured edit bundle inside one materialized job worktree."""
+    from app.dev.freestyle_edit_bundle import apply_edit_bundle
+
+    return apply_edit_bundle(
+        job_id,
+        bundle_path,
+        project_root=project_root,
+        state_root=state_root,
+    )
+
+
+def generate_freestyle_edit_bundle(
+    job_id: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+    deepseek_config: Any | None = None,
+    deepseek_client: Any | None = None,
+) -> FreestyleJob:
+    """Generate and validate one DeepSeek edit bundle without applying it."""
+    from app.dev.freestyle_edit_generation import generate_edit_bundle
+
+    return generate_edit_bundle(
+        job_id,
+        project_root=project_root,
+        state_root=state_root,
+        deepseek_config=deepseek_config,
+        deepseek_client=deepseek_client,
+    )
+
+
+def validate_goal(goal: str) -> str:
+    if not isinstance(goal, str):
+        raise FreestyleJobRefusedError("Goal must be text.")
+    clean = goal.strip()
+    if not clean:
+        raise FreestyleJobRefusedError("Goal must not be empty.")
+    if len(clean) > MAX_GOAL_LENGTH:
+        raise FreestyleJobRefusedError(
+            f"Goal exceeds the maximum length of {MAX_GOAL_LENGTH} characters."
+        )
+    if "\x00" in clean:
+        raise FreestyleJobRefusedError("Goal must not contain NUL bytes.")
+    return clean
+
+
+def validate_title(title: str | None, goal: str) -> str:
+    if title is None:
+        return goal.splitlines()[0][:MAX_TITLE_LENGTH].strip()
+    if not isinstance(title, str):
+        raise FreestyleJobRefusedError("Title must be text.")
+    clean = title.strip()
+    if not clean:
+        return goal.splitlines()[0][:MAX_TITLE_LENGTH].strip()
+    if len(clean) > MAX_TITLE_LENGTH:
+        raise FreestyleJobRefusedError(
+            f"Title exceeds the maximum length of {MAX_TITLE_LENGTH} characters."
+        )
+    if any(character in clean for character in ("\x00", "\r", "\n")):
+        raise FreestyleJobRefusedError("Title must be a single line without NUL bytes.")
+    return clean
+
+
+def list_freestyle_jobs(
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> list[FreestyleJob]:
+    root = (project_root or ROOT_DIR).resolve()
+    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
+    _require_state_inside_project(state, root)
+    jobs_dir = _validated_jobs_dir(state, create=False)
+    if not jobs_dir.exists():
+        return []
+    jobs = [_read_job(path) for path in jobs_dir.glob("*.json")]
+    return sorted(jobs, key=lambda item: item.created_at, reverse=True)
+
+
+def get_freestyle_job(
+    job_id: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    _validate_job_id(job_id)
+    root = (project_root or ROOT_DIR).resolve()
+    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
+    _require_state_inside_project(state, root)
+    path = _validated_jobs_dir(state, create=False) / f"{job_id}.json"
+    if not path.is_file() or path.is_symlink():
+        raise FreestyleJobRefusedError(f"Freestyle job {job_id!r} was not found.")
+    return _read_job(path)
+
+
+def _run_git(args: list[str], root: Path) -> GitCommandResult:
+    """Run only the fixed git operations needed for worktree setup."""
+    completed = _run_git_bytes(args, root)
+    return GitCommandResult(
+        args=completed.args,
+        returncode=completed.returncode,
+        stdout=completed.stdout.decode("utf-8", errors="replace"),
+        stderr=completed.stderr,
+    )
+
+
+def _run_git_bytes(args: list[str], root: Path) -> GitBytesCommandResult:
+    """Run one constrained local Git operation, optionally returning binary output."""
+    command = tuple(args)
+    if not _is_allowed_git_command(command):
+        raise FreestyleJobRefusedError("Internal error: forbidden git operation.")
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return GitBytesCommandResult(command, 124, b"", "Git operation timed out.")
+    except OSError:
+        return GitBytesCommandResult(command, 1, b"", "Git operation could not start.")
+    return GitBytesCommandResult(
+        args=command,
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr.decode("utf-8", errors="replace"),
+    )
+
+
+def _run_materialization_git_bytes(
+    args: list[str],
+    worktree: Path,
+    *,
+    omitted_paths: tuple[str, ...] = (),
+) -> GitBytesCommandResult:
+    """Run one exact index-only Git operation inside a job worktree."""
+    command = tuple(args)
+    if not _is_allowed_materialization_git_command(command):
+        raise FreestyleJobRefusedError(
+            "Internal error: forbidden materialization git operation."
+        )
+    input_bytes: bytes | None = None
+    update_index = command == _MATERIALIZATION_GIT_PREFIX + (
+        "update-index",
+        "-z",
+        "--skip-worktree",
+        "--stdin",
+    )
+    if update_index:
+        if not omitted_paths:
+            raise FreestyleJobRefusedError(
+                "Internal error: omitted index paths are required."
+            )
+        for path in omitted_paths:
+            try:
+                validated = _validated_archive_member_path(path)
+            except FreestyleJobRefusedError as exc:
+                raise FreestyleJobRefusedError(
+                    "Internal error: invalid omitted index path."
+                ) from exc
+            if validated is not None:
+                raise FreestyleJobRefusedError(
+                    "Internal error: materialized paths cannot be skipped in the index."
+                )
+        input_bytes = b"".join(path.encode("utf-8") + b"\x00" for path in omitted_paths)
+    elif omitted_paths:
+        raise FreestyleJobRefusedError(
+            "Internal error: index paths are not allowed for this git operation."
+        )
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(worktree),
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return GitBytesCommandResult(command, 124, b"", "Git operation timed out.")
+    except OSError:
+        return GitBytesCommandResult(command, 1, b"", "Git operation could not start.")
+    return GitBytesCommandResult(
+        args=command,
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr.decode("utf-8", errors="replace"),
+    )
+
+
+def _run_git_blob_batch(
+    blobs: tuple[SnapshotBlob, ...], root: Path, *, check_only: bool = False
+) -> GitBytesCommandResult:
+    """Read exact committed blob bytes without checkout or attribute filters."""
+    command = ("git", "cat-file", "--batch-check" if check_only else "--batch")
+    if (
+        not blobs
+        or len(blobs) > MAX_ARCHIVE_PATHS_PER_COMMAND
+        or any(not _is_commit_id(blob.object_id) for blob in blobs)
+    ):
+        raise FreestyleJobRefusedError("Internal error: invalid git blob batch.")
+    input_bytes = b"".join(
+        blob.object_id.encode("ascii") + b"\n" for blob in blobs
+    )
+    try:
+        completed = subprocess.run(
+            list(command),
+            cwd=str(root),
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return GitBytesCommandResult(command, 124, b"", "Git operation timed out.")
+    except OSError:
+        return GitBytesCommandResult(command, 1, b"", "Git operation could not start.")
+    return GitBytesCommandResult(
+        args=command,
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr.decode("utf-8", errors="replace"),
+    )
+
+
+def _is_allowed_git_command(args: tuple[str, ...]) -> bool:
+    if args in _ALLOWED_GIT_PREFIXES:
+        return True
+    if (
+        len(args) == 6
+        and args[:5] == ("git", "ls-tree", "-r", "-z", "--full-tree")
+        and _is_commit_id(args[5])
+    ):
+        return True
+    return (
+        len(args) == 8
+        and args[:3] == ("git", "worktree", "add")
+        and args[3:5] == ("--no-checkout", "-b")
+        and args[5].startswith(BRANCH_PREFIX)
+        and len(args[5]) == len(BRANCH_PREFIX) + 12
+        and all(character in "0123456789abcdef" for character in args[5][-12:])
+        and _is_commit_id(args[7])
+    )
+
+
+def _is_allowed_materialization_git_command(args: tuple[str, ...]) -> bool:
+    suffix = args[len(_MATERIALIZATION_GIT_PREFIX) :]
+    if args[: len(_MATERIALIZATION_GIT_PREFIX)] != _MATERIALIZATION_GIT_PREFIX:
+        return False
+    if suffix == (
+        "update-index",
+        "-z",
+        "--skip-worktree",
+        "--stdin",
+    ):
+        return True
+    if suffix == ("ls-files", "-v", "-z"):
+        return True
+    return (
+        len(suffix) == 2
+        and suffix[0] == "read-tree"
+        and _is_commit_id(suffix[1])
+    ) or (
+        len(suffix) == 5
+        and suffix[:3] == ("diff-index", "--cached", "--quiet")
+        and _is_commit_id(suffix[3])
+        and suffix[4] == "--"
+    )
+
+
+def _require_git_toplevel(root: Path) -> None:
+    result = _run_git(["git", "rev-parse", "--show-toplevel"], root)
+    if result.returncode != 0:
+        raise FreestyleJobRefusedError(f"Project root {root} is not a git work tree.")
+    if Path(result.stdout.strip()).resolve() != root:
+        raise FreestyleJobRefusedError(f"Project root {root} is not the git top-level.")
+
+
+def _head_commit(root: Path) -> str:
+    result = _run_git(["git", "rev-parse", "HEAD"], root)
+    commit = result.stdout.strip()
+    if (
+        result.returncode != 0
+        or not _is_commit_id(commit)
+    ):
+        raise FreestyleJobRefusedError("Could not read a valid committed HEAD.")
+    return commit
+
+
+def _require_state_inside_project(state: Path, root: Path) -> None:
+    try:
+        state.relative_to(root)
+    except ValueError as exc:
+        raise FreestyleJobRefusedError(
+            "Freestyle dev state must stay inside the project root."
+        ) from exc
+    if state == root:
+        raise FreestyleJobRefusedError("Freestyle dev state cannot be the project root.")
+
+
+def _validated_job_worktree(job: FreestyleJob, root: Path, state: Path) -> Path:
+    expected = state / "worktrees" / job.job_id
+    supplied = Path(job.worktree_path)
+    if not supplied.is_absolute() or supplied != expected:
+        raise FreestyleJobRefusedError("Job worktree path does not match local dev state.")
+    if not expected.is_dir() or expected.is_symlink():
+        raise FreestyleJobRefusedError("Job worktree is missing or is a symlink.")
+    try:
+        expected.resolve(strict=True).relative_to(state)
+    except (OSError, ValueError) as exc:
+        raise FreestyleJobRefusedError(
+            "Job worktree must stay inside local dev state."
+        ) from exc
+    _require_git_toplevel(expected)
+    if _head_commit(expected) != job.base_commit:
+        raise FreestyleJobRefusedError("Job worktree HEAD does not match its base commit.")
+    branch = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], expected)
+    if branch.returncode != 0 or branch.stdout.strip() != job.branch:
+        raise FreestyleJobRefusedError("Job worktree branch does not match its metadata.")
+    if job.branch != f"{BRANCH_PREFIX}{job.job_id[:12]}":
+        raise FreestyleJobRefusedError("Job branch does not match its generated job id.")
+    if not _is_commit_id(job.base_commit):
+        raise FreestyleJobRefusedError("Job base commit is invalid.")
+    return expected
+
+
+def _require_empty_no_checkout_worktree(worktree: Path) -> None:
+    entries = list(worktree.iterdir())
+    if (
+        len(entries) != 1
+        or entries[0].name != ".git"
+        or entries[0].is_symlink()
+        or not entries[0].is_file()
+    ):
+        raise FreestyleJobRefusedError(
+            "Job worktree is already dirty or contains materialized files."
+        )
+
+
+def _list_snapshot_paths(commit: str, root: Path) -> SnapshotPaths:
+    result = _run_git_bytes(
+        ["git", "ls-tree", "-r", "-z", "--full-tree", commit],
+        root,
+    )
+    if result.returncode != 0:
+        raise FreestyleJobRefusedError(
+            _bounded_error(result.stderr, "Git tree listing failed.")
+        )
+    materialized_blobs: list[SnapshotBlob] = []
+    omitted_paths: list[str] = []
+    for raw_entry in result.stdout.split(b"\x00"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("ascii").split(" ")
+            path = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise FreestyleJobRefusedError(
+                "Git tree listing contained a malformed path entry."
+            ) from exc
+        if mode == "120000":
+            raise FreestyleJobRefusedError("Repository snapshot contains a symlink.")
+        if mode == "160000" or object_type == "commit":
+            raise FreestyleJobRefusedError("Repository snapshot contains a submodule.")
+        if mode not in {"100644", "100755"} or object_type != "blob":
+            raise FreestyleJobRefusedError(
+                "Repository snapshot contains an unsupported file type."
+            )
+        if not _is_commit_id(object_id):
+            raise FreestyleJobRefusedError(
+                "Git tree listing contained an invalid object id."
+            )
+        safe_path = _validated_archive_member_path(path)
+        if safe_path is None:
+            omitted_paths.append(path)
+        else:
+            materialized_blobs.append(
+                SnapshotBlob(
+                    path=safe_path,
+                    object_id=object_id,
+                    mode=0o755 if mode == "100755" else 0o644,
+                )
+            )
+    all_paths = [blob.path for blob in materialized_blobs] + omitted_paths
+    _require_non_conflicting_paths(all_paths)
+    if len(all_paths) > MAX_MATERIALIZED_FILES:
+        raise FreestyleJobRefusedError("Repository snapshot contains too many files.")
+    return SnapshotPaths(tuple(materialized_blobs), tuple(omitted_paths))
+
+
+def _synchronize_materialized_worktree_index(
+    job: FreestyleJob,
+    snapshot_paths: SnapshotPaths,
+    worktree: Path,
+    root: Path,
+    state: Path,
+) -> None:
+    read_tree = _run_materialization_git_bytes(
+        [*_MATERIALIZATION_GIT_PREFIX, "read-tree", job.base_commit],
+        worktree,
+    )
+    if read_tree.returncode != 0:
+        raise FreestyleJobRefusedError(
+            _bounded_error(read_tree.stderr, "Git index synchronization failed.")
+        )
+    if snapshot_paths.omitted:
+        skip_omitted = _run_materialization_git_bytes(
+            [
+                *_MATERIALIZATION_GIT_PREFIX,
+                "update-index",
+                "-z",
+                "--skip-worktree",
+                "--stdin",
+            ],
+            worktree,
+            omitted_paths=snapshot_paths.omitted,
+        )
+        if skip_omitted.returncode != 0:
+            raise FreestyleJobRefusedError(
+                _bounded_error(
+                    skip_omitted.stderr, "Git omitted-path index synchronization failed."
+                )
+            )
+
+    _validated_job_worktree(job, root, state)
+    index_diff = _run_materialization_git_bytes(
+        [
+            *_MATERIALIZATION_GIT_PREFIX,
+            "diff-index",
+            "--cached",
+            "--quiet",
+            job.base_commit,
+            "--",
+        ],
+        worktree,
+    )
+    if index_diff.returncode != 0:
+        raise FreestyleJobRefusedError(
+            _bounded_error(
+                index_diff.stderr, "Git index consistency verification failed."
+            )
+        )
+    _require_expected_materialized_index(snapshot_paths, worktree)
+
+
+def _require_expected_materialized_index(
+    snapshot_paths: SnapshotPaths, worktree: Path
+) -> None:
+    listed = _run_materialization_git_bytes(
+        [*_MATERIALIZATION_GIT_PREFIX, "ls-files", "-v", "-z"],
+        worktree,
+    )
+    if listed.returncode != 0:
+        raise FreestyleJobRefusedError(
+            _bounded_error(listed.stderr, "Git index path verification failed.")
+        )
+    expected = {
+        **{path: "H" for path in snapshot_paths.materialized_paths},
+        **{path: "S" for path in snapshot_paths.omitted},
+    }
+    actual: dict[str, str] = {}
+    for raw_entry in listed.stdout.split(b"\x00"):
+        if not raw_entry:
+            continue
+        try:
+            tag, raw_path = raw_entry.split(b" ", 1)
+            path = raw_path.decode("utf-8")
+            marker = tag.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise FreestyleJobRefusedError(
+                "Git index path verification returned malformed output."
+            ) from exc
+        if marker not in {"H", "S"} or path in actual:
+            raise FreestyleJobRefusedError(
+                "Git index path verification returned unexpected entries."
+            )
+        actual[path] = marker
+    if actual != expected:
+        raise FreestyleJobRefusedError(
+            "Git index paths do not match the materialized repository snapshot."
+        )
+
+    for path in snapshot_paths.materialized_paths:
+        target = worktree.joinpath(*PurePosixPath(path).parts)
+        if not target.is_file() or target.is_symlink():
+            raise FreestyleJobRefusedError(
+                "A materialized repository file is missing after index synchronization."
+            )
+    for path in snapshot_paths.omitted:
+        target = worktree.joinpath(*PurePosixPath(path).parts)
+        if target.exists() or target.is_symlink():
+            raise FreestyleJobRefusedError(
+                "An omitted repository path appeared during index synchronization."
+            )
+
+
+def _archive_snapshot(
+    blobs: tuple[SnapshotBlob, ...], root: Path
+) -> tuple[bytes, ...]:
+    archives: list[bytes] = []
+    total_archive_bytes = 0
+    total_blob_bytes = 0
+    for offset in range(0, len(blobs), MAX_ARCHIVE_PATHS_PER_COMMAND):
+        chunk = blobs[offset : offset + MAX_ARCHIVE_PATHS_PER_COMMAND]
+        checked = _run_git_blob_batch(chunk, root, check_only=True)
+        if checked.returncode != 0:
+            raise FreestyleJobRefusedError(
+                _bounded_error(checked.stderr, "Git blob size check failed.")
+            )
+        sizes = _parse_git_blob_batch_check(checked.stdout, chunk)
+        for size in sizes:
+            total_blob_bytes += size
+            if size > MAX_MATERIALIZED_FILE_BYTES:
+                raise FreestyleJobRefusedError(
+                    "Repository snapshot contains an oversized file."
+                )
+            if total_blob_bytes > MAX_MATERIALIZED_TOTAL_BYTES:
+                raise FreestyleJobRefusedError(
+                    "Repository snapshot exceeds the materialization size limit."
+                )
+        result = _run_git_blob_batch(chunk, root)
+        if result.returncode != 0:
+            raise FreestyleJobRefusedError(
+                _bounded_error(result.stderr, "Git blob extraction failed.")
+            )
+        contents = _parse_git_blob_batch(result.stdout, chunk, sizes)
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w") as archive:
+            for blob, content in zip(chunk, contents):
+                member = tarfile.TarInfo(blob.path)
+                member.mode = blob.mode
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+        payload = output.getvalue()
+        total_archive_bytes += len(payload)
+        if total_archive_bytes > MAX_ARCHIVE_BYTES:
+            raise FreestyleJobRefusedError(
+                "Git archive exceeds the materialization limit."
+            )
+        archives.append(payload)
+    return tuple(archives)
+
+
+def _parse_git_blob_batch_check(
+    output: bytes, blobs: tuple[SnapshotBlob, ...]
+) -> tuple[int, ...]:
+    raw_lines = output.splitlines()
+    if len(raw_lines) != len(blobs):
+        raise FreestyleJobRefusedError("Git blob size check returned malformed output.")
+    sizes: list[int] = []
+    for raw_line, blob in zip(raw_lines, blobs):
+        header = raw_line.split(b" ")
+        try:
+            object_id = header[0].decode("ascii")
+            object_type = header[1].decode("ascii")
+            size = int(header[2])
+        except (IndexError, UnicodeDecodeError, ValueError) as exc:
+            raise FreestyleJobRefusedError(
+                "Git blob size check returned malformed output."
+            ) from exc
+        if (
+            len(header) != 3
+            or object_id != blob.object_id
+            or object_type != "blob"
+            or size < 0
+        ):
+            raise FreestyleJobRefusedError(
+                "Git blob size check returned malformed output."
+            )
+        sizes.append(size)
+    return tuple(sizes)
+
+
+def _parse_git_blob_batch(
+    output: bytes, blobs: tuple[SnapshotBlob, ...], expected_sizes: tuple[int, ...]
+) -> tuple[bytes, ...]:
+    contents: list[bytes] = []
+    offset = 0
+    if len(blobs) != len(expected_sizes):
+        raise FreestyleJobRefusedError("Git blob extraction returned malformed output.")
+    for blob, expected_size in zip(blobs, expected_sizes):
+        header_end = output.find(b"\n", offset)
+        if header_end < 0:
+            raise FreestyleJobRefusedError("Git blob extraction returned malformed output.")
+        header = output[offset:header_end].split(b" ")
+        try:
+            object_id = header[0].decode("ascii")
+            object_type = header[1].decode("ascii")
+            size = int(header[2])
+        except (IndexError, UnicodeDecodeError, ValueError) as exc:
+            raise FreestyleJobRefusedError(
+                "Git blob extraction returned malformed output."
+            ) from exc
+        content_start = header_end + 1
+        content_end = content_start + size
+        if (
+            len(header) != 3
+            or object_id != blob.object_id
+            or object_type != "blob"
+            or size < 0
+            or size != expected_size
+            or content_end >= len(output)
+            or output[content_end : content_end + 1] != b"\n"
+        ):
+            raise FreestyleJobRefusedError("Git blob extraction returned malformed output.")
+        contents.append(output[content_start:content_end])
+        offset = content_end + 1
+    if offset != len(output):
+        raise FreestyleJobRefusedError("Git blob extraction returned malformed output.")
+    return tuple(contents)
+
+
+def _preflight_archive(archive: bytes) -> tuple[str, ...]:
+    safe_files: list[str] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as snapshot:
+        for member in snapshot:
+            path = _validated_archive_member_path(member.name)
+            if member.issym() or member.islnk():
+                raise FreestyleJobRefusedError("Repository archive contains a symlink.")
+            if not member.isfile() and not member.isdir():
+                raise FreestyleJobRefusedError(
+                    "Repository archive contains an unsupported file type."
+                )
+            if path is None or member.isdir():
+                continue
+            if member.mode & ~0o777:
+                raise FreestyleJobRefusedError(
+                    "Repository archive contains an unsupported file mode."
+                )
+            folded = path.casefold()
+            if folded in seen:
+                raise FreestyleJobRefusedError(
+                    "Repository archive contains duplicate file paths."
+                )
+            seen.add(folded)
+            if member.size > MAX_MATERIALIZED_FILE_BYTES:
+                raise FreestyleJobRefusedError(
+                    "Repository archive contains an oversized file."
+                )
+            total_bytes += member.size
+            if total_bytes > MAX_MATERIALIZED_TOTAL_BYTES:
+                raise FreestyleJobRefusedError(
+                    "Repository archive exceeds the materialization size limit."
+                )
+            safe_files.append(path)
+            if len(safe_files) > MAX_MATERIALIZED_FILES:
+                raise FreestyleJobRefusedError(
+                    "Repository archive contains too many files."
+                )
+    _require_non_conflicting_paths(safe_files)
+    return tuple(safe_files)
+
+
+def _require_non_conflicting_paths(paths: list[str]) -> None:
+    folded_paths = sorted(path.casefold() for path in paths)
+    if len(folded_paths) != len(set(folded_paths)):
+        raise FreestyleJobRefusedError(
+            "Repository snapshot contains duplicate file paths."
+        )
+    for previous, current in zip(folded_paths, folded_paths[1:]):
+        if current.startswith(previous + "/"):
+            raise FreestyleJobRefusedError(
+                "Repository snapshot contains a file and directory path conflict."
+            )
+
+
+def _validated_archive_member_path(raw_path: str) -> str | None:
+    raw_parts = raw_path.rstrip("/").split("/")
+    if (
+        not raw_path
+        or "\x00" in raw_path
+        or "\\" in raw_path
+        or any(ord(character) < 32 for character in raw_path)
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or any(
+            any(character in '<>:"|?*' for character in part)
+            or part.endswith((" ", "."))
+            or part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_NAMES
+            for part in raw_parts
+        )
+    ):
+        raise FreestyleJobRefusedError(
+            "Repository archive contains an invalid path or path traversal."
+        )
+    path = PurePosixPath(raw_path)
+    windows_path = PureWindowsPath(raw_path)
+    if path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        raise FreestyleJobRefusedError("Repository archive contains an absolute path.")
+    lowered = tuple(part.lower() for part in path.parts)
+    if ".git" in lowered:
+        raise FreestyleJobRefusedError("Repository archive attempted .git tampering.")
+    name = lowered[-1]
+    if (
+        any(part.startswith(".") or part in BLOCKED_PATH_PARTS for part in lowered)
+        or name in BLOCKED_FILE_NAMES
+        or path.suffix.lower() in BLOCKED_SUFFIXES
+        or any(SECRET_NAME_PATTERN.search(part) for part in path.parts)
+    ):
+        return None
+    return path.as_posix()
+
+
+def _extract_preflighted_archive(
+    archive: bytes, members: tuple[str, ...], worktree: Path
+) -> int:
+    allowed = set(members)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as snapshot:
+        for member in snapshot:
+            if member.name not in allowed:
+                continue
+            target = worktree.joinpath(*PurePosixPath(member.name).parts)
+            _require_safe_extraction_target(target, worktree)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _require_safe_extraction_target(target, worktree)
+            source = snapshot.extractfile(member)
+            if source is None:
+                raise FreestyleJobRefusedError("Could not read a repository archive file.")
+            with source, target.open("xb") as destination:
+                while chunk := source.read(64 * 1024):
+                    destination.write(chunk)
+            target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    return len(members)
+
+
+def _require_safe_extraction_target(target: Path, worktree: Path) -> None:
+    try:
+        target.relative_to(worktree)
+    except ValueError as exc:
+        raise FreestyleJobRefusedError(
+            "Repository archive attempted path traversal."
+        ) from exc
+    current = target.parent
+    while current != worktree:
+        if current.exists() and (current.is_symlink() or not current.is_dir()):
+            raise FreestyleJobRefusedError(
+                "Repository archive attempted a symlink or file escape."
+            )
+        if current.exists():
+            try:
+                current.resolve(strict=True).relative_to(worktree.resolve(strict=True))
+            except (OSError, ValueError) as exc:
+                raise FreestyleJobRefusedError(
+                    "Repository archive attempted a symlink or file escape."
+                ) from exc
+        current = current.parent
+    if target.exists() or target.is_symlink():
+        raise FreestyleJobRefusedError(
+            "Repository archive attempted to overwrite an existing path."
+        )
+
+
+def _write_job(job: FreestyleJob, state: Path) -> None:
+    jobs_dir = _validated_jobs_dir(state, create=True)
+    path = jobs_dir / f"{job.job_id}.json"
+    temporary = path.with_suffix(".json.tmp")
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise FreestyleJobRefusedError("Freestyle job metadata path is unsafe.")
+    if temporary.exists() or temporary.is_symlink():
+        raise FreestyleJobRefusedError("Freestyle job temporary metadata path is unsafe.")
+    temporary.write_text(
+        json.dumps(asdict(job), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _read_job(path: Path) -> FreestyleJob:
+    if path.is_symlink() or not path.is_file():
+        raise FreestyleJobRefusedError(f"Could not read freestyle job {path.stem!r}.")
+    try:
+        payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Freestyle job metadata must be an object.")
+        payload.setdefault("developer_approved", None)
+        payload["errors"] = tuple(payload.get("errors", ()))
+        payload.setdefault("materialization_status", "not_materialized")
+        payload.setdefault("materialization_started_at", None)
+        payload.setdefault("materialized_at", None)
+        payload.setdefault("materialized_file_count", 0)
+        payload.setdefault("proposal_status", "not_proposed")
+        payload.setdefault("proposal_started_at", None)
+        payload.setdefault("proposal_completed_at", None)
+        payload.setdefault("proposal_artifact_path", None)
+        payload.setdefault("proposal_inspected_file_count", 0)
+        payload.setdefault("proposal_model", None)
+        payload["proposal_errors"] = tuple(payload.get("proposal_errors", ()))
+        payload.setdefault("edit_generation_status", "not_generated")
+        payload.setdefault("edit_generation_started_at", None)
+        payload.setdefault("edit_generation_completed_at", None)
+        payload.setdefault("edit_generation_artifact_path", None)
+        payload.setdefault("edit_bundle_path", None)
+        payload.setdefault("edit_bundle_validation_status", "not_validated")
+        payload.setdefault("edit_bundle_candidate_file_count", 0)
+        payload.setdefault("edit_generation_model", None)
+        payload["edit_generation_errors"] = tuple(
+            payload.get("edit_generation_errors", ())
+        )
+        payload.setdefault("edit_apply_status", "not_applied")
+        payload.setdefault("edit_apply_started_at", None)
+        payload.setdefault("edit_applied_at", None)
+        payload.setdefault("edit_applied_file_count", 0)
+        payload.setdefault("edit_artifact_path", None)
+        payload["edit_errors"] = tuple(payload.get("edit_errors", ()))
+        return FreestyleJob(**payload)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise FreestyleJobRefusedError(f"Could not read freestyle job {path.stem!r}.") from exc
+
+
+def _validated_jobs_dir(state: Path, *, create: bool) -> Path:
+    jobs_dir = state / "jobs"
+    if create:
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+    if not jobs_dir.exists():
+        return jobs_dir
+    if jobs_dir.is_symlink() or not jobs_dir.is_dir():
+        raise FreestyleJobRefusedError("Freestyle job metadata directory is unsafe.")
+    try:
+        jobs_dir.resolve(strict=True).relative_to(state)
+    except (OSError, ValueError) as exc:
+        raise FreestyleJobRefusedError(
+            "Freestyle job metadata directory must stay inside local dev state."
+        ) from exc
+    return jobs_dir
+
+
+def _validate_job_id(job_id: str) -> None:
+    if (
+        not isinstance(job_id, str)
+        or len(job_id) != 32
+        or any(character not in "0123456789abcdef" for character in job_id)
+    ):
+        raise FreestyleJobRefusedError("Job id must be a 32-character lowercase hex id.")
+
+
+def _is_commit_id(value: str) -> bool:
+    return (
+        len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _bounded_error(text: str, fallback: str = "Git worktree creation failed.") -> str:
+    clean = " ".join(text.strip().split())
+    return (clean or fallback)[:500]
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _require_explicit_developer_approval(
+    job: FreestyleJob, operation: str
+) -> None:
+    if job.developer_approved is not True:
+        raise FreestyleJobRefusedError(
+            f"Freestyle job {job.job_id!r} cannot {operation}: explicit persisted "
+            f"developer approval is required; approval state is {job.approval_state}."
+        )
+
+
+def _print_job(job: FreestyleJob) -> None:
+    payload = asdict(job)
+    payload["approval_state"] = job.approval_state
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Manage developer-only freestyle jobs.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    create_parser = subparsers.add_parser("create", help="Create an isolated job.")
+    create_parser.add_argument("--goal", required=True)
+    create_parser.add_argument("--title")
+    create_parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="Confirm this developer explicitly approves creating the local job.",
+    )
+
+    subparsers.add_parser("list", help="List local freestyle jobs.")
+    show_parser = subparsers.add_parser("show", help="Show one local freestyle job.")
+    show_parser.add_argument("job_id")
+    reapprove_parser = subparsers.add_parser(
+        "reapprove", help="Explicitly reapprove one existing local freestyle job."
+    )
+    reapprove_parser.add_argument("job_id")
+    reapprove_parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="Confirm this developer explicitly reapproves the local job.",
+    )
+    materialize_parser = subparsers.add_parser(
+        "materialize", help="Safely populate one isolated job worktree."
+    )
+    materialize_parser.add_argument("job_id")
+    propose_parser = subparsers.add_parser(
+        "propose", help="Generate a DeepSeek-only proposal for one materialized job."
+    )
+    propose_parser.add_argument("job_id")
+    generate_parser = subparsers.add_parser(
+        "generate-edits",
+        help="Generate and validate a DeepSeek-only edit bundle without applying it.",
+    )
+    generate_parser.add_argument("job_id")
+    apply_parser = subparsers.add_parser(
+        "apply-edits",
+        help="Deterministically apply one structured edit bundle to one "
+        "materialized job worktree.",
+    )
+    apply_parser.add_argument("job_id")
+    apply_parser.add_argument("bundle_path")
+
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "create":
+            _print_job(
+                create_freestyle_job(
+                    args.goal,
+                    title=args.title,
+                    developer_approved=args.approve,
+                )
+            )
+        elif args.command == "list":
+            for job in list_freestyle_jobs():
+                _print_job(job)
+        elif args.command == "show":
+            _print_job(get_freestyle_job(args.job_id))
+        elif args.command == "reapprove":
+            _print_job(
+                reapprove_freestyle_job(
+                    args.job_id,
+                    developer_approved=args.approve,
+                )
+            )
+        elif args.command == "materialize":
+            _print_job(materialize_freestyle_job(args.job_id))
+        elif args.command == "propose":
+            _print_job(propose_freestyle_job(args.job_id))
+        elif args.command == "generate-edits":
+            _print_job(generate_freestyle_edit_bundle(args.job_id))
+        else:
+            _print_job(apply_freestyle_edit_bundle(args.job_id, args.bundle_path))
+    except FreestyleJobRefusedError as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

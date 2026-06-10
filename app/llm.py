@@ -6,11 +6,12 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from openai import BadRequestError, OpenAI
+from openai import BadRequestError
 
 from app.budget import BudgetManager
 from app.code_proposal_engine import create_code_proposal_if_supported
 from app.config import MISSING_API_KEY_MESSAGE, Settings
+from app.deepseek_client import create_deepseek_client
 from app.deepseek_messages import assistant_tool_call_api_message
 from app.logging_db import RunLogger
 from app.dashboard import format_dashboard_count_lines
@@ -202,7 +203,7 @@ class LewisAgent:
         self.latest_calendar_approval_id: int | None = None
         self.latest_memory_approval_id: int | None = None
         self.client = (
-            OpenAI(
+            create_deepseek_client(
                 api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url
             )
             if settings.has_api_key

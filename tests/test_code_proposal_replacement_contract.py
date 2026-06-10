@@ -887,3 +887,129 @@ def test_raw_approval_payload_stage_6b_fields_for_tool_limit(
     assert run.tool_calls[-1]["name"] == "propose_code_change"
     _validate_persisted_replacement_payload(approval)
     _assert_real_inert_unified_diff(project_root, before, approval)
+
+
+# --- Stage 6E: ASCII/person/replacement thinking-bubble content gating ---
+
+
+_ASCII_PERSON_PROMPT = (
+    "create a code proposal that adds an animation of an ASCII person "
+    "'thinking' in your little chat bubble to replace the current thinking "
+    "animation"
+)
+_NO_FILES_LEAD_IN_PREFIX = (
+    "Project search did not find enough relevant existing file content"
+)
+_ASCII_REFUSAL_PHRASE = (
+    "No conservative strategy exists for ASCII/person/replacement "
+    "thinking-bubble content behavior"
+)
+
+
+def test_ascii_person_thinking_animation_request_saves_no_approval(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(_ASCII_PERSON_PROMPT)
+
+    assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
+    assert "No pending code proposal was saved." in run.answer
+    assert "Candidate files found:" in run.answer
+    assert not run.answer.startswith(_NO_FILES_LEAD_IN_PREFIX)
+    # Refusal diagnostics name the strategy and the unsupported material concepts.
+    assert "chat thinking-animation strategy" in run.answer
+    assert "ASCII art content" in run.answer
+    assert "person/avatar/character figure" in run.answer
+    assert "replacement of the current animation" in run.answer
+    assert _ASCII_REFUSAL_PHRASE in run.answer
+    # No generic CSS pulse patch may leak into the refusal.
+    assert "lewis-thinking-pulse" not in run.answer.lower()
+    assert ".bubble.thinking" not in run.answer
+    # The refusal must not misreport a CLI/terminal surface for web evidence.
+    assert "CLI/terminal UI" not in run.answer
+    assert all(record["name"] == "search_project_files" for record in run.tool_calls)
+    assert _snapshot(project_root) == before
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "make a code proposal to replace the current thinking animation",
+        "make a code proposal to use a new animation instead of the current "
+        "thinking animation",
+        "make a code proposal to swap the current thinking animation for a new one",
+    ],
+)
+def test_replace_current_thinking_animation_prompts_refuse_and_save_no_approval(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(prompt)
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert approvals == [], f"Expected no approval for: {prompt}"
+    assert "No pending code proposal was saved." in run.answer
+    assert "Candidate files found:" in run.answer
+    assert not run.answer.startswith(_NO_FILES_LEAD_IN_PREFIX)
+    assert "chat thinking-animation strategy" in run.answer
+    assert "replacement of the current animation" in run.answer
+    assert _ASCII_REFUSAL_PHRASE in run.answer
+    assert "lewis-thinking-pulse" not in run.answer.lower()
+    assert ".bubble.thinking" not in run.answer
+    assert all(record["name"] == "search_project_files" for record in run.tool_calls)
+    assert _snapshot(project_root) == before
+
+
+def test_thinking_bubble_content_change_request_refuses_with_content_diagnostic(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(
+        "make a code proposal to change the thinking bubble content to an "
+        "animated ascii person"
+    )
+
+    assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
+    assert "No pending code proposal was saved." in run.answer
+    assert not run.answer.startswith(_NO_FILES_LEAD_IN_PREFIX)
+    assert "thinking-bubble content/body change" in run.answer
+    assert "ASCII art content" in run.answer
+    assert "person/avatar/character figure" in run.answer
+    assert _ASCII_REFUSAL_PHRASE in run.answer
+    assert _snapshot(project_root) == before
+
+
+def test_generic_supported_thinking_prompt_saves_web_surface_approval(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_strategy_collision_project(project_root)
+    before = _snapshot(project_root)
+    agent = _make_agent(tmp_path, project_root)
+
+    run = agent.run(
+        "make a code proposal to make a new animation for when youre thinking"
+    )
+
+    approvals = ApprovalStore(agent.settings.database_path).list(status="pending")
+    assert len(approvals) == 1
+    approval = approvals[0]
+    assert approval.payload["selected_strategy"] == "thinking_animation"
+    # A web CSS proposal must never be reported as CLI/terminal UI.
+    assert approval.payload["target_surface"] == "command center web UI"
+    assert ".bubble.thinking" in approval.payload["patch_preview"]
+    assert run.tool_calls[-1]["name"] == "propose_code_change"
+    _assert_real_inert_unified_diff(project_root, before, approval)

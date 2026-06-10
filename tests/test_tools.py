@@ -590,6 +590,31 @@ def test_code_proposal_explicit_terminal_ui_stays_terminal(tmp_path):
     )
 
 
+def test_code_proposal_ascii_goal_with_web_files_is_not_cli_terminal(tmp_path):
+    store = ApprovalStore(tmp_path / "test.sqlite3")
+    tools = ToolRegistry(DocumentSearch(tmp_path / "documents"), store)
+
+    result = tools.execute(
+        "propose_code_change",
+        {
+            "requested_goal": (
+                "Add an ASCII-style flourish to the chat bubble styling."
+            ),
+            "relevant_files": ["app/static/lewis.css", "app/static/chat.js"],
+            "proposed_approach": (
+                "Plan a conservative animation update to the web chat bubble "
+                "styles in the stylesheet."
+            ),
+        },
+    )
+
+    assert result["ok"] is True
+    item = store.get(result["approval_id"])
+    assert item is not None
+    # ASCII wording alone must not flip a web-asset-only proposal to CLI.
+    assert item.payload["target_surface"] == "command center web UI"
+
+
 def test_code_proposal_config_prefers_existing_app_config_over_missing_src(tmp_path):
     store = ApprovalStore(tmp_path / "test.sqlite3")
     tools = ToolRegistry(DocumentSearch(tmp_path / "documents"), store)
