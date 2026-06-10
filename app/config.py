@@ -104,7 +104,7 @@ def get_settings() -> Settings:
         user_name_configured=bool(user_name),
         database_path=Path(os.getenv("LEWIS_DB_PATH", DB_PATH)),
         documents_dir=DOCUMENTS_DIR,
-        max_tool_calls_per_request=_env_int("LEWIS_MAX_TOOL_CALLS", 5),
+        max_tool_calls_per_request=_env_int("LEWIS_MAX_TOOL_CALLS", 8),
         max_estimated_daily_cost=_env_float("LEWIS_MAX_DAILY_COST_USD", 1.00),
         price_per_1k_input_tokens=_env_float("DEEPSEEK_PRICE_PER_1K_INPUT", 0.0),
         price_per_1k_output_tokens=_env_float("DEEPSEEK_PRICE_PER_1K_OUTPUT", 0.0),
