@@ -121,7 +121,7 @@ def apply_approved_proposal(
             "application; refusing to apply."
         )
     _filesystem_preflight(revalidated.touched_paths, root)
-    patch_bytes = revalidated.patch_preview.encode("utf-8")
+    patch_bytes = _normalize_patch_terminator(revalidated.patch_preview)
 
     created = _run_git(["git", "checkout", "-b", branch_name], root)
     if created.returncode != 0:
@@ -281,6 +281,18 @@ def _filesystem_preflight(touched_paths: tuple[str, ...], root: Path) -> None:
             raise ApplyRefusedError(
                 f"Touched path {relative_path!r} resolves outside the project root."
             ) from exc
+
+
+def _normalize_patch_terminator(patch_preview: str) -> bytes:
+    """Encode the validated patch for git apply stdin, newline-terminated.
+
+    git apply treats a patch whose last line lacks a trailing newline as
+    "corrupt patch at <stdin>:N". Append exactly one "\\n" when missing;
+    the patch contents are never otherwise rewritten.
+    """
+    if not patch_preview.endswith("\n"):
+        patch_preview += "\n"
+    return patch_preview.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------

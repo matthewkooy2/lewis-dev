@@ -381,6 +381,130 @@ def test_apply_check_failure_returns_to_original_branch(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Patch stdin newline normalization
+# ---------------------------------------------------------------------------
+
+
+def test_applies_patch_preview_without_final_newline(tmp_path):
+    root = _init_repo(tmp_path)
+    store = _store(tmp_path)
+    patch_without_newline = PATCH.rstrip("\n")
+    assert not patch_without_newline.endswith("\n")
+    approval_id = _approved(store, _payload(patch_preview=patch_without_newline))
+
+    result = apply_approved_proposal(approval_id, store=store, project_root=root)
+
+    assert result.changed_files == (CSS_REL_PATH,)
+    content = (root / CSS_REL_PATH).read_text(encoding="utf-8")
+    assert "color: blue;" in content
+
+
+def test_patch_bytes_sent_to_git_apply_end_with_newline(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path)
+    store = _store(tmp_path)
+    approval_id = _approved(
+        store, _payload(patch_preview=PATCH.rstrip("\n"))
+    )
+
+    sent: list[tuple[tuple[str, ...], bytes]] = []
+    original_run_git = applicator._run_git
+
+    def recording_run_git(args, run_root, *, input_bytes=None):
+        if input_bytes is not None:
+            sent.append((tuple(args), input_bytes))
+        return original_run_git(args, run_root, input_bytes=input_bytes)
+
+    monkeypatch.setattr(applicator, "_run_git", recording_run_git)
+    apply_approved_proposal(approval_id, store=store, project_root=root)
+
+    apply_calls = [b for a, b in sent if a in (("git", "apply", "--check"), ("git", "apply"))]
+    assert len(apply_calls) == 2
+    for patch_bytes in apply_calls:
+        assert isinstance(patch_bytes, bytes)
+        assert patch_bytes.endswith(b"\n")
+        assert not patch_bytes.endswith(b"\n\n")
+        assert patch_bytes == PATCH.encode("utf-8")
+
+
+def test_patch_with_final_newline_is_not_double_terminated(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path)
+    store = _store(tmp_path)
+    approval_id = _approved(store, _payload())
+
+    sent: list[bytes] = []
+    original_run_git = applicator._run_git
+
+    def recording_run_git(args, run_root, *, input_bytes=None):
+        if input_bytes is not None:
+            sent.append(input_bytes)
+        return original_run_git(args, run_root, input_bytes=input_bytes)
+
+    monkeypatch.setattr(applicator, "_run_git", recording_run_git)
+    apply_approved_proposal(approval_id, store=store, project_root=root)
+
+    assert sent
+    for patch_bytes in sent:
+        assert patch_bytes == PATCH.encode("utf-8")
+
+
+def test_normalization_does_not_relax_malformed_patch_refusals(tmp_path):
+    # A trailing newline must be the only change; otherwise-broken patches
+    # still refuse at git apply --check.
+    root = _init_repo(tmp_path)
+    store = _store(tmp_path)
+    mismatched_patch = PATCH.replace("var(--ink)", "var(--wrong)").rstrip("\n")
+    approval_id = _approved(store, _payload(patch_preview=mismatched_patch))
+    with pytest.raises(ApplyRefusedError, match="git apply --check failed"):
+        apply_approved_proposal(approval_id, store=store, project_root=root)
+
+
+def test_no_newline_patch_runs_no_tests_or_payload_commands(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path)
+    store = _store(tmp_path)
+    approval_id = _approved(
+        store,
+        _payload(
+            patch_preview=PATCH.rstrip("\n"),
+            commands_run=["echo HACKED-RUN"],
+            suggested_test_commands=["echo HACKED-SUGGESTED", "pytest -q"],
+        ),
+    )
+
+    recorded: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(args, **kwargs):
+        recorded.append(list(args))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    result = apply_approved_proposal(approval_id, store=store, project_root=root)
+
+    assert result.tests_run == "none"
+    assert recorded
+    for args in recorded:
+        assert args[0] == "git"
+        joined = " ".join(args)
+        assert "echo" not in joined
+        assert "HACKED" not in joined
+        assert "pytest" not in joined
+        assert "ruff" not in joined
+
+
+def test_no_newline_patch_does_not_mutate_approval_status(tmp_path):
+    root = _init_repo(tmp_path)
+    store = _store(tmp_path)
+    approval_id = _approved(store, _payload(patch_preview=PATCH.rstrip("\n")))
+    before = store.get(approval_id)
+    apply_approved_proposal(approval_id, store=store, project_root=root)
+    after = store.get(approval_id)
+    assert after.status == "approved"
+    assert after.payload == before.payload
+    assert after.payload["patch_preview"] == PATCH.rstrip("\n")
+    assert after.updated_at == before.updated_at
+
+
+# ---------------------------------------------------------------------------
 # No tests run, no payload commands executed, no approval mutation
 # ---------------------------------------------------------------------------
 
