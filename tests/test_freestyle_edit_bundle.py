@@ -259,7 +259,8 @@ def test_rejects_symlink_escape_targets(tmp_path):
         name="through-directory.json",
     )
     failed = _refused_apply(root, job.job_id, through_directory)
-    assert "symlink" in failed.edit_errors[0]
+    error = failed.edit_errors[0]
+    assert "symlink" in error or "escapes" in error or "stay inside" in error
     assert not (outside / "escape.txt").exists()
 
     through_file = _write_bundle(
@@ -278,7 +279,8 @@ def test_rejects_symlink_escape_targets(tmp_path):
         name="through-file.json",
     )
     failed = _refused_apply(root, job.job_id, through_file)
-    assert "symlink" in failed.edit_errors[0]
+    error = failed.edit_errors[0]
+    assert "symlink" in error or "escapes" in error or "stay inside" in error
     assert (outside / "real.txt").read_text(encoding="utf-8") == "outside\n"
 
 

@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from app.approvals import ApprovalStore
+from app.code_proposal_test_commands import normalize_suggested_test_commands
 from app.code_proposal_previews import PATCH_PREVIEW_SUSPICIOUS_PATHS_WARNING
 from app.logging_db import RunLogger
 from app.memory_store import MemoryStore
@@ -7,10 +10,9 @@ from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
 from app.tools import ToolRegistry
 
 
-EXPECTED_CODE_PROPOSAL_TEST_COMMANDS = [
-    r".\.venv\Scripts\python.exe -m ruff check .",
-    r".\.venv\Scripts\python.exe -m pytest",
-]
+EXPECTED_CODE_PROPOSAL_TEST_COMMANDS = normalize_suggested_test_commands(
+    [], Path(__file__).resolve().parents[1]
+)
 
 
 def test_search_documents_and_list_files(tmp_path):

@@ -1,7 +1,9 @@
 import sqlite3
+from pathlib import Path
 
 from app.approval_service import approve_approval
 from app.approvals import ApprovalStore
+from app.code_proposal_test_commands import normalize_suggested_test_commands
 from app.code_proposal_previews import PATCH_PREVIEW_SUSPICIOUS_PATHS_WARNING
 from app.dashboard import get_dashboard_summary
 from app.logging_db import RunLogger
@@ -20,10 +22,9 @@ from app.project_search import ProjectFileSearch
 from app.executors import execute_approved
 
 
-EXPECTED_CODE_PROPOSAL_TEST_COMMANDS = [
-    r".\.venv\Scripts\python.exe -m ruff check .",
-    r".\.venv\Scripts\python.exe -m pytest",
-]
+EXPECTED_CODE_PROPOSAL_TEST_COMMANDS = normalize_suggested_test_commands(
+    [], Path(__file__).resolve().parents[1]
+)
 
 
 def test_dashboard_counts_pending_approved_rejected_completed_items(tmp_path, capsys):

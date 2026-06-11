@@ -6,9 +6,11 @@ checkout hooks and filters from executing. The proposal slice may call DeepSeek
 after materialization, and the generate-edits slice may ask DeepSeek for a
 validated structured edit bundle, but neither edits source files. The
 apply-edits slice deterministically applies one validated structured edit
-bundle inside the job's isolated worktree only. No slice runs checks, reads
-secrets, touches SQLite, or exposes itself through normal chat/runtime/web
-paths.
+bundle inside the job's isolated worktree only. The review slice
+deterministically persists a bounded read-only diff artifact. The run-checks
+slice executes only checks from a static in-code allowlist inside the isolated
+worktree with a sanitized environment. No slice reads secrets, touches SQLite,
+or exposes itself through normal chat/runtime/web paths.
 
 Invocation:
 
@@ -20,11 +22,14 @@ Invocation:
     python -m app.dev.freestyle_coding propose <job-id>
     python -m app.dev.freestyle_coding generate-edits <job-id>
     python -m app.dev.freestyle_coding apply-edits <job-id> <bundle.json>
+    python -m app.dev.freestyle_coding review <job-id>
+    python -m app.dev.freestyle_coding run-checks <job-id> [--check <check-id> ...]
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import io
@@ -154,6 +159,23 @@ class FreestyleJob:
     edit_applied_file_count: int = 0
     edit_artifact_path: str | None = None
     edit_errors: tuple[str, ...] = ()
+    review_status: str = "not_reviewed"
+    review_started_at: str | None = None
+    review_completed_at: str | None = None
+    review_artifact_path: str | None = None
+    review_changed_file_count: int = 0
+    review_errors: tuple[str, ...] = ()
+    checks_status: str = "not_run"
+    checks_started_at: str | None = None
+    checks_completed_at: str | None = None
+    checks_artifact_path: str | None = None
+    checks_selected_ids: tuple[str, ...] = ()
+    checks_passed_count: int = 0
+    checks_failed_count: int = 0
+    checks_timeout_count: int = 0
+    checks_infra_error_count: int = 0
+    checks_modified_worktree: bool = False
+    checks_errors: tuple[str, ...] = ()
 
     @property
     def approval_state(self) -> str:
@@ -390,6 +412,40 @@ def generate_freestyle_edit_bundle(
         state_root=state_root,
         deepseek_config=deepseek_config,
         deepseek_client=deepseek_client,
+    )
+
+
+def review_freestyle_job(
+    job_id: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Persist one deterministic, read-only review of an isolated job worktree."""
+    from app.dev.freestyle_review import generate_freestyle_review
+
+    return generate_freestyle_review(
+        job_id,
+        project_root=project_root,
+        state_root=state_root,
+    )
+
+
+def run_freestyle_checks(
+    job_id: str,
+    *,
+    check_ids: Sequence[str] | None = None,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Run only static allowlisted checks inside one isolated job worktree."""
+    from app.dev.freestyle_checks import run_freestyle_checks as run_checks
+
+    return run_checks(
+        job_id,
+        check_ids=check_ids,
+        project_root=project_root,
+        state_root=state_root,
     )
 
 
@@ -1175,6 +1231,23 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("edit_applied_file_count", 0)
         payload.setdefault("edit_artifact_path", None)
         payload["edit_errors"] = tuple(payload.get("edit_errors", ()))
+        payload.setdefault("review_status", "not_reviewed")
+        payload.setdefault("review_started_at", None)
+        payload.setdefault("review_completed_at", None)
+        payload.setdefault("review_artifact_path", None)
+        payload.setdefault("review_changed_file_count", 0)
+        payload["review_errors"] = tuple(payload.get("review_errors", ()))
+        payload.setdefault("checks_status", "not_run")
+        payload.setdefault("checks_started_at", None)
+        payload.setdefault("checks_completed_at", None)
+        payload.setdefault("checks_artifact_path", None)
+        payload["checks_selected_ids"] = tuple(payload.get("checks_selected_ids", ()))
+        payload.setdefault("checks_passed_count", 0)
+        payload.setdefault("checks_failed_count", 0)
+        payload.setdefault("checks_timeout_count", 0)
+        payload.setdefault("checks_infra_error_count", 0)
+        payload.setdefault("checks_modified_worktree", False)
+        payload["checks_errors"] = tuple(payload.get("checks_errors", ()))
         return FreestyleJob(**payload)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise FreestyleJobRefusedError(f"Could not read freestyle job {path.stem!r}.") from exc
@@ -1283,6 +1356,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     apply_parser.add_argument("job_id")
     apply_parser.add_argument("bundle_path")
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Persist a deterministic read-only diff review for one isolated job.",
+    )
+    review_parser.add_argument("job_id")
+    checks_parser = subparsers.add_parser(
+        "run-checks",
+        help="Run only static allowlisted checks inside one isolated job worktree.",
+    )
+    checks_parser.add_argument("job_id")
+    checks_parser.add_argument(
+        "--check",
+        action="append",
+        dest="check_ids",
+        metavar="CHECK_ID",
+        help="Allowlisted check id to run (repeatable); defaults to every "
+        "available allowlisted check.",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -1312,8 +1403,12 @@ def main(argv: list[str] | None = None) -> int:
             _print_job(propose_freestyle_job(args.job_id))
         elif args.command == "generate-edits":
             _print_job(generate_freestyle_edit_bundle(args.job_id))
-        else:
+        elif args.command == "apply-edits":
             _print_job(apply_freestyle_edit_bundle(args.job_id, args.bundle_path))
+        elif args.command == "review":
+            _print_job(review_freestyle_job(args.job_id))
+        else:
+            _print_job(run_freestyle_checks(args.job_id, check_ids=args.check_ids))
     except FreestyleJobRefusedError as exc:
         print(f"REFUSED: {exc}")
         return 1
