@@ -184,6 +184,7 @@ class FreestyleJob:
     proposal_started_at: str | None = None
     proposal_completed_at: str | None = None
     proposal_artifact_path: str | None = None
+    proposal_failure_artifact_path: str | None = None
     proposal_inspected_file_count: int = 0
     proposal_model: str | None = None
     proposal_errors: tuple[str, ...] = ()
@@ -194,6 +195,7 @@ class FreestyleJob:
     edit_bundle_path: str | None = None
     edit_bundle_validation_status: str = "not_validated"
     edit_bundle_candidate_file_count: int = 0
+    edit_bundle_goal_fit_warnings: tuple[str, ...] = ()
     edit_generation_model: str | None = None
     edit_generation_errors: tuple[str, ...] = ()
     edit_apply_status: str = "not_applied"
@@ -1356,6 +1358,7 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("proposal_started_at", None)
         payload.setdefault("proposal_completed_at", None)
         payload.setdefault("proposal_artifact_path", None)
+        payload.setdefault("proposal_failure_artifact_path", None)
         payload.setdefault("proposal_inspected_file_count", 0)
         payload.setdefault("proposal_model", None)
         payload["proposal_errors"] = tuple(payload.get("proposal_errors", ()))
@@ -1366,6 +1369,9 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("edit_bundle_path", None)
         payload.setdefault("edit_bundle_validation_status", "not_validated")
         payload.setdefault("edit_bundle_candidate_file_count", 0)
+        payload["edit_bundle_goal_fit_warnings"] = tuple(
+            payload.get("edit_bundle_goal_fit_warnings", ())
+        )
         payload.setdefault("edit_generation_model", None)
         payload["edit_generation_errors"] = tuple(
             payload.get("edit_generation_errors", ())
@@ -1511,7 +1517,7 @@ def _failed_artifact_path(command: str | None, job_id: str | None) -> str | None
     if job_id is None:
         return None
     artifact_fields = {
-        "propose": ("proposal_status", {"error"}, "proposal_artifact_path"),
+        "propose": ("proposal_status", {"error"}, "proposal_failure_artifact_path"),
         "generate-edits": (
             "edit_generation_status",
             {"error"},

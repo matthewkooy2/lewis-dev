@@ -16,15 +16,22 @@ from app.dev.freestyle_coding import (
     DEV_STATE_DIR_NAME,
     FreestyleJob,
     _bounded_error,
+    apply_freestyle_edit_bundle,
+    cleanup_freestyle_job,
     create_freestyle_job,
     get_freestyle_handoff,
     get_freestyle_job,
     list_freestyle_jobs,
     materialize_freestyle_job,
+    recover_freestyle_job,
+    review_freestyle_job,
+    run_freestyle_checks,
     run_freestyle_job,
 )
+from app.dev.freestyle_checks import CHECK_REGISTRY, CHECKS_BY_ID
 from app.dev.freestyle_policy import is_job_id
 from app.dev.freestyle_proposal import DeepSeekProposalConfig
+from app.dev.freestyle_run import _required_bundle_path
 from app.web_components import (
     empty_state_html,
     escape,
@@ -127,6 +134,156 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
             job_id, message="Default run stopped at the generated bundle boundary."
         )
 
+    @app.post("/dev/freestyle/{job_id}/apply")
+    async def apply_latest_generated_web(
+        request: Request, job_id: str
+    ) -> RedirectResponse:
+        fields = await _request_fields(request)
+        if set(fields) - {"confirm_apply"}:
+            return _redirect(
+                job_id,
+                error="Apply only accepts explicit confirmation for the latest generated bundle.",
+            )
+        if fields.get("confirm_apply") != "apply-latest-generated":
+            return _redirect(
+                job_id,
+                error="Explicit confirmation is required to apply the latest generated bundle.",
+            )
+        try:
+            root = _project_root(request)
+            job = get_freestyle_job(job_id, project_root=root)
+            bundle_path = _required_bundle_path(job, root / DEV_STATE_DIR_NAME)
+            apply_freestyle_edit_bundle(
+                job_id,
+                str(bundle_path),
+                project_root=root,
+            )
+        except Exception as exc:
+            return _redirect(job_id, error=_web_error(request, exc))
+        return _redirect(
+            job_id,
+            message="Applied the latest validated generated bundle to the isolated worktree.",
+        )
+
+    @app.post("/dev/freestyle/{job_id}/review")
+    async def review_freestyle_job_web(
+        request: Request, job_id: str
+    ) -> RedirectResponse:
+        if await _request_fields(request):
+            return _redirect(job_id, error="Review accepts no input fields.")
+        try:
+            review_freestyle_job(job_id, project_root=_project_root(request))
+        except Exception as exc:
+            return _redirect(job_id, error=_web_error(request, exc))
+        return _redirect(
+            job_id, message="Created a deterministic review of the isolated worktree."
+        )
+
+    @app.post("/dev/freestyle/{job_id}/run-checks")
+    async def run_freestyle_checks_web(
+        request: Request, job_id: str
+    ) -> RedirectResponse:
+        fields = await _request_fields(request)
+        if set(fields) - {"check_id"}:
+            return _redirect(
+                job_id, error="Run checks only accepts static backend check IDs."
+            )
+        try:
+            check_ids = _selected_check_ids(fields.get("check_id"))
+            run_freestyle_checks(
+                job_id,
+                check_ids=check_ids,
+                project_root=_project_root(request),
+            )
+        except Exception as exc:
+            return _redirect(job_id, error=_web_error(request, exc))
+        return _redirect(
+            job_id,
+            message=f"Completed allowlisted checks: {', '.join(check_ids)}.",
+        )
+
+    @app.post("/dev/freestyle/{job_id}/cleanup")
+    async def cleanup_freestyle_job_web(
+        request: Request, job_id: str
+    ) -> RedirectResponse:
+        fields = await _request_fields(request)
+        if set(fields) - {"confirm_cleanup", "discard_worktree_changes"}:
+            return _redirect(
+                job_id,
+                error="Cleanup only accepts cleanup and separate discard confirmations.",
+            )
+        if fields.get("confirm_cleanup") != "cleanup":
+            return _redirect(
+                job_id, error="Explicit confirmation is required to clean this job."
+            )
+        discard = fields.get("discard_worktree_changes")
+        if discard is not None and discard != "discard":
+            return _redirect(
+                job_id,
+                error="Dirty-worktree discard requires its separate explicit confirmation.",
+            )
+        try:
+            result = cleanup_freestyle_job(
+                job_id,
+                confirm=True,
+                discard_worktree_changes=discard == "discard",
+                project_root=_project_root(request),
+            )
+        except Exception as exc:
+            return _redirect(job_id, error=_web_error(request, exc))
+        return _redirect(
+            message=(
+                "Cleaned the selected local freestyle job. Result artifact: "
+                f"{result.get('artifact_path', 'not available')}."
+            )
+        )
+
+    @app.post("/dev/freestyle/{job_id}/recover")
+    async def recover_freestyle_job_web(
+        request: Request, job_id: str
+    ) -> RedirectResponse:
+        fields = await _request_fields(request)
+        if set(fields) - {"confirm_recover", "confirm_inconsistent"}:
+            return _redirect(
+                job_id,
+                error="Recovery only accepts recovery and stronger inconsistent-state confirmations.",
+            )
+        if fields.get("confirm_recover") != "recover":
+            return _redirect(
+                job_id, error="Explicit confirmation is required to recover stale state."
+            )
+        inconsistent = fields.get("confirm_inconsistent")
+        if inconsistent is not None and inconsistent != "verified-inconsistent":
+            return _redirect(
+                job_id,
+                error="Inconsistent-state recovery requires its stronger explicit confirmation.",
+            )
+        try:
+            job = get_freestyle_job(job_id, project_root=_project_root(request))
+            if (
+                job.edit_apply_status == "inconsistent"
+                and inconsistent != "verified-inconsistent"
+            ):
+                return _redirect(
+                    job_id,
+                    error=(
+                        "Inconsistent-state recovery requires confirmation that the "
+                        "isolated worktree was manually verified."
+                    ),
+                )
+            recover_freestyle_job(
+                job_id,
+                confirm=True,
+                confirm_inconsistent=inconsistent == "verified-inconsistent",
+                project_root=_project_root(request),
+            )
+        except Exception as exc:
+            return _redirect(job_id, error=_web_error(request, exc))
+        return _redirect(
+            job_id,
+            message="Recovered stale lock state to failed/error status; no work was marked successful.",
+        )
+
 
 def _page_response(
     request: Request,
@@ -214,9 +371,22 @@ async def _request_fields(request: Request) -> dict[str, object]:
         return data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
     decoded_body = raw_body.decode("utf-8", errors="ignore")
     return {
-        key: values[-1] if values else ""
+        key: values[0] if len(values) == 1 else tuple(values)
         for key, values in parse_qs(decoded_body, keep_blank_values=True).items()
     }
+
+
+def _selected_check_ids(value: object) -> tuple[str, ...]:
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    allowed = ", ".join(definition.check_id for definition in CHECK_REGISTRY)
+    if not values or values == (None,):
+        raise ValueError(f"Select at least one static backend check ID: {allowed}.")
+    if (
+        any(not isinstance(item, str) or item not in CHECKS_BY_ID for item in values)
+        or len(set(values)) != len(values)
+    ):
+        raise ValueError(f"Run checks accepts only static backend check IDs: {allowed}.")
+    return tuple(values)
 
 
 def freestyle_page(
@@ -253,6 +423,8 @@ def read_artifact_previews(
 ) -> dict[str, str]:
     previews: dict[str, str] = {}
     for label, reference in handoff.get("artifacts", {}).items():
+        if label == "proposal_failure":
+            continue
         safe_reference = safe_artifact_reference(reference)
         if safe_reference is not None:
             previews[label] = _read_artifact_preview(state_root, safe_reference)
@@ -296,7 +468,8 @@ def _error_notice(error: str) -> str:
         return ""
     return (
         "<div class='inline-error' role='alert'><strong>Freestyle action stopped</strong>"
-        f"<span>{escape(error)}</span></div>"
+        f"<span>{escape(error)}</span><details><summary>Raw backend error</summary>"
+        f"<pre class='patch-preview'>{escape(error)}</pre></details></div>"
     )
 
 
@@ -355,9 +528,10 @@ def _job_detail(
             field("isolated worktree", job.worktree_path),
             field("updated", job.updated_at),
             "</div>",
-            _allowed_actions(job, handoff),
+            _job_actions(job, handoff),
             "</section>",
             _stage_status(handoff),
+            _proposal_failure_diagnostics(handoff),
             _artifact_paths_and_previews(handoff, previews),
             _changed_files(handoff),
             _check_summary(handoff),
@@ -366,9 +540,33 @@ def _job_detail(
     )
 
 
-def _allowed_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
+def _proposal_failure_diagnostics(handoff: dict[str, Any]) -> str:
+    diagnostics = handoff.get("proposal_failure_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return ""
+    attempts = diagnostics.get("attempts", [])
+    items = "".join(
+        f"<li>Attempt {escape(item.get('attempt', ''))}: "
+        f"{escape(item.get('status', 'error'))}</li>"
+        for item in attempts
+        if isinstance(item, dict)
+    )
+    return (
+        "<section class='band'><h2>Proposal Failure Diagnostics</h2>"
+        f"<p>{escape(diagnostics.get('summary', 'Proposal generation failed.'))}</p>"
+        f"<div class='fields'>{field('artifact path', diagnostics.get('artifact_path', 'none'))}</div>"
+        f"{f'<ul>{items}</ul>' if items else ''}"
+        "<p class='muted'>Inspect the bounded diagnostics artifact before retrying. "
+        "Full model output is not displayed here.</p></section>"
+    )
+
+
+def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
     running = bool(handoff.get("blocked", {}).get("running_lock"))
-    actions = [
+    generated_bundle = (
+        handoff.get("artifacts", {}).get("generated_bundle") or "none available"
+    )
+    setup_actions = [
         f"<a class='button secondary' href='/dev/freestyle/{escape(job.job_id)}'>Refresh Status</a>"
     ]
     if (
@@ -377,7 +575,7 @@ def _allowed_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
         and job.materialization_status == "not_materialized"
         and not running
     ):
-        actions.append(
+        setup_actions.append(
             f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/materialize'>"
             "<button class='secondary' type='submit'>Materialize Isolated Worktree</button>"
             "</form>"
@@ -388,14 +586,113 @@ def _allowed_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
         and job.status in {"ready", "materialized"}
         and not running
     ):
-        actions.append(
+        setup_actions.append(
             f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/run'>"
             "<button type='submit'>Run To Generated Bundle</button></form>"
         )
+    return "".join(
+        [
+            "<div class='actions'>",
+            "".join(setup_actions),
+            "</div><p class='muted'>Run stops at the generated bundle boundary. "
+            "Every later action below is separate and manual.</p>",
+            "<section class='action-zone primary-zone'><h3>Primary Action</h3>",
+            "<p>Apply only the latest generated bundle through the deterministic "
+            "applier. It revalidates the generated reference and bundle, mutates "
+            "only the isolated worktree, and makes no model call.</p>",
+            f"<p class='action-target'>Current bundle: <code>{escape(generated_bundle)}</code></p>",
+            _goal_fit_warning_block(handoff),
+            f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/apply'>",
+            _confirmation(
+                "confirm_apply",
+                "apply-latest-generated",
+                "I explicitly confirm applying the latest generated bundle to the isolated worktree.",
+            ),
+            "<button type='submit'>Apply Latest Generated Bundle</button></form></section>",
+            "<section class='action-zone secondary-zone'><h3>Secondary Actions</h3>",
+            "<div class='secondary-actions'>",
+            f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/review'>"
+            "<p>Create a deterministic read-only review of the current isolated "
+            "worktree. This makes no model call.</p>"
+            "<button class='secondary' type='submit'>Review Current Worktree</button></form>",
+            _checks_form(job),
+            "</div></section>",
+            _danger_actions(job),
+        ]
+    )
+
+
+def _goal_fit_warning_block(handoff: dict[str, Any]) -> str:
+    warnings = [
+        warning
+        for warning in handoff.get("goal_fit_warnings", [])
+        if isinstance(warning, str) and warning
+    ]
+    if not warnings:
+        return ""
+    items = "".join(f"<li>{escape(warning)}</li>" for warning in warnings)
     return (
-        "<div class='actions'>" + "".join(actions) + "</div>"
-        "<p class='muted'>Run stops before apply, review, and checks. Apply, checks, "
-        "cleanup, and recovery are intentionally unavailable here.</p>"
+        "<div class='goal-fit-warnings' role='alert'>"
+        "<strong>Goal-fit warnings</strong>"
+        f"<ul>{items}</ul>"
+        "<p>Advisory only: the bundle passed structural and safety validation, "
+        "but it may not actually implement the goal. Review it before applying.</p>"
+        "</div>"
+    )
+
+
+def _confirmation(
+    name: str, value: str, label: str, *, required: bool = True
+) -> str:
+    required_attribute = " required" if required else ""
+    return (
+        "<label class='approval-check action-confirm'>"
+        f"<input type='checkbox' name='{escape(name)}' value='{escape(value)}'"
+        f"{required_attribute}>"
+        f"<span>{escape(label)}</span></label>"
+    )
+
+
+def _checks_form(job: FreestyleJob) -> str:
+    choices = "".join(
+        "<label class='check-choice'>"
+        f"<input type='checkbox' name='check_id' value='{escape(definition.check_id)}'>"
+        "<span>"
+        f"<strong>{escape(definition.check_id)}</strong>"
+        f"<small>{escape(definition.description)}</small>"
+        "</span></label>"
+        for definition in CHECK_REGISTRY
+    )
+    return (
+        f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/run-checks'>"
+        "<p>Run only selected static backend checks in the isolated worktree. "
+        "No command, arguments, executable, cwd, environment, or shell input is accepted.</p>"
+        f"<fieldset><legend>Allowlisted checks</legend>{choices}</fieldset>"
+        "<button class='secondary' type='submit'>Run Selected Checks</button></form>"
+    )
+
+
+def _danger_actions(job: FreestyleJob) -> str:
+    job_id = escape(job.job_id)
+    return (
+        "<details class='danger-zone'><summary>Advanced Maintenance And Danger Actions</summary>"
+        "<div class='danger-grid'>"
+        f"<form method='post' action='/dev/freestyle/{job_id}/recover'>"
+        "<h3>Recover Stale Lock State</h3>"
+        "<p class='warning'>Recovery clears only stale/inconsistent lock metadata "
+        "to failed or error states. It never marks interrupted work successful.</p>"
+        f"{_confirmation('confirm_recover', 'recover', 'I confirm this operation is abandoned and should be recovered to failed/error state.')}"
+        f"{_confirmation('confirm_inconsistent', 'verified-inconsistent', 'Stronger confirmation: I manually verified the isolated worktree before recovering inconsistent apply state.', required=False)}"
+        "<button class='warn' type='submit'>Recover Stale State</button></form>"
+        f"<form method='post' action='/dev/freestyle/{job_id}/cleanup'>"
+        "<h3>Cleanup Selected Job</h3>"
+        "<p class='warning'>Cleanup removes this validated isolated worktree, its "
+        "matching local freestyle branch, local artifacts, and job metadata. "
+        "It does not touch the main checkout or any remote.</p>"
+        f"{_confirmation('confirm_cleanup', 'cleanup', 'I explicitly confirm cleanup of this selected local freestyle job.')}"
+        f"{_confirmation('discard_worktree_changes', 'discard', 'Separate confirmation: discard unreviewed isolated-worktree changes or local commits if present.', required=False)}"
+        "<button class='warn' type='submit'>Cleanup Selected Job</button></form>"
+        "</div></details>"
     )
 
 

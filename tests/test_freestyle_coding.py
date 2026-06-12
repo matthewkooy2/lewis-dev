@@ -118,6 +118,35 @@ class _FakeDeepSeekClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+class _SequenceCompletions:
+    """Returns each content in turn, repeating the last one when exhausted."""
+
+    def __init__(self, contents: list[str]):
+        self.contents = list(contents)
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        content = self.contents[min(len(self.calls) - 1, len(self.contents) - 1)]
+        return SimpleNamespace(
+            model="deepseek-test-code",
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content=content))
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+            ),
+        )
+
+
+class _SequenceDeepSeekClient:
+    def __init__(self, contents: list[str]):
+        self.completions = _SequenceCompletions(contents)
+        self.chat = SimpleNamespace(completions=self.completions)
+
+
 def _materialized_job(root: Path, goal: str = "Improve the dev proposal flow."):
     job = create_freestyle_job(
         goal,
@@ -145,6 +174,12 @@ def _repository_file_snapshot(root: Path) -> dict[str, bytes]:
 
 def _job_metadata_path(root: Path, job_id: str) -> Path:
     return root / freestyle.DEV_STATE_DIR_NAME / "jobs" / f"{job_id}.json"
+
+
+def _proposal_failure_artifact(root: Path, job) -> dict:
+    assert job.proposal_failure_artifact_path
+    path = root / freestyle.DEV_STATE_DIR_NAME / job.proposal_failure_artifact_path
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _set_approval_marker(root: Path, job_id: str, value=...):
@@ -954,6 +989,7 @@ def test_proposal_uses_deepseek_only_path_and_persists_artifact_metadata(
     assert completed.proposal_started_at
     assert completed.proposal_completed_at
     assert completed.proposal_artifact_path
+    assert completed.proposal_failure_artifact_path is None
     assert completed.proposal_inspected_file_count > 0
     assert completed.proposal_model == "deepseek-test-code"
     assert completed.proposal_errors == ()
@@ -997,9 +1033,108 @@ def test_proposal_failure_persists_bounded_redacted_error_metadata(tmp_path):
     assert failed.proposal_started_at
     assert failed.proposal_completed_at
     assert failed.proposal_artifact_path is None
+    assert failed.proposal_failure_artifact_path
     assert failed.proposal_inspected_file_count > 0
     assert len(failed.proposal_errors[0]) <= 500
     assert api_key not in failed.proposal_errors[0]
+    artifact = _proposal_failure_artifact(root, failed)
+    assert artifact["source_mutation_performed"] is False
+    assert artifact["proposal_attempts"][0]["status"] == "provider_error"
+    assert api_key not in json.dumps(artifact)
+
+
+@pytest.mark.parametrize(
+    ("contents", "statuses"),
+    [
+        pytest.param(["", ""], ["empty_response", "empty_response"], id="empty"),
+        pytest.param(
+            ["not json", "still not json"],
+            ["invalid_json", "invalid_json"],
+            id="invalid-json",
+        ),
+    ],
+)
+def test_proposal_shape_failure_persists_attempt_diagnostics(
+    tmp_path, contents, statuses
+):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        propose_freestyle_job(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_deepseek_config(),
+            deepseek_client=_SequenceDeepSeekClient(contents),
+        )
+
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    artifact = _proposal_failure_artifact(root, failed)
+    assert failed.proposal_artifact_path is None
+    assert failed.proposal_failure_artifact_path
+    assert [item["status"] for item in artifact["proposal_attempts"]] == statuses
+    assert artifact["proposal_attempts"][1]["repair_retry"] is True
+    assert artifact["context_plan"]
+    assert artifact["context_summary"]["inspected_file_count"] > 0
+
+
+def test_unsafe_likely_path_failure_records_redacted_reason_without_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    unsafe = json.dumps(
+        {
+            "proposed_implementation_steps": ["Inspect the rejected path."],
+            "likely_files_to_edit": ["/Users/private/secret-token.txt"],
+            "risks_unknowns": [],
+            "suggested_allowlisted_checks": ["pytest"],
+        }
+    )
+    client = _FakeDeepSeekClient(content=unsafe)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        propose_freestyle_job(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_deepseek_config(),
+            deepseek_client=client,
+        )
+
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    attempt = _proposal_failure_artifact(root, failed)["proposal_attempts"][0]
+    assert len(client.completions.calls) == 1
+    assert attempt["status"] == "unsafe_likely_path"
+    assert attempt["validator_category"] == "absolute"
+    assert attempt["rejected_path_preview"] == "[REDACTED_ABSOLUTE]"
+    assert attempt["retry_skipped_reason"] == "safety_related"
+    assert "/Users/private" not in json.dumps(attempt)
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "category", "expected_preview"),
+    [
+        ("/Users/private/file.py", "absolute", "[REDACTED_ABSOLUTE]"),
+        ("secret-token.txt", "secrets", "[REDACTED_SECRETS]"),
+        ("src/control\nname.py", "control_character", '"src/control\\nname.py"'),
+    ],
+)
+def test_rejected_path_diagnostics_are_redacted_escaped_and_capped(
+    raw_path, category, expected_preview
+):
+    detail = proposal._rejected_path_detail(raw_path, category)
+
+    assert detail["validator_category"] == category
+    assert detail["rejected_path_preview"] == expected_preview
+    assert len(detail["rejected_path_preview"]) <= proposal.MAX_REJECTED_PATH_PREVIEW_CHARS
+
+
+def test_model_output_preview_redacts_sensitive_relative_paths_and_controls():
+    preview = proposal._redacted_preview(
+        'likely_files_to_edit=["config/secret-token.txt"]\nnext', ""
+    )
+
+    assert "secret-token.txt" not in preview
+    assert "[REDACTED_SENSITIVE_PATH]" in preview
+    assert "\\n" in preview
 
 
 def test_proposal_invalid_config_still_persists_bounded_failure_metadata(tmp_path):
@@ -1042,6 +1177,120 @@ def test_proposal_rejects_shell_package_manager_and_non_allowlisted_check_text(
             deepseek_client=_FakeDeepSeekClient(content=unsafe_content),
         )
 
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.proposal_status == "error"
+    assert failed.proposal_artifact_path is None
+
+
+def test_proposal_repairs_malformed_json_with_exactly_one_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _SequenceDeepSeekClient(["this is not json", _proposal_content()])
+
+    completed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_deepseek_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.proposal_status == "proposed"
+    assert len(client.completions.calls) == 2
+    repair_messages = client.completions.calls[1]["messages"]
+    assert [message["role"] for message in repair_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    repair_text = repair_messages[-1]["content"]
+    assert "previous_response_error" in repair_text
+    assert "required_response_schema" in repair_text
+    assert "JSON object only" in repair_text
+    artifact = json.loads(
+        (
+            root / freestyle.DEV_STATE_DIR_NAME / completed.proposal_artifact_path
+        ).read_text(encoding="utf-8")
+    )
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "invalid_json",
+        "ok",
+    ]
+    assert artifact["attempts"][1]["repair_retry"] is True
+    preview = artifact["attempts"][0]["model_output_preview"]
+    assert "this is not json" in preview
+    assert len(preview) <= 2_000
+
+
+def test_proposal_repair_retry_is_bounded_to_exactly_one_and_fails_closed(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _FakeDeepSeekClient(content="never valid json")
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        propose_freestyle_job(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_deepseek_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 2
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.proposal_status == "error"
+    assert failed.proposal_artifact_path is None
+    assert any("not valid JSON" in error for error in failed.proposal_errors)
+    assert all(len(error) <= 500 for error in failed.proposal_errors)
+
+
+@pytest.mark.parametrize(
+    "unsafe_payload",
+    [
+        pytest.param(
+            {
+                "proposed_implementation_steps": ["Run npm install before editing."],
+                "likely_files_to_edit": ["tracked.txt"],
+                "risks_unknowns": [],
+                "suggested_allowlisted_checks": ["pytest"],
+            },
+            id="forbidden_command",
+        ),
+        pytest.param(
+            {
+                "proposed_implementation_steps": ["Edit the escape file."],
+                "likely_files_to_edit": ["../escape.txt"],
+                "risks_unknowns": [],
+                "suggested_allowlisted_checks": ["pytest"],
+            },
+            id="unsafe_path",
+        ),
+        pytest.param(
+            {
+                "proposed_implementation_steps": ["Update the tracked file."],
+                "likely_files_to_edit": ["tracked.txt"],
+                "risks_unknowns": [],
+                "suggested_allowlisted_checks": ["curl"],
+            },
+            id="non_allowlisted_check",
+        ),
+    ],
+)
+def test_proposal_safety_failures_never_trigger_a_repair_retry(
+    tmp_path, unsafe_payload
+):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _FakeDeepSeekClient(content=json.dumps(unsafe_payload))
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        propose_freestyle_job(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_deepseek_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 1
     failed = get_freestyle_job(job.job_id, project_root=root)
     assert failed.proposal_status == "error"
     assert failed.proposal_artifact_path is None

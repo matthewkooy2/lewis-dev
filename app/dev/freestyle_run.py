@@ -408,6 +408,9 @@ def _persist_run_result(
         "completed_stages": list(completed_stages),
         "artifact_references": _artifact_references(job),
         "generated_bundle_validation_status": job.edit_bundle_validation_status,
+        "generated_bundle_goal_fit_warnings": list(
+            job.edit_bundle_goal_fit_warnings
+        ),
         "edits_applied": job.edit_apply_status == "applied",
         "edits_applied_by_run": edits_applied_by_run,
         "final_edit_apply_status": job.edit_apply_status,
@@ -468,6 +471,7 @@ def _write_run_artifact(
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
         "proposal": safe_artifact_reference(job.proposal_artifact_path),
+        "proposal_failure": safe_artifact_reference(job.proposal_failure_artifact_path),
         "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
         "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
         "applied_edits": safe_artifact_reference(job.edit_artifact_path),
@@ -478,18 +482,24 @@ def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
 
 def _human_next_steps(job: FreestyleJob, status: str) -> list[str]:
     if status == "failed":
-        return [
+        steps = [
             _RECOVERY_GUIDANCE,
             "Inspect the bounded run error and referenced stage artifacts.",
-            _NO_INTEGRATION_STATEMENT,
         ]
+        if job.proposal_failure_artifact_path:
+            steps.append("Inspect proposal diagnostics before retrying.")
+        steps.append(_NO_INTEGRATION_STATEMENT)
+        return steps
     steps: list[str] = []
     if job.edit_apply_status != "applied":
-        steps.extend(
-            [
-                f"Review the generated bundle at {job.edit_bundle_path!r}.",
-                "To apply it, rerun with --apply-latest-generated --confirm-apply.",
-            ]
+        steps.append(f"Review the generated bundle at {job.edit_bundle_path!r}.")
+        if job.edit_bundle_goal_fit_warnings:
+            steps.append(
+                "Inspect the recorded goal-fit warnings before applying; the "
+                "bundle may not actually implement the goal."
+            )
+        steps.append(
+            "To apply it, rerun with --apply-latest-generated --confirm-apply."
         )
     else:
         steps.append(f"Review the diff artifact at {job.review_artifact_path!r}.")

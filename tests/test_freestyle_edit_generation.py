@@ -124,6 +124,33 @@ class _FakeDeepSeekClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+class _SequenceCompletions:
+    """Returns each content in turn, repeating the last one when exhausted."""
+
+    def __init__(self, contents: list[str]):
+        self.contents = list(contents)
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        content = self.contents[min(len(self.calls) - 1, len(self.contents) - 1)]
+        return SimpleNamespace(
+            model="deepseek-test-code",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+            ),
+        )
+
+
+class _SequenceDeepSeekClient:
+    def __init__(self, contents: list[str]):
+        self.completions = _SequenceCompletions(contents)
+        self.chat = SimpleNamespace(completions=self.completions)
+
+
 def _materialized_job(root: Path):
     job = create_freestyle_job(
         "Update the sample value.",
@@ -418,6 +445,221 @@ def test_invalid_deepseek_output_fails_closed_and_records_bounded_errors(
     assert artifact["validation"]["errors"]
     assert _source_snapshot(Path(job.worktree_path)) == worktree_before
     assert _source_snapshot(root) == checkout_before
+
+
+def _generation_artifact(root: Path, job) -> dict:
+    return json.loads(
+        (
+            root / freestyle.DEV_STATE_DIR_NAME / job.edit_generation_artifact_path
+        ).read_text(encoding="utf-8")
+    )
+
+
+def test_root_bundle_records_no_normalization_and_single_valid_attempt(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _FakeDeepSeekClient(_bundle_content(job.job_id))
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert len(client.completions.calls) == 1
+    artifact = _generation_artifact(root, completed)
+    assert artifact["normalization"] == {"unwrapped_bundle_key": False}
+    assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
+
+
+def test_wrapped_bundle_key_is_normalized_validated_and_recorded(tmp_path):
+    """Regression for the Tetris/Shenanigans job: DeepSeek returned the bundle
+    wrapped in one top-level "bundle" key and validation failed with
+    "Edit bundle is missing required fields"."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    wrapped = json.dumps({"bundle": json.loads(_bundle_content(job.job_id))})
+    client = _FakeDeepSeekClient(wrapped)
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert completed.edit_bundle_validation_status == "valid"
+    assert len(client.completions.calls) == 1
+    artifact = _generation_artifact(root, completed)
+    assert artifact["normalization"] == {"unwrapped_bundle_key": True}
+    assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
+    persisted = json.loads(
+        (root / freestyle.DEV_STATE_DIR_NAME / completed.edit_bundle_path).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "bundle" not in persisted
+    assert persisted["schema_version"] == 1
+    assert persisted["job_id"] == job.job_id
+    assert persisted["operation_count"] == 1
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+@pytest.mark.parametrize(
+    "wrapper_factory",
+    [
+        pytest.param(
+            lambda bundle: {"bundle": {k: v for k, v in bundle.items() if k != "created_at"}},
+            id="invalid_nested_bundle",
+        ),
+        pytest.param(lambda bundle: {"data": bundle}, id="arbitrary_wrapper_key"),
+        pytest.param(lambda bundle: {"result": bundle}, id="result_wrapper_key"),
+        pytest.param(
+            lambda bundle: {"bundle": bundle, "metadata": {}},
+            id="multiple_top_level_keys",
+        ),
+        pytest.param(
+            lambda bundle: {"bundle": [bundle]}, id="non_object_bundle_value"
+        ),
+    ],
+)
+def test_unacceptable_wrapper_shapes_still_fail_closed(tmp_path, wrapper_factory):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    wrapped = json.dumps(wrapper_factory(json.loads(_bundle_content(job.job_id))))
+    client = _FakeDeepSeekClient(wrapped)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 2
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_generation_status == "error"
+    assert failed.edit_bundle_validation_status == "invalid"
+    assert failed.edit_bundle_path is None
+    assert "missing required fields" in failed.edit_generation_errors[0]
+    artifact = _generation_artifact(root, failed)
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "format_error",
+        "error",
+    ]
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_malformed_json_is_repaired_with_exactly_one_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _SequenceDeepSeekClient(
+        ["this is not json at all", _bundle_content(job.job_id)]
+    )
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert completed.edit_bundle_validation_status == "valid"
+    assert len(client.completions.calls) == 2
+    repair_messages = client.completions.calls[1]["messages"]
+    assert [message["role"] for message in repair_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    repair_text = repair_messages[-1]["content"]
+    assert "previous_response_error" in repair_text
+    assert "exact_edit_bundle_schema" in repair_text
+    assert "Output JSON only" in repair_text
+    artifact = _generation_artifact(root, completed)
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "format_error",
+        "valid",
+    ]
+    assert artifact["attempts"][1]["repair_retry"] is True
+    preview = artifact["attempts"][0]["model_output_preview"]
+    assert "this is not json at all" in preview
+    assert len(preview) <= 2_000
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "never valid json",
+        "```json\n{\"schema_version\": 1}\n```",
+    ],
+)
+def test_repair_retry_is_bounded_to_exactly_one_and_fails_closed(tmp_path, content):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    client = _FakeDeepSeekClient(content)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 2
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_generation_status == "error"
+    assert failed.edit_bundle_path is None
+    assert all(len(error) <= 500 for error in failed.edit_generation_errors)
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ["../escape.txt", ".env", "data/runtime.sqlite3", "run.sh"],
+)
+def test_unsafe_bundle_operations_never_trigger_a_repair_retry(
+    tmp_path, unsafe_path
+):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    bundle = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {"op": "create_file", "path": unsafe_path, "content": "x\n"}
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(bundle)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 1
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_generation_status == "error"
+    assert failed.edit_bundle_path is None
+    artifact = _generation_artifact(root, failed)
+    assert [record["status"] for record in artifact["attempts"]] == []
 
 
 def test_generation_uses_existing_deepseek_path_exact_schema_and_no_execution(

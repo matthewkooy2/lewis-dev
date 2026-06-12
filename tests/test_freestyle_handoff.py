@@ -186,6 +186,9 @@ def test_status_surfaces_every_latest_artifact_reference(tmp_path):
     job = _created_job(root)
     references = {
         "proposal_artifact_path": f"proposals/{job.job_id}/proposal.json",
+        "proposal_failure_artifact_path": (
+            f"proposals/{job.job_id}/proposal-failure.json"
+        ),
         "edit_bundle_path": f"edit-bundles/{job.job_id}/bundle-abc.json",
         "edit_generation_artifact_path": (
             f"edit-bundles/{job.job_id}/generation-abc.json"
@@ -201,6 +204,7 @@ def test_status_surfaces_every_latest_artifact_reference(tmp_path):
 
     assert status["artifacts"] == {
         "proposal": references["proposal_artifact_path"],
+        "proposal_failure": references["proposal_failure_artifact_path"],
         "generated_bundle": references["edit_bundle_path"],
         "edit_generation": references["edit_generation_artifact_path"],
         "applied_edit": references["edit_artifact_path"],
@@ -208,6 +212,47 @@ def test_status_surfaces_every_latest_artifact_reference(tmp_path):
         "checks": references["checks_artifact_path"],
         "orchestration_run": references["latest_run_artifact_path"],
     }
+
+
+def test_status_and_handoff_surface_bounded_proposal_failure_diagnostics(
+    tmp_path, monkeypatch, capsys
+):
+    root = _init_repo(tmp_path)
+    job = _created_job(root)
+    reference = f"proposals/{job.job_id}/proposal-failure.json"
+    artifact = root / freestyle.DEV_STATE_DIR_NAME / reference
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "proposal_attempts": [
+                    {"attempt": 1, "status": "empty_response"},
+                    {"attempt": 2, "status": "unsafe_likely_path"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _set_metadata(
+        root,
+        job.job_id,
+        proposal_status="error",
+        proposal_failure_artifact_path=reference,
+    )
+    monkeypatch.setattr(freestyle, "ROOT_DIR", root)
+
+    status = get_freestyle_handoff(job.job_id, project_root=root)
+    markdown = handoff.render_freestyle_handoff_markdown(status)
+    assert status["proposal_failure_diagnostics"]["artifact_path"] == reference
+    assert "attempt 1: empty_response" in status["proposal_failure_diagnostics"]["summary"]
+    assert "Proposal Failure Diagnostics" in markdown
+    assert "Inspect proposal diagnostics before retrying." in markdown
+
+    assert freestyle.main(["status", job.job_id, "--json"]) == 0
+    cli_status = json.loads(capsys.readouterr().out)
+    assert cli_status["proposal_failure_diagnostics"]["artifact_path"] == reference
+    assert freestyle.main(["show", job.job_id]) == 0
+    assert json.loads(capsys.readouterr().out)["proposal_failure_artifact_path"] == reference
 
 
 @pytest.mark.parametrize(

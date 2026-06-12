@@ -179,10 +179,49 @@ def test_populated_detail_renders_handoff_artifacts_and_escaped_bounded_preview(
     assert "[preview truncated]" in response.text
     assert len(response.text) < MAX_WEB_PREVIEW_CHARS + 40_000
     assert "does not commit, merge, push" in response.text
-    assert "/apply" not in response.text
-    assert "/cleanup" not in response.text
-    assert "/recover" not in response.text
-    assert "/run-checks" not in response.text
+    assert f"/dev/freestyle/{job.job_id}/apply" in response.text
+    assert f"/dev/freestyle/{job.job_id}/review" in response.text
+    assert f"/dev/freestyle/{job.job_id}/run-checks" in response.text
+    assert f"/dev/freestyle/{job.job_id}/cleanup" in response.text
+    assert f"/dev/freestyle/{job.job_id}/recover" in response.text
+    assert "Advanced Maintenance And Danger Actions" in response.text
+    assert "Raw backend error" not in response.text
+
+
+def test_web_surfaces_bounded_proposal_failure_summary_without_model_output(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    reference = f"proposals/{job.job_id}/proposal-failure.json"
+    artifact = root / freestyle.DEV_STATE_DIR_NAME / reference
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "proposal_attempts": [
+                    {
+                        "attempt": 1,
+                        "status": "unsafe_likely_path",
+                        "model_output_preview": "DO_NOT_RENDER_FULL_MODEL_OUTPUT",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _set_metadata(
+        root,
+        job.job_id,
+        proposal_status="error",
+        proposal_failure_artifact_path=reference,
+    )
+
+    response = _client(tmp_path, root).get(f"/dev/freestyle/{job.job_id}")
+
+    assert "Proposal Failure Diagnostics" in response.text
+    assert reference in response.text
+    assert "attempt 1: unsafe_likely_path" in response.text
+    assert "Full model output is not displayed here." in response.text
+    assert "DO_NOT_RENDER_FULL_MODEL_OUTPUT" not in response.text
 
 
 def test_default_run_uses_only_non_mutating_orchestration_flags(tmp_path, monkeypatch):
@@ -233,9 +272,7 @@ def test_materialize_route_uses_existing_isolated_operation_only(tmp_path):
     assert _git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
 
-def test_actions_reject_arbitrary_fields_and_forbidden_routes_do_not_exist(
-    tmp_path, monkeypatch
-):
+def test_actions_reject_arbitrary_fields_before_backend_calls(tmp_path, monkeypatch):
     root = _init_repo(tmp_path)
     job = _job(root)
     calls: list[str] = []
@@ -244,22 +281,34 @@ def test_actions_reject_arbitrary_fields_and_forbidden_routes_do_not_exist(
         calls.append("called")
         raise AssertionError("bounded action must not run")
 
-    monkeypatch.setattr(freestyle_web, "run_freestyle_job", forbidden)
+    for name in (
+        "apply_freestyle_edit_bundle",
+        "cleanup_freestyle_job",
+        "recover_freestyle_job",
+        "review_freestyle_job",
+        "run_freestyle_checks",
+        "run_freestyle_job",
+    ):
+        monkeypatch.setattr(freestyle_web, name, forbidden)
     client = _client(tmp_path, root)
 
-    rejected = client.post(
-        f"/dev/freestyle/{job.job_id}/run",
-        data={
-            "command": "git push",
-            "args": "--force",
-            "env": "SECRET=x",
-            "provider": "other",
-            "file_path": "/tmp/file",
-        },
-    )
-
-    assert "Default run accepts no input fields." in rejected.text
+    for suffix in ("run", "apply", "review", "run-checks", "cleanup", "recover"):
+        rejected = client.post(
+            f"/dev/freestyle/{job.job_id}/{suffix}",
+            data={
+                "command": "git push",
+                "args": "--force",
+                "git_args": "reset --hard",
+                "cwd": "/tmp",
+                "env": "SECRET=x",
+                "executable": "bash",
+                "provider": "other",
+                "shell": "true",
+            },
+        )
+        assert "Freestyle action stopped" in rejected.text
     assert calls == []
+
     malformed = client.post(
         f"/dev/freestyle/{job.job_id}/run",
         content=b"{not-json",
@@ -268,8 +317,248 @@ def test_actions_reject_arbitrary_fields_and_forbidden_routes_do_not_exist(
     assert "Default run accepts no input fields." in malformed.text
     assert calls == []
     assert client.get("/dev/freestyle?command=git+push").status_code == 400
-    for suffix in ("apply", "run-checks", "cleanup", "recover"):
-        assert client.post(f"/dev/freestyle/{job.job_id}/{suffix}").status_code == 404
+
+
+def test_action_routes_are_debug_only(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    normal = _client(tmp_path, root, debug=False)
+
+    for suffix in ("apply", "review", "run-checks", "cleanup", "recover"):
+        assert normal.post(f"/dev/freestyle/{job.job_id}/{suffix}").status_code == 404
+
+
+def test_apply_requires_confirmation_and_uses_validated_existing_applier(
+    tmp_path, monkeypatch
+):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[object] = []
+    bundle_path = root / freestyle.DEV_STATE_DIR_NAME / "bundle.json"
+
+    def fake_required_bundle(current_job, state_root):
+        calls.append(("validate", current_job.job_id, state_root))
+        return bundle_path
+
+    def fake_apply(job_id: str, path: str, **kwargs):
+        calls.append(("apply", job_id, path, kwargs))
+        return job
+
+    monkeypatch.setattr(freestyle_web, "_required_bundle_path", fake_required_bundle)
+    monkeypatch.setattr(freestyle_web, "apply_freestyle_edit_bundle", fake_apply)
+    client = _client(tmp_path, root)
+
+    refused = client.post(f"/dev/freestyle/{job.job_id}/apply")
+    assert "Explicit confirmation is required" in refused.text
+    assert calls == []
+
+    rejected = client.post(
+        f"/dev/freestyle/{job.job_id}/apply",
+        data={
+            "confirm_apply": "apply-latest-generated",
+            "bundle_path": "/tmp/untrusted.json",
+        },
+    )
+    assert "Apply only accepts explicit confirmation" in rejected.text
+    assert calls == []
+
+    response = client.post(
+        f"/dev/freestyle/{job.job_id}/apply",
+        data={"confirm_apply": "apply-latest-generated"},
+    )
+
+    assert "Applied the latest validated generated bundle" in response.text
+    assert calls == [
+        ("validate", job.job_id, root / freestyle.DEV_STATE_DIR_NAME),
+        ("apply", job.job_id, str(bundle_path), {"project_root": root}),
+    ]
+
+
+def test_apply_preflight_refusal_never_reaches_applier(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[str] = []
+
+    def refuse_bundle(*args, **kwargs):
+        raise FreestyleJobRefusedError("The latest generated bundle is invalid.")
+
+    def forbidden_apply(*args, **kwargs):
+        calls.append("applied")
+        raise AssertionError("invalid generated bundle must not reach the applier")
+
+    monkeypatch.setattr(freestyle_web, "_required_bundle_path", refuse_bundle)
+    monkeypatch.setattr(freestyle_web, "apply_freestyle_edit_bundle", forbidden_apply)
+
+    response = _client(tmp_path, root).post(
+        f"/dev/freestyle/{job.job_id}/apply",
+        data={"confirm_apply": "apply-latest-generated"},
+    )
+
+    assert "latest generated bundle is invalid" in response.text
+    assert calls == []
+
+
+def test_review_calls_deterministic_reviewer_only(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[tuple[str, Path]] = []
+
+    def fake_review(job_id: str, *, project_root: Path):
+        calls.append((job_id, project_root))
+        return job
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("review route must not call orchestration or a model path")
+
+    monkeypatch.setattr(freestyle_web, "review_freestyle_job", fake_review)
+    monkeypatch.setattr(freestyle_web, "run_freestyle_job", forbidden)
+
+    response = _client(tmp_path, root).post(
+        f"/dev/freestyle/{job.job_id}/review"
+    )
+
+    assert "Created a deterministic review" in response.text
+    assert calls == [(job.job_id, root)]
+
+
+def test_run_checks_accepts_only_static_backend_ids_before_execution(
+    tmp_path, monkeypatch
+):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[tuple[str, tuple[str, ...], Path]] = []
+
+    def fake_checks(job_id: str, *, check_ids, project_root: Path):
+        calls.append((job_id, check_ids, project_root))
+        return job
+
+    monkeypatch.setattr(freestyle_web, "run_freestyle_checks", fake_checks)
+    client = _client(tmp_path, root)
+
+    for value in ("git push --force", "pytest-freestyle; rm -rf /", ""):
+        refused = client.post(
+            f"/dev/freestyle/{job.job_id}/run-checks",
+            data={"check_id": value},
+        )
+        assert "only static backend check IDs" in refused.text
+        assert calls == []
+
+    response = client.post(
+        f"/dev/freestyle/{job.job_id}/run-checks",
+        content="check_id=pytest-freestyle&check_id=ruff-check",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    assert "Completed allowlisted checks: pytest-freestyle, ruff-check." in response.text
+    assert calls == [
+        (job.job_id, ("pytest-freestyle", "ruff-check"), root)
+    ]
+
+
+def test_cleanup_requires_confirmation_and_separate_discard_confirmation(
+    tmp_path, monkeypatch
+):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[dict[str, object]] = []
+
+    def fake_cleanup(job_id: str, **kwargs):
+        calls.append({"job_id": job_id, **kwargs})
+        return {"artifact_path": f"maintenance/{job_id}/cleanup-result.json"}
+
+    monkeypatch.setattr(freestyle_web, "cleanup_freestyle_job", fake_cleanup)
+    client = _client(tmp_path, root)
+
+    refused = client.post(f"/dev/freestyle/{job.job_id}/cleanup")
+    assert "Explicit confirmation is required" in refused.text
+    assert calls == []
+
+    bad_discard = client.post(
+        f"/dev/freestyle/{job.job_id}/cleanup",
+        data={
+            "confirm_cleanup": "cleanup",
+            "discard_worktree_changes": "yes",
+        },
+    )
+    assert "separate explicit confirmation" in bad_discard.text
+    assert calls == []
+
+    clean = client.post(
+        f"/dev/freestyle/{job.job_id}/cleanup",
+        data={"confirm_cleanup": "cleanup"},
+    )
+    discarded = client.post(
+        f"/dev/freestyle/{job.job_id}/cleanup",
+        data={
+            "confirm_cleanup": "cleanup",
+            "discard_worktree_changes": "discard",
+        },
+    )
+
+    assert "Result artifact: maintenance/" in clean.text
+    assert "Result artifact: maintenance/" in discarded.text
+    assert [call["discard_worktree_changes"] for call in calls] == [False, True]
+    assert all(call["confirm"] is True for call in calls)
+
+
+def test_recover_requires_confirmation_and_stronger_inconsistent_confirmation(
+    tmp_path, monkeypatch
+):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[dict[str, object]] = []
+
+    def fake_recover(job_id: str, **kwargs):
+        calls.append({"job_id": job_id, **kwargs})
+        return job
+
+    monkeypatch.setattr(freestyle_web, "recover_freestyle_job", fake_recover)
+    client = _client(tmp_path, root)
+
+    refused = client.post(f"/dev/freestyle/{job.job_id}/recover")
+    assert "Explicit confirmation is required" in refused.text
+    assert calls == []
+
+    ordinary = client.post(
+        f"/dev/freestyle/{job.job_id}/recover",
+        data={"confirm_recover": "recover"},
+    )
+    assert "no work was marked successful" in ordinary.text
+    assert calls == [
+        {
+            "job_id": job.job_id,
+            "confirm": True,
+            "confirm_inconsistent": False,
+            "project_root": root,
+        }
+    ]
+    calls.clear()
+
+    _set_metadata(root, job.job_id, edit_apply_status="inconsistent")
+    weak = client.post(
+        f"/dev/freestyle/{job.job_id}/recover",
+        data={"confirm_recover": "recover"},
+    )
+    assert "manually verified" in weak.text
+    assert calls == []
+
+    strong = client.post(
+        f"/dev/freestyle/{job.job_id}/recover",
+        data={
+            "confirm_recover": "recover",
+            "confirm_inconsistent": "verified-inconsistent",
+        },
+    )
+
+    assert "no work was marked successful" in strong.text
+    assert calls == [
+        {
+            "job_id": job.job_id,
+            "confirm": True,
+            "confirm_inconsistent": True,
+            "project_root": root,
+        }
+    ]
 
 
 def test_missing_deepseek_error_is_inline_without_traceback_or_secret(
@@ -298,6 +587,7 @@ def test_missing_deepseek_error_is_inline_without_traceback_or_secret(
     assert "[REDACTED]" in response.text
     assert secret not in response.text
     assert "Traceback" not in response.text
+    assert "Raw backend error" in response.text
 
 
 def test_detail_view_does_not_mutate_source_or_job_metadata(tmp_path):

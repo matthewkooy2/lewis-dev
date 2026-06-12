@@ -475,6 +475,19 @@ textarea { resize: vertical; }
 .inline-error { border: 1px solid var(--bad-line); background: var(--bad-soft); color: var(--bad); }
 .safety-notice p { margin: 0; color: var(--ink-soft); }
 
+.goal-fit-warnings {
+  display: grid;
+  gap: var(--sp-2);
+  padding: 11px 13px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  font-size: 14px;
+}
+.goal-fit-warnings strong { color: var(--warn); }
+.goal-fit-warnings ul { margin: 0; padding-left: 18px; }
+.goal-fit-warnings p { margin: 0; color: var(--ink-soft); }
+
 .freestyle-layout {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
@@ -512,6 +525,63 @@ textarea { resize: vertical; }
 .artifact-preview { margin-top: var(--sp-3); border-top: 1px solid var(--line-soft); padding-top: var(--sp-2); }
 .freestyle-handoff { margin-bottom: var(--sp-4); }
 .freestyle-handoff ul, .freestyle-handoff ol { margin: var(--sp-3) 0 0; padding-left: 20px; color: var(--ink-soft); }
+.action-zone {
+  display: grid;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+.action-zone h3, .danger-zone h3 { margin: 0; font-size: 15px; }
+.action-zone p, .danger-zone p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+.action-target code { overflow-wrap: anywhere; color: var(--ink); }
+.action-zone form, .danger-zone form { display: grid; gap: var(--sp-3); min-width: 0; }
+.secondary-actions, .danger-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+.secondary-actions form, .danger-zone form {
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  align-content: start;
+}
+.action-confirm { padding: var(--sp-2); border-radius: var(--radius-sm); background: white; }
+.check-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: start;
+  padding: var(--sp-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+.check-choice input { width: auto; margin-top: 3px; }
+.check-choice span { display: grid; gap: 2px; min-width: 0; }
+.check-choice small { color: var(--muted); font-size: var(--text-sm); font-weight: 500; }
+.action-zone fieldset {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.action-zone legend { color: var(--muted); font-size: var(--text-sm); font-weight: 800; }
+.danger-zone {
+  margin-top: var(--sp-4);
+  padding: var(--sp-3);
+  border: 1px solid var(--bad-line);
+  border-radius: var(--radius-sm);
+  background: var(--bad-soft);
+}
+.danger-zone summary { color: var(--bad); }
+.danger-grid { margin-top: var(--sp-3); }
 
 /* ---------- memories ---------- */
 
@@ -666,7 +736,8 @@ textarea { resize: vertical; }
   .metric strong { font-size: 22px; }
   .memory-card-header, .form-actions { display: grid; justify-content: stretch; }
   .memory-source { white-space: normal; }
-  .form-grid, .memory-review-grid, .search-form, .chat-form, .archive-form { grid-template-columns: 1fr; }
+  .form-grid, .memory-review-grid, .search-form, .chat-form, .archive-form,
+  .secondary-actions, .danger-grid { grid-template-columns: 1fr; }
   .table-scroll table { min-width: 640px; }
   .chat-log { max-height: none; }
   .bubble { max-width: 100%; }

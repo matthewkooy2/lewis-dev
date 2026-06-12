@@ -15,6 +15,7 @@ from app.dev.freestyle_coding import (
     _validated_job_worktree,
     get_freestyle_job,
 )
+from app.dev.freestyle_context_plan import BUDGET_OMISSION_REASONS
 from app.dev.freestyle_policy import NO_INTEGRATION_STATEMENT_HANDOFF
 from app.dev.freestyle_review import _read_changed_paths
 from app.dev.freestyle_state import resolved_roots
@@ -46,12 +47,18 @@ def get_freestyle_handoff(
     proposal = _read_optional_artifact(
         artifacts["proposal"], state, "proposal", errors
     )
+    proposal_failure = _read_optional_artifact(
+        artifacts["proposal_failure"], state, "proposal failure", errors
+    )
+    generation = _read_optional_artifact(
+        artifacts["edit_generation"], state, "edit generation", errors
+    )
     review = _read_optional_artifact(artifacts["review"], state, "review", errors)
     checks = _read_optional_artifact(artifacts["checks"], state, "checks", errors)
     changed_files = _changed_file_summary(job, root, state, review, errors)
     check_summary = _check_summary(job, checks)
     blocked = _blocked_summary(job, errors)
-    risks = _risk_summary(job, proposal, check_summary, blocked, errors)
+    risks = _risk_summary(job, proposal, generation, check_summary, blocked, errors)
 
     return {
         "job": {
@@ -62,6 +69,7 @@ def get_freestyle_handoff(
             "branch": job.branch,
             "worktree_path": job.worktree_path,
         },
+        "goal_fit_warnings": list(job.edit_bundle_goal_fit_warnings),
         "stages": {
             "materialize": job.materialization_status,
             "propose": job.proposal_status,
@@ -72,6 +80,9 @@ def get_freestyle_handoff(
             "run": job.latest_run_status,
         },
         "artifacts": artifacts,
+        "proposal_failure_diagnostics": _proposal_failure_summary(
+            artifacts["proposal_failure"], proposal_failure
+        ),
         "changed_files": changed_files,
         "checks": check_summary,
         "bounded_errors": errors[:MAX_HANDOFF_ERRORS],
@@ -106,6 +117,15 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         f"- **{name}:** {f'`{path}`' if path else 'none'}"
         for name, path in handoff["artifacts"].items()
     )
+    diagnostics = handoff.get("proposal_failure_diagnostics")
+    if diagnostics:
+        lines.extend(["", "## Proposal Failure Diagnostics", ""])
+        lines.append(f"- **Artifact:** `{diagnostics['artifact_path']}`")
+        lines.append(f"- **Summary:** {diagnostics['summary']}")
+        lines.extend(
+            f"- **Attempt {item['attempt']}:** {item['status']}"
+            for item in diagnostics["attempts"]
+        )
 
     changed = handoff["changed_files"]
     lines.extend(
@@ -144,6 +164,11 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
     if not blocked["reasons"]:
         lines.append("- none")
 
+    goal_fit_warnings = handoff.get("goal_fit_warnings", [])
+    if goal_fit_warnings:
+        lines.extend(["", "## Goal-Fit Warnings (Advisory)", ""])
+        lines.extend(f"- {warning}" for warning in goal_fit_warnings)
+
     lines.extend(["", "## Risks And Errors", ""])
     lines.extend(f"- {risk}" for risk in handoff["risks"])
     lines.extend(f"- Error: {error}" for error in handoff["bounded_errors"])
@@ -161,12 +186,52 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
         "proposal": safe_artifact_reference(job.proposal_artifact_path),
+        "proposal_failure": safe_artifact_reference(
+            job.proposal_failure_artifact_path
+        ),
         "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
         "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
         "applied_edit": safe_artifact_reference(job.edit_artifact_path),
         "review": safe_artifact_reference(job.review_artifact_path),
         "checks": safe_artifact_reference(job.checks_artifact_path),
         "orchestration_run": safe_artifact_reference(job.latest_run_artifact_path),
+    }
+
+
+def _proposal_failure_summary(
+    reference: str | None, artifact: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if reference is None:
+        return None
+    attempts: list[dict[str, Any]] = []
+    raw_attempts = artifact.get("proposal_attempts") if artifact is not None else None
+    if isinstance(raw_attempts, list):
+        for item in raw_attempts[:2]:
+            if not isinstance(item, dict):
+                continue
+            attempt = item.get("attempt")
+            status = item.get("status")
+            if isinstance(attempt, int) and isinstance(status, str):
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "status": status[:50],
+                        "validator_category": str(
+                            item.get("validator_category", "")
+                        )[:50],
+                    }
+                )
+    statuses = ", ".join(
+        f"attempt {item['attempt']}: {item['status']}" for item in attempts
+    )
+    return {
+        "artifact_path": reference,
+        "summary": (
+            f"Proposal generation failed ({statuses})."
+            if statuses
+            else "Proposal generation failed; inspect the bounded diagnostics artifact."
+        )[:500],
+        "attempts": attempts,
     }
 
 
@@ -325,6 +390,7 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
 def _risk_summary(
     job: FreestyleJob,
     proposal: dict[str, Any] | None,
+    generation: dict[str, Any] | None,
     checks: dict[str, Any],
     blocked: dict[str, Any],
     errors: list[str],
@@ -335,6 +401,11 @@ def _risk_summary(
         risks.extend(
             str(item)[:500] for item in proposal_risks if isinstance(item, str)
         )
+    risks.extend(
+        str(warning)[:500] for warning in job.edit_bundle_goal_fit_warnings
+    )
+    risks.extend(_context_plan_risks("proposal", proposal))
+    risks.extend(_context_plan_risks("edit-generation", generation))
     risks.extend(blocked["reasons"])
     if checks["modified_worktree"]:
         risks.append("The latest check run modified the isolated worktree.")
@@ -345,19 +416,54 @@ def _risk_summary(
     return list(dict.fromkeys(risks))
 
 
+def _context_plan_risks(label: str, artifact: dict[str, Any] | None) -> list[str]:
+    """Surface context-plan warnings and budget omissions from one artifact."""
+    if artifact is None:
+        return []
+    plan = artifact.get("context_plan")
+    if not isinstance(plan, dict):
+        return []
+    risks = [
+        f"The {label} context plan warned: {warning}"[:500]
+        for warning in plan.get("warnings", [])
+        if isinstance(warning, str)
+    ]
+    omitted = plan.get("omitted_priority_files")
+    if plan.get("priority_files_omitted_due_to_budget") and isinstance(omitted, list):
+        budget_paths = [
+            str(record.get("path", ""))
+            for record in omitted
+            if isinstance(record, dict)
+            and record.get("reason") in BUDGET_OMISSION_REASONS
+        ]
+        sample = ", ".join(budget_paths[:5]) or "see the artifact context plan"
+        risks.append(
+            f"Likely relevant files were omitted from {label} model context "
+            f"due to budget: {sample}."[:500]
+        )
+    return risks
+
+
 def _human_next_steps(job: FreestyleJob, blocked: dict[str, Any]) -> list[str]:
+    diagnostic_steps = (
+        ["Inspect proposal diagnostics before retrying."]
+        if job.proposal_failure_artifact_path
+        else []
+    )
     if job.approval_state != "approved":
         return [
+            *diagnostic_steps,
             "Explicitly reapprove the local job before advancing it.",
             _NO_INTEGRATION_STATEMENT,
         ]
     if blocked["running_lock"] or blocked["inconsistent_edit_state"]:
         return [
+            *diagnostic_steps,
             "Recover or verify the isolated worktree and job metadata before retrying.",
             "Inspect the bounded errors and latest artifacts.",
             _NO_INTEGRATION_STATEMENT,
         ]
-    steps: list[str] = []
+    steps: list[str] = list(diagnostic_steps)
     if job.materialization_status != "materialized":
         steps.append("Materialize the isolated job worktree.")
     elif job.edit_apply_status == "applied":
@@ -390,11 +496,14 @@ def _human_next_steps(job: FreestyleJob, blocked: dict[str, Any]) -> list[str]:
     ):
         steps.append("Generate and validate an edit bundle.")
     elif job.edit_apply_status != "applied":
-        steps.extend(
-            [
-                f"Review the generated bundle at {job.edit_bundle_path!r}.",
-                "Apply the reviewed bundle only with explicit developer confirmation.",
-            ]
+        steps.append(f"Review the generated bundle at {job.edit_bundle_path!r}.")
+        if job.edit_bundle_goal_fit_warnings:
+            steps.append(
+                "Inspect the recorded goal-fit warnings before applying; the "
+                "bundle may not actually implement the goal."
+            )
+        steps.append(
+            "Apply the reviewed bundle only with explicit developer confirmation."
         )
     steps.append(_NO_INTEGRATION_STATEMENT)
     return steps

@@ -400,6 +400,8 @@ def test_stage_failure_persists_bounded_run_artifact_and_metadata(tmp_path):
     assert artifact["status"] == "failed"
     assert artifact["errors"]
     assert artifact["stages"][-1]["status"] == "failed"
+    assert artifact["artifact_references"]["proposal_failure"]
+    assert "Inspect proposal diagnostics before retrying." in artifact["human_next_steps"]
     assert artifact["human_next_steps"]
 
 
