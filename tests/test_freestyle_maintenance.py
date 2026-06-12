@@ -84,6 +84,9 @@ def test_cleanup_status_is_read_only_and_reports_key_cases(tmp_path):
         latest_run_status="running",
         updated_at="2000-01-01T00:00:00+00:00",
     )
+    materialized_clean = freestyle.materialize_freestyle_job(
+        _job(root).job_id, project_root=root
+    )
     dirty = freestyle.materialize_freestyle_job(_job(root).job_id, project_root=root)
     (Path(dirty.worktree_path) / "tracked.txt").write_text(
         "dirty\n", encoding="utf-8"
@@ -103,9 +106,16 @@ def test_cleanup_status_is_read_only_and_reports_key_cases(tmp_path):
 
     assert by_id[clean.job_id]["cleanable"] is True
     assert by_id[clean.job_id]["dirty"] is False
+    assert by_id[clean.job_id]["worktree_state"] == "not_materialized_worktree"
+    assert by_id[clean.job_id]["worktree_not_checked_out"] is True
+    assert by_id[clean.job_id]["dirty_reason"] is None
     assert by_id[active.job_id]["active"] is True
     assert by_id[active.job_id]["stale"] is True
+    assert by_id[materialized_clean.job_id]["worktree_state"] == "materialized_worktree"
+    assert by_id[materialized_clean.job_id]["dirty"] is False
     assert by_id[dirty.job_id]["dirty"] is True
+    assert by_id[dirty.job_id]["worktree_state"] == "materialized_worktree"
+    assert by_id[dirty.job_id]["dirty_reason"] == "user_reviewable_worktree_changes"
     assert by_id[orphan_id]["orphaned"] is True
     assert by_id[orphan_id]["cleanable"] is False
     state_after = {
@@ -114,6 +124,42 @@ def test_cleanup_status_is_read_only_and_reports_key_cases(tmp_path):
         if path.is_file() and not path.is_symlink()
     }
     assert state_after == state_before
+
+
+def test_ready_no_checkout_worktree_status_and_cleanup_are_safe(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    worktree = Path(job.worktree_path)
+
+    raw_status = _git(worktree, "status", "--short")
+    assert "tracked.txt" in raw_status
+    status = next(
+        item
+        for item in maintenance.get_freestyle_cleanup_status(project_root=root)
+        if item["job_id"] == job.job_id
+    )
+
+    assert status["worktree_state"] == "not_materialized_worktree"
+    assert status["worktree_not_checked_out"] is True
+    assert status["dirty"] is False
+    assert status["dirty_paths"] == []
+    assert "no-checkout worktree" in status["recommended_manual_action"]
+
+    result = maintenance.cleanup_freestyle_job(
+        job.job_id, confirm=True, project_root=root
+    )
+
+    assert result["cleanup_mode"] == "normal"
+    assert result["worktree_removal_mode"] == "forced_not_materialized_worktree"
+    assert not worktree.exists()
+    assert not _metadata_path(root, job.job_id).exists()
+    artifact = json.loads(
+        _maintenance_artifacts(root, job.job_id)[-1].read_text(encoding="utf-8")
+    )
+    assert artifact["cleanup_mode"] == "normal"
+    assert artifact["worktree_removal_mode"] == "forced_not_materialized_worktree"
+    remove = artifact["git_operations_attempted"][0]["args"]
+    assert remove[-3:] == ["remove", "--force", str(worktree)]
 
 
 def test_cleanup_requires_confirmation_and_refuses_active_state(tmp_path):
@@ -148,6 +194,46 @@ def test_cleanup_refuses_dirty_worktree_without_explicit_discard(tmp_path):
     assert _git(root, "branch", "--list", job.branch).removeprefix("+ ") == job.branch
 
 
+def test_cleanup_removes_clean_materialized_worktree_normally(tmp_path):
+    root = _init_repo(tmp_path)
+    job = freestyle.materialize_freestyle_job(_job(root).job_id, project_root=root)
+
+    result = maintenance.cleanup_freestyle_job(
+        job.job_id, confirm=True, project_root=root
+    )
+
+    assert result["cleanup_mode"] == "normal"
+    assert result["worktree_removal_mode"] == "normal"
+    artifact = json.loads(
+        _maintenance_artifacts(root, job.job_id)[-1].read_text(encoding="utf-8")
+    )
+    remove = artifact["git_operations_attempted"][0]["args"]
+    assert remove[-2:] == ["remove", job.worktree_path]
+    assert "--force" not in remove
+
+
+def test_cleanup_refuses_unexpected_ready_worktree_content_without_discard(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    unexpected = Path(job.worktree_path) / "unexpected.txt"
+    unexpected.write_text("review me\n", encoding="utf-8")
+
+    status = next(
+        item
+        for item in maintenance.get_freestyle_cleanup_status(project_root=root)
+        if item["job_id"] == job.job_id
+    )
+    assert status["worktree_state"] == "not_materialized_worktree"
+    assert status["dirty"] is True
+    assert status["dirty_paths"] == ["unexpected.txt"]
+    assert status["dirty_reason"] == "unexpected_paths_in_not_materialized_worktree"
+
+    with pytest.raises(FreestyleJobRefusedError, match="discard-worktree-changes"):
+        maintenance.cleanup_freestyle_job(job.job_id, confirm=True, project_root=root)
+
+    assert unexpected.exists()
+
+
 def test_cleanup_removes_only_matching_local_job_and_preserves_main(tmp_path):
     root = _init_repo(tmp_path)
     job = freestyle.materialize_freestyle_job(_job(root).job_id, project_root=root)
@@ -174,6 +260,44 @@ def test_cleanup_removes_only_matching_local_job_and_preserves_main(tmp_path):
     assert _metadata_path(root, other.job_id).exists()
     assert _maintenance_artifacts(root, job.job_id)
     assert "No commit, merge, push" in result["integration_statement"]
+    assert result["cleanup_mode"] == "forced_explicit_discard"
+    assert result["worktree_removal_mode"] == "forced_explicit_discard"
+    artifact = json.loads(
+        _maintenance_artifacts(root, job.job_id)[-1].read_text(encoding="utf-8")
+    )
+    remove = artifact["git_operations_attempted"][0]["args"]
+    assert remove[-3:] == ["remove", "--force", str(Path(job.worktree_path))]
+    assert str(Path(other.worktree_path)) not in remove
+
+
+def test_cleanup_orphaned_metadata_only_job_records_artifact(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    _git(root, "worktree", "remove", "--force", job.worktree_path)
+    _git(root, "branch", "-D", job.branch)
+
+    status = next(
+        item
+        for item in maintenance.get_freestyle_cleanup_status(project_root=root)
+        if item["job_id"] == job.job_id
+    )
+    assert status["orphaned"] is True
+    assert status["worktree_state"] == "missing_worktree"
+    assert status["branch_exists"] is False
+
+    result = maintenance.cleanup_freestyle_job(
+        job.job_id, confirm=True, project_root=root
+    )
+
+    assert result["cleanup_mode"] == "metadata_only"
+    assert result["worktree_removal_mode"] == "not_present"
+    assert result["actions_taken"] == ["removed_job_metadata"]
+    assert not _metadata_path(root, job.job_id).exists()
+    artifact = json.loads(
+        _maintenance_artifacts(root, job.job_id)[-1].read_text(encoding="utf-8")
+    )
+    assert artifact["cleanup_mode"] == "metadata_only"
+    assert artifact["git_operations_attempted"] == []
 
 
 @pytest.mark.parametrize(
@@ -183,15 +307,29 @@ def test_cleanup_removes_only_matching_local_job_and_preserves_main(tmp_path):
         {"branch": "lewis/freestyle-not-the-job"},
     ],
 )
-def test_cleanup_refuses_mismatched_worktree_or_branch(tmp_path, updates):
+def test_cleanup_refuses_mismatched_worktree_or_branch(tmp_path, updates, monkeypatch):
     root = _init_repo(tmp_path)
     job = _job(root)
     _set_metadata(root, job.job_id, **updates)
+    calls: list[tuple[str, ...]] = []
+    real_run = maintenance._run_maintenance_git
+
+    def recording_run(args, cwd):
+        calls.append(tuple(args))
+        return real_run(args, cwd)
+
+    monkeypatch.setattr(maintenance, "_run_maintenance_git", recording_run)
 
     with pytest.raises(FreestyleJobRefusedError, match="mismatched"):
-        maintenance.cleanup_freestyle_job(job.job_id, confirm=True, project_root=root)
+        maintenance.cleanup_freestyle_job(
+            job.job_id,
+            confirm=True,
+            discard_worktree_changes=True,
+            project_root=root,
+        )
 
     assert Path(job.worktree_path).exists()
+    assert not any("worktree" in call and "remove" in call for call in calls)
 
 
 def test_cleanup_preflights_unsafe_artifact_parent_before_git_removal(tmp_path):

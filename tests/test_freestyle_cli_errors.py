@@ -11,6 +11,7 @@ import pytest
 
 import app.dev.freestyle_checks as checks
 import app.dev.freestyle_coding as freestyle
+import app.dev.freestyle_maintenance as maintenance
 import app.dev.freestyle_proposal as proposal
 import app.dev.freestyle_run as orchestration
 
@@ -132,6 +133,50 @@ def test_dirty_create_refusal_is_clean_and_bounded(tmp_path, monkeypatch, capsys
     assert error["command"] == "create"
     assert "main checkout has uncommitted" in error["message"]
     assert not (root / freestyle.DEV_STATE_DIR_NAME).exists()
+
+
+def test_dirty_cleanup_refusal_is_clean_and_bounded(tmp_path, monkeypatch, capsys):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    (Path(job.worktree_path) / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    monkeypatch.setattr(freestyle, "ROOT_DIR", root)
+
+    assert freestyle.main(["cleanup", job.job_id, "--confirm"]) == 1
+
+    error = _json_error(capsys)
+    assert error["error_type"] == "freestyle_job_refused"
+    assert error["command"] == "cleanup"
+    assert error["job_id"] == job.job_id
+    assert "--discard-worktree-changes" in error["message"]
+
+
+def test_git_cleanup_removal_failure_is_clean_and_bounded(
+    tmp_path, monkeypatch, capsys
+):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    monkeypatch.setattr(freestyle, "ROOT_DIR", root)
+    real_run = maintenance._run_maintenance_git
+
+    def refuse_remove(args, cwd):
+        if "worktree" in args and "remove" in args:
+            return freestyle.GitCommandResult(
+                tuple(args),
+                1,
+                "",
+                f"fatal: {job.worktree_path!r} contains modified or untracked files",
+            )
+        return real_run(args, cwd)
+
+    monkeypatch.setattr(maintenance, "_run_maintenance_git", refuse_remove)
+
+    assert freestyle.main(["cleanup", job.job_id, "--confirm"]) == 1
+
+    error = _json_error(capsys)
+    assert error["error_type"] == "freestyle_job_refused"
+    assert error["command"] == "cleanup"
+    assert "contains modified or untracked files" in error["message"]
+    assert Path(job.worktree_path).exists()
 
 
 @pytest.mark.parametrize("bundle_path", ["../unsafe.json", "malformed.json"])

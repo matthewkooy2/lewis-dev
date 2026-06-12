@@ -144,12 +144,29 @@ def cleanup_freestyle_job(
     kept: list[str] = []
     git_operations: list[dict[str, Any]] = []
     worktree = state / "worktrees" / job_id
+    cleanup_mode = (
+        "metadata_only"
+        if not status["worktree_registered"] and not status["branch_exists"]
+        else "normal"
+    )
+    worktree_removal_mode = "not_present"
     if status["worktree_registered"]:
+        worktree = _validated_registered_job_worktree_for_removal(job, status, state)
+        force_remove = bool(
+            discard_worktree_changes or status["worktree_not_checked_out"]
+        )
+        if discard_worktree_changes:
+            cleanup_mode = "forced_explicit_discard"
+            worktree_removal_mode = "forced_explicit_discard"
+        elif status["worktree_not_checked_out"]:
+            worktree_removal_mode = "forced_not_materialized_worktree"
+        else:
+            worktree_removal_mode = "normal"
         args = [
             *_MAINTENANCE_GIT_PREFIX,
             "worktree",
             "remove",
-            *(["--force"] if status["dirty"] else []),
+            *(["--force"] if force_remove else []),
             str(worktree),
         ]
         result = _run_maintenance_git(args, root)
@@ -210,12 +227,18 @@ def cleanup_freestyle_job(
         paths_kept=kept,
         git_operations=git_operations,
         refusal_reasons=[],
-        extra={"discard_worktree_changes_confirmed": discard_worktree_changes},
+        extra={
+            "cleanup_mode": cleanup_mode,
+            "worktree_removal_mode": worktree_removal_mode,
+            "discard_worktree_changes_confirmed": discard_worktree_changes,
+        },
     )
     return {
         "job_id": job_id,
         "operation": "cleanup",
         "artifact_path": artifact,
+        "cleanup_mode": cleanup_mode,
+        "worktree_removal_mode": worktree_removal_mode,
         "actions_taken": actions,
         "paths_removed": removed,
         "paths_kept": kept,
@@ -331,6 +354,42 @@ def _single_cleanup_status(job_id: str, root: Path, state: Path) -> dict[str, An
     raise FreestyleJobRefusedError(f"Freestyle job {job_id!r} was not found.")
 
 
+def _validated_registered_job_worktree_for_removal(
+    job: FreestyleJob, status: dict[str, Any], state: Path
+) -> Path:
+    expected_branch = f"{BRANCH_PREFIX}{job.job_id[:12]}"
+    expected_parent = state / "worktrees"
+    expected_worktree = expected_parent / job.job_id
+    if (
+        job.branch != expected_branch
+        or Path(job.worktree_path) != expected_worktree
+        or status["worktree_path"] != str(expected_worktree)
+        or status["registered_worktree_branch"] != expected_branch
+        or not status["worktree_registered"]
+    ):
+        raise FreestyleJobRefusedError(
+            "Cleanup worktree identity no longer matches the selected job."
+        )
+    if expected_parent.is_symlink() or not expected_parent.is_dir():
+        raise FreestyleJobRefusedError("Cleanup worktree parent is unsafe.")
+    try:
+        expected_parent.resolve(strict=True).relative_to(state)
+    except (OSError, ValueError) as exc:
+        raise FreestyleJobRefusedError(
+            "Cleanup worktree parent escaped local dev state."
+        ) from exc
+    if expected_worktree.exists() or expected_worktree.is_symlink():
+        if expected_worktree.is_symlink() or not expected_worktree.is_dir():
+            raise FreestyleJobRefusedError("Cleanup worktree path is unsafe.")
+        try:
+            expected_worktree.resolve(strict=True).relative_to(expected_parent)
+        except (OSError, ValueError) as exc:
+            raise FreestyleJobRefusedError(
+                "Cleanup worktree escaped its allowed parent."
+            ) from exc
+    return expected_worktree
+
+
 def _job_cleanup_status(
     job_id: str,
     job: FreestyleJob | None,
@@ -363,8 +422,15 @@ def _job_cleanup_status(
     branch_diverged = bool(
         job and branch_exists and branches[expected_branch] != job.base_commit
     )
+    worktree_not_checked_out = bool(
+        job
+        and job.materialization_status == "not_materialized"
+        and worktree_exists
+        and worktree_registered
+        and not mismatched
+    )
     if worktree_registered and not mismatched and job:
-        if job.materialization_status == "not_materialized":
+        if worktree_not_checked_out:
             entries = [
                 path.name for path in expected_worktree.iterdir()
                 if path.name != ".git"
@@ -383,6 +449,16 @@ def _job_cleanup_status(
                     result.stderr or result.stdout, "Could not inspect worktree status."
                 )
     dirty = bool(dirty_paths or branch_diverged or status_error)
+    if status_error:
+        dirty_reason = "worktree_status_inspection_failed"
+    elif branch_diverged:
+        dirty_reason = "local_freestyle_branch_has_commits"
+    elif dirty_paths and worktree_not_checked_out:
+        dirty_reason = "unexpected_paths_in_not_materialized_worktree"
+    elif dirty_paths:
+        dirty_reason = "user_reviewable_worktree_changes"
+    else:
+        dirty_reason = None
     orphaned = job is None or bool(
         job and (
             not worktree_exists
@@ -409,6 +485,14 @@ def _job_cleanup_status(
         "worktree_path": str(recorded_worktree),
         "worktree_path_exists": worktree_exists,
         "worktree_registered": worktree_registered,
+        "registered_worktree_branch": registered_branch,
+        "worktree_state": _worktree_state(
+            worktree_exists=worktree_exists,
+            worktree_registered=worktree_registered,
+            worktree_not_checked_out=worktree_not_checked_out,
+            mismatched=mismatched,
+        ),
+        "worktree_not_checked_out": worktree_not_checked_out,
         "latest_states": {
             "run": job.latest_run_status if job else None,
             "checks": job.checks_status if job else None,
@@ -421,6 +505,7 @@ def _job_cleanup_status(
         "orphaned": orphaned,
         "dirty": dirty,
         "dirty_paths": dirty_paths[:100],
+        "dirty_reason": dirty_reason,
         "inconsistent": inconsistent,
         "mismatched": mismatched,
         "cleanable": cleanable,
@@ -433,8 +518,29 @@ def _job_cleanup_status(
             mismatched=mismatched,
             dirty=dirty,
             orphaned=orphaned,
+            worktree_not_checked_out=worktree_not_checked_out,
         ),
     }
+
+
+def _worktree_state(
+    *,
+    worktree_exists: bool,
+    worktree_registered: bool,
+    worktree_not_checked_out: bool,
+    mismatched: bool,
+) -> str:
+    if mismatched:
+        return "mismatched_worktree"
+    if worktree_registered and not worktree_exists:
+        return "missing_registered_worktree"
+    if worktree_registered and worktree_not_checked_out:
+        return "not_materialized_worktree"
+    if worktree_registered:
+        return "materialized_worktree"
+    if worktree_exists:
+        return "unregistered_worktree"
+    return "missing_worktree"
 
 
 def _recommended_action(
@@ -446,6 +552,7 @@ def _recommended_action(
     mismatched: bool,
     dirty: bool,
     orphaned: bool,
+    worktree_not_checked_out: bool,
 ) -> str:
     if job is None:
         return "Inspect orphaned local artifacts manually; cleanup requires job metadata."
@@ -463,6 +570,8 @@ def _recommended_action(
         return "Review isolated changes, or clean with explicit discard confirmation."
     if orphaned:
         return "Inspect missing local worktree or branch state before cleanup."
+    if worktree_not_checked_out:
+        return "Ready no-checkout worktree is cleanable with cleanup --confirm."
     return "Job is cleanable with cleanup --confirm."
 
 
@@ -478,6 +587,9 @@ def _orphan_branch_status(branch: str, commit: str) -> dict[str, Any]:
         "worktree_path": None,
         "worktree_path_exists": False,
         "worktree_registered": False,
+        "registered_worktree_branch": None,
+        "worktree_state": "missing_worktree",
+        "worktree_not_checked_out": False,
         "latest_states": {"run": None, "checks": None, "apply": None},
         "artifact_directories_present": [],
         "active": False,
@@ -486,6 +598,7 @@ def _orphan_branch_status(branch: str, commit: str) -> dict[str, Any]:
         "orphaned": True,
         "dirty": None,
         "dirty_paths": [],
+        "dirty_reason": None,
         "inconsistent": False,
         "mismatched": False,
         "cleanable": False,
