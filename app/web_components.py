@@ -13,7 +13,14 @@ from app.web_rules import (
 from app.memory_store import Memory, MemoryEvent
 
 
-def page_html(title: str, active_path: str, content: str) -> str:
+def page_html(
+    title: str, active_path: str, content: str, *, show_dev_navigation: bool = False
+) -> str:
+    dev_navigation = (
+        nav_group(active_path, "Developer", (("/dev/freestyle", "Freestyle"),))
+        if show_dev_navigation
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -30,6 +37,7 @@ def page_html(title: str, active_path: str, content: str) -> str:
       {nav_group(active_path, "Review", (("/approvals", "Approvals"), ("/tasks", "Tasks"), ("/calendar", "Calendar"), ("/history", "History")))}
       {nav_group(active_path, "Knowledge", (("/memories", "Memories"), ("/documents", "Document Search")))}
       {nav_group(active_path, "Assistant", (("/chat", "Chat"),))}
+      {dev_navigation}
     </nav>
     <div class="aside-foot"><span class="dot"></span>Local-only &middot; 127.0.0.1</div>
   </aside>
@@ -51,7 +59,11 @@ def nav_group(
 
 
 def nav_link(active_path: str, path: str, label: str) -> str:
-    active = " class='active'" if active_path == path else ""
+    active = (
+        " class='active'"
+        if active_path == path or active_path.startswith(f"{path}/")
+        else ""
+    )
     return f"<a{active} href='{path}'>{escape(label)}</a>"
 
 
