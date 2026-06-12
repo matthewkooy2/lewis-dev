@@ -4,10 +4,26 @@ const input = document.getElementById('chat-input');
 const submit = form.querySelector('button[type="submit"]');
 let isPending = false;
 
+function clearEmptyHint() {
+  const hint = document.getElementById('chat-empty');
+  if (hint) hint.remove();
+}
+
+function roleLabel(role) {
+  const label = document.createElement('span');
+  label.className = 'bubble-role';
+  label.textContent = role === 'user' ? 'You' : 'Lewis';
+  return label;
+}
+
 function bubble(role, text) {
   const node = document.createElement('div');
   node.className = `bubble ${role}`;
-  node.textContent = text;
+  node.appendChild(roleLabel(role));
+  const body = document.createElement('span');
+  body.className = 'bubble-text';
+  body.textContent = text;
+  node.appendChild(body);
   log.appendChild(node);
   log.scrollTop = log.scrollHeight;
   return node;
@@ -32,12 +48,16 @@ function memoryContextNote(count) {
   return node;
 }
 
-function assistantBubble(text, memoryContextCount) {
+function assistantBubble(text, memoryContextCount, isError) {
   const node = document.createElement('div');
-  node.className = 'bubble assistant';
+  node.className = isError ? 'bubble assistant error' : 'bubble assistant';
+  node.appendChild(roleLabel('assistant'));
   const note = memoryContextNote(memoryContextCount);
   if (note) node.appendChild(note);
-  node.appendChild(document.createTextNode(text));
+  const body = document.createElement('span');
+  body.className = 'bubble-text';
+  body.textContent = text;
+  node.appendChild(body);
   log.appendChild(node);
   log.scrollTop = log.scrollHeight;
   return node;
@@ -56,6 +76,7 @@ form.addEventListener('submit', async (event) => {
   const message = input.value.trim();
   if (!message) return;
   isPending = true;
+  clearEmptyHint();
   bubble('user', message);
   const pending = thinkingBubble();
   input.value = '';
@@ -68,10 +89,10 @@ form.addEventListener('submit', async (event) => {
     });
     const data = await response.json();
     pending.remove();
-    assistantBubble(data.answer || 'No response.', data.memory_context_count);
+    assistantBubble(data.answer || 'No response.', data.memory_context_count, false);
   } catch (error) {
     pending.remove();
-    assistantBubble(`Sorry, I hit an error: ${error.message}`, 0);
+    assistantBubble(`Sorry, I hit an error: ${error.message}`, 0, true);
   } finally {
     isPending = false;
     submit.disabled = false;

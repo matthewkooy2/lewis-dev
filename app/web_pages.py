@@ -168,6 +168,12 @@ def document_search_page(query: str, results: list[Any], message: str) -> str:
 
 
 def chat_page(messages: list[dict[str, str]]) -> str:
+    empty_hint = (
+        "<p id='chat-empty' class='chat-empty'>No messages yet. Ask Lewis anything; "
+        "proposals still go through local approvals.</p>"
+        if not messages
+        else ""
+    )
     content = [
         page_header(
             "Chat",
@@ -175,6 +181,7 @@ def chat_page(messages: list[dict[str, str]]) -> str:
         ),
         "<section class='chat-shell'>",
         "<div id='chat-log' class='chat-log'>",
+        empty_hint,
         *[
             chat_bubble(
                 item["role"],
