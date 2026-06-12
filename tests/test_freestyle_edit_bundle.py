@@ -40,6 +40,7 @@ def _init_repo(tmp_path: Path) -> Path:
     # archived, and materialized bytes are deterministic for hash assertions.
     root = tmp_path / "project"
     root.mkdir()
+    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
     (root / "tracked.txt").write_bytes(b"committed\n")
     (root / "notes.txt").write_bytes(b"note\n")
     (root / "src").mkdir()

@@ -484,7 +484,8 @@ def _create_form() -> str:
         "placeholder='Describe the bounded coding goal'></textarea></label>"
         "<label class='approval-check'>"
         "<input type='checkbox' name='developer_approved' value='approved' required>"
-        "<span>I explicitly approve creating this local isolated-worktree job.</span>"
+        "<span>I explicitly approve creating this local isolated-worktree job "
+        "from the current clean repo HEAD.</span>"
         "</label><button type='submit'>Create Approved Job</button></form></section>"
     )
 
@@ -523,7 +524,7 @@ def _job_detail(
             f"{status_badge(job.approval_state)}</div></div>",
             f"<p>{escape(job.goal)}</p><div class='fields'>",
             field("job id", job.job_id),
-            field("base commit", job.base_commit),
+            field("base commit (current clean repo HEAD at creation)", job.base_commit),
             field("isolated branch", job.branch),
             field("isolated worktree", job.worktree_path),
             field("updated", job.updated_at),

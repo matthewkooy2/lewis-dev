@@ -123,6 +123,7 @@ def test_page_renders_empty_state_and_requires_explicit_create_approval(tmp_path
 
     assert "No freestyle jobs yet." in empty.text
     assert "explicitly approve" in empty.text
+    assert "current clean repo HEAD" in empty.text
     assert "Explicit developer approval is required" in refused.text
     assert freestyle.list_freestyle_jobs(project_root=root) == []
 
@@ -136,6 +137,7 @@ def test_page_renders_empty_state_and_requires_explicit_create_approval(tmp_path
     )
     assert "Created approved freestyle job" in created.text
     assert "Approved web job" in created.text
+    assert "base commit (current clean repo HEAD at creation)" in created.text
     assert len(freestyle.list_freestyle_jobs(project_root=root)) == 1
 
 

@@ -39,6 +39,7 @@ def _git(root: Path, *args: str) -> str:
 def _init_repo(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
+    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
     (root / "app" / "dev").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "app" / "dev" / "sample.py").write_text(

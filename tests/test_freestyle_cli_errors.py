@@ -29,11 +29,12 @@ def _git(root: Path, *args: str) -> str:
 def _init_repo(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
+    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
     (root / "tracked.txt").write_text("committed\n", encoding="utf-8")
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test User")
-    _git(root, "add", "tracked.txt")
+    _git(root, "add", ".gitignore", "tracked.txt")
     _git(root, "commit", "-m", "init")
     return root
 
@@ -117,6 +118,20 @@ def test_expected_input_and_validation_refusals_are_clean(arguments, capsys):
     assert freestyle.main(arguments) != 0
     error = _json_error(capsys)
     assert error["error_type"] in {"freestyle_job_refused", "invalid_cli_input"}
+
+
+def test_dirty_create_refusal_is_clean_and_bounded(tmp_path, monkeypatch, capsys):
+    root = _init_repo(tmp_path)
+    (root / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    monkeypatch.setattr(freestyle, "ROOT_DIR", root)
+
+    assert freestyle.main(["create", "--approve", "--goal", "Use clean HEAD."]) == 1
+
+    error = _json_error(capsys)
+    assert error["error_type"] == "freestyle_job_refused"
+    assert error["command"] == "create"
+    assert "main checkout has uncommitted" in error["message"]
+    assert not (root / freestyle.DEV_STATE_DIR_NAME).exists()
 
 
 @pytest.mark.parametrize("bundle_path", ["../unsafe.json", "malformed.json"])

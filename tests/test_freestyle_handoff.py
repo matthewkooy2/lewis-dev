@@ -120,6 +120,8 @@ def test_status_works_for_fresh_approved_job_and_cli_outputs_markdown_and_json(
         "title": "Human handoff",
         "goal": job.goal,
         "approval_state": "approved",
+        "base_commit": job.base_commit,
+        "base_source": "current clean repo HEAD at job creation",
         "branch": job.branch,
         "worktree_path": job.worktree_path,
     }
@@ -132,6 +134,7 @@ def test_status_works_for_fresh_approved_job_and_cli_outputs_markdown_and_json(
     assert freestyle.main(["status", job.job_id]) == 0
     markdown = capsys.readouterr().out
     assert "# Freestyle Job" in markdown
+    assert "current clean repo `HEAD` at job creation" in markdown
     assert "## Human Next Steps" in markdown
     assert "Materialize the isolated job worktree." in markdown
     assert freestyle.main(["status", job.job_id, "--json"]) == 0

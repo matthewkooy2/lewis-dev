@@ -105,6 +105,15 @@ _ALLOWED_GIT_PREFIXES = (
     ("git", "rev-parse", "--show-toplevel"),
     ("git", "rev-parse", "HEAD"),
     ("git", "rev-parse", "--abbrev-ref", "HEAD"),
+    (
+        "git",
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    ),
 )
 _MATERIALIZATION_GIT_PREFIX = (
     "git",
@@ -259,7 +268,7 @@ def create_freestyle_job(
     state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
     _require_state_inside_project(state, root)
     _require_git_toplevel(root)
-    base_commit = _head_commit(root)
+    base_commit = _current_clean_head_commit(root)
 
     job_id = uuid.uuid4().hex
     branch = f"{BRANCH_PREFIX}{job_id[:12]}"
@@ -859,6 +868,44 @@ def _head_commit(root: Path) -> str:
     ):
         raise FreestyleJobRefusedError("Could not read a valid committed HEAD.")
     return commit
+
+
+def _current_clean_head_commit(root: Path) -> str:
+    """Resolve current checkout HEAD only while the main checkout stays clean."""
+    _require_clean_main_checkout(root)
+    commit = _head_commit(root)
+    _require_clean_main_checkout(root)
+    if _head_commit(root) != commit:
+        raise FreestyleJobRefusedError(
+            "Cannot create a freestyle job because the main checkout HEAD changed "
+            "during base selection. Retry from a stable current clean repo HEAD."
+        )
+    return commit
+
+
+def _require_clean_main_checkout(root: Path) -> None:
+    result = _run_git_bytes(
+        [
+            "git",
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+        root,
+    )
+    if result.returncode != 0:
+        raise FreestyleJobRefusedError(
+            _bounded_error(result.stderr, "Could not verify that the main checkout is clean.")
+        )
+    if result.stdout:
+        raise FreestyleJobRefusedError(
+            "Cannot create a freestyle job because the main checkout has "
+            "uncommitted tracked or untracked changes. Commit or remove them, "
+            "then create a fresh job from the current clean repo HEAD."
+        )
 
 
 def _require_state_inside_project(state: Path, root: Path) -> None:

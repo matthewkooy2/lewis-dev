@@ -39,11 +39,12 @@ def _git(root: Path, *args: str) -> str:
 def _init_repo(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
+    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
     (root / "tracked.txt").write_text("committed\n", encoding="utf-8")
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test User")
-    _git(root, "add", "tracked.txt")
+    _git(root, "add", ".gitignore", "tracked.txt")
     _git(root, "commit", "-m", "init")
     return root
 
@@ -209,11 +210,9 @@ def test_creation_requires_explicit_developer_approval(tmp_path):
     assert _git(root, "branch", "--list", "lewis/freestyle-*") == ""
 
 
-def test_creates_unique_branch_and_no_checkout_worktree_from_committed_head(tmp_path):
+def test_creates_unique_branch_and_no_checkout_worktree_from_current_clean_head(tmp_path):
     root = _init_repo(tmp_path)
     head = _git(root, "rev-parse", "HEAD")
-    (root / "tracked.txt").write_text("dirty main checkout\n", encoding="utf-8")
-    (root / "untracked.txt").write_text("main only\n", encoding="utf-8")
 
     job = create_freestyle_job(
         "Inspect the committed project safely.",
@@ -229,10 +228,70 @@ def test_creates_unique_branch_and_no_checkout_worktree_from_committed_head(tmp_
     assert worktree.is_dir()
     assert worktree.is_relative_to(root / freestyle.DEV_STATE_DIR_NAME / "worktrees")
     assert not (worktree / "tracked.txt").exists()
-    assert not (worktree / "untracked.txt").exists()
-    assert (root / "tracked.txt").read_text(encoding="utf-8") == "dirty main checkout\n"
+    assert (root / "tracked.txt").read_text(encoding="utf-8") == "committed\n"
     assert _git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
     assert _git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == job.branch
+
+
+def test_subsequent_job_uses_newer_local_commit(tmp_path):
+    root = _init_repo(tmp_path)
+    first = create_freestyle_job(
+        "Use the first clean HEAD.",
+        developer_approved=True,
+        project_root=root,
+    )
+    (root / "new.txt").write_text("new committed code\n", encoding="utf-8")
+    _git(root, "add", "new.txt")
+    _git(root, "commit", "-m", "new local code")
+    newer_head = _git(root, "rev-parse", "HEAD")
+
+    second = create_freestyle_job(
+        "Use the newer clean HEAD.",
+        developer_approved=True,
+        project_root=root,
+    )
+
+    assert first.base_commit != newer_head
+    assert second.base_commit == newer_head
+
+
+@pytest.mark.parametrize("dirty_kind", ["tracked", "untracked"])
+def test_creation_refuses_dirty_main_before_metadata_branch_or_worktree(
+    tmp_path, dirty_kind
+):
+    root = _init_repo(tmp_path)
+    if dirty_kind == "tracked":
+        (root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    else:
+        (root / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(FreestyleJobRefusedError, match="main checkout has uncommitted"):
+        create_freestyle_job(
+            "Refuse an ambiguous base.",
+            developer_approved=True,
+            project_root=root,
+        )
+
+    assert not (root / freestyle.DEV_STATE_DIR_NAME).exists()
+    assert _git(root, "branch", "--list", "lewis/freestyle-*") == ""
+    assert _git(root, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+def test_creation_ignores_ignored_lewis_dev_artifacts(tmp_path):
+    root = _init_repo(tmp_path)
+    artifact = root / freestyle.DEV_STATE_DIR_NAME / "old-artifacts" / "result.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}\n", encoding="utf-8")
+    head = _git(root, "rev-parse", "HEAD")
+
+    job = create_freestyle_job(
+        "Ignore existing safe local dev artifacts.",
+        developer_approved=True,
+        project_root=root,
+    )
+
+    assert job.base_commit == head
+    assert artifact.read_text(encoding="utf-8") == "{}\n"
 
 
 def test_persists_minimal_metadata_and_supports_list_and_read(tmp_path):
@@ -261,6 +320,7 @@ def test_persists_minimal_metadata_and_supports_list_and_read(tmp_path):
         _job_metadata_path(root, job.job_id).read_text(encoding="utf-8")
     )
     assert persisted["developer_approved"] is True
+    assert persisted["base_commit"] == _git(root, "rev-parse", "HEAD")
 
 
 @pytest.mark.parametrize("approval_value", [..., False, 1, "true", {}, []])
@@ -402,7 +462,6 @@ def test_materializes_only_valid_existing_job_worktree(tmp_path, monkeypatch):
     (root / "private.key").write_text("do-not-materialize\n", encoding="utf-8")
     _git(root, "add", "safe.py", ".env", "private.key")
     _git(root, "commit", "-m", "add snapshot files")
-    (root / "safe.py").write_text("dirty main checkout\n", encoding="utf-8")
     blob_calls: list[tuple[str, ...]] = []
     real_run_blob_batch = freestyle._run_git_blob_batch
 
@@ -417,6 +476,7 @@ def test_materializes_only_valid_existing_job_worktree(tmp_path, monkeypatch):
         developer_approved=True,
         project_root=root,
     )
+    (root / "safe.py").write_text("dirty main checkout\n", encoding="utf-8")
     main_status_before = _git(root, "status", "--short")
     materialized = materialize_freestyle_job(job.job_id, project_root=root)
     worktree = Path(materialized.worktree_path)
