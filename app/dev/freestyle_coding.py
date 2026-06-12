@@ -17,6 +17,7 @@ Invocation:
     python -m app.dev.freestyle_coding create --approve --goal "<goal>"
     python -m app.dev.freestyle_coding list
     python -m app.dev.freestyle_coding show <job-id>
+    python -m app.dev.freestyle_coding status <job-id> [--json]
     python -m app.dev.freestyle_coding reapprove <job-id> --approve
     python -m app.dev.freestyle_coding materialize <job-id>
     python -m app.dev.freestyle_coding propose <job-id>
@@ -24,6 +25,12 @@ Invocation:
     python -m app.dev.freestyle_coding apply-edits <job-id> <bundle.json>
     python -m app.dev.freestyle_coding review <job-id>
     python -m app.dev.freestyle_coding run-checks <job-id> [--check <check-id> ...]
+    python -m app.dev.freestyle_coding run <job-id>
+    python -m app.dev.freestyle_coding run <job-id> \
+        --apply-latest-generated --confirm-apply [--run-checks]
+    python -m app.dev.freestyle_coding cleanup-status
+    python -m app.dev.freestyle_coding recover <job-id> --confirm
+    python -m app.dev.freestyle_coding cleanup <job-id> --confirm
 """
 
 from __future__ import annotations
@@ -34,8 +41,11 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import subprocess
+import sys
 import tarfile
 from typing import Any
 import uuid
@@ -58,6 +68,27 @@ MAX_ARCHIVE_PATHS_PER_COMMAND = 400
 DEV_STATE_DIR_NAME = ".lewis-dev"
 BRANCH_PREFIX = "lewis/freestyle-"
 _GIT_TIMEOUT_SECONDS = 60
+_MAX_CLI_ERROR_LENGTH = 500
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(?:api|auth|credential|key|password|secret|token)", re.IGNORECASE
+)
+_CLI_COMMANDS = {
+    "apply-edits",
+    "cleanup",
+    "cleanup-status",
+    "create",
+    "generate-edits",
+    "list",
+    "materialize",
+    "propose",
+    "recover",
+    "reapprove",
+    "review",
+    "run",
+    "run-checks",
+    "show",
+    "status",
+}
 _WINDOWS_RESERVED_NAMES = {
     "aux",
     "clock$",
@@ -85,6 +116,17 @@ _MATERIALIZATION_GIT_PREFIX = (
 
 class FreestyleJobRefusedError(RuntimeError):
     """Raised when a freestyle job request or setup operation is refused."""
+
+
+class FreestyleCliInputError(ValueError):
+    """Raised for malformed freestyle CLI arguments."""
+
+
+class FreestyleArgumentParser(argparse.ArgumentParser):
+    """Argument parser that lets the CLI format expected input errors."""
+
+    def error(self, message: str) -> None:
+        raise FreestyleCliInputError(message)
 
 
 @dataclass(frozen=True)
@@ -176,6 +218,13 @@ class FreestyleJob:
     checks_infra_error_count: int = 0
     checks_modified_worktree: bool = False
     checks_errors: tuple[str, ...] = ()
+    latest_run_id: str | None = None
+    latest_run_status: str = "not_run"
+    latest_run_started_at: str | None = None
+    latest_run_completed_at: str | None = None
+    latest_run_artifact_path: str | None = None
+    latest_run_completed_stages: tuple[str, ...] = ()
+    latest_run_errors: tuple[str, ...] = ()
 
     @property
     def approval_state(self) -> str:
@@ -445,6 +494,101 @@ def run_freestyle_checks(
         job_id,
         check_ids=check_ids,
         project_root=project_root,
+        state_root=state_root,
+    )
+
+
+def run_freestyle_job(
+    job_id: str,
+    *,
+    apply_latest_generated: bool = False,
+    confirm_apply: bool = False,
+    run_checks: bool = False,
+    check_ids: Sequence[str] | None = None,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+    deepseek_config: Any | None = None,
+    deepseek_client: Any | None = None,
+) -> FreestyleJob:
+    """Advance one approved job through existing safe stages."""
+    from app.dev.freestyle_run import run_freestyle_job as orchestrate
+
+    return orchestrate(
+        job_id,
+        apply_latest_generated=apply_latest_generated,
+        confirm_apply=confirm_apply,
+        run_checks=run_checks,
+        check_ids=check_ids,
+        project_root=project_root,
+        state_root=state_root,
+        deepseek_config=deepseek_config,
+        deepseek_client=deepseek_client,
+    )
+
+
+def get_freestyle_handoff(
+    job_id: str,
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build a read-only human status/handoff summary for one job."""
+    from app.dev.freestyle_handoff import get_freestyle_handoff as build_handoff
+
+    return build_handoff(
+        job_id,
+        project_root=project_root or ROOT_DIR,
+        state_root=state_root,
+    )
+
+
+def get_freestyle_cleanup_status(
+    *,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return a read-only inventory of local freestyle maintenance state."""
+    from app.dev.freestyle_maintenance import get_freestyle_cleanup_status as inspect
+
+    return inspect(project_root=project_root or ROOT_DIR, state_root=state_root)
+
+
+def cleanup_freestyle_job(
+    job_id: str,
+    *,
+    confirm: bool = False,
+    discard_worktree_changes: bool = False,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Clean one explicitly confirmed local freestyle job."""
+    from app.dev.freestyle_maintenance import cleanup_freestyle_job as cleanup
+
+    return cleanup(
+        job_id,
+        confirm=confirm,
+        discard_worktree_changes=discard_worktree_changes,
+        project_root=project_root or ROOT_DIR,
+        state_root=state_root,
+    )
+
+
+def recover_freestyle_job(
+    job_id: str,
+    *,
+    confirm: bool = False,
+    confirm_inconsistent: bool = False,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+) -> FreestyleJob:
+    """Recover explicitly confirmed stale lock metadata for one job."""
+    from app.dev.freestyle_maintenance import recover_freestyle_job as recover
+
+    return recover(
+        job_id,
+        confirm=confirm,
+        confirm_inconsistent=confirm_inconsistent,
+        project_root=project_root or ROOT_DIR,
         state_root=state_root,
     )
 
@@ -1248,6 +1392,15 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("checks_infra_error_count", 0)
         payload.setdefault("checks_modified_worktree", False)
         payload["checks_errors"] = tuple(payload.get("checks_errors", ()))
+        payload.setdefault("latest_run_id", None)
+        payload.setdefault("latest_run_status", "not_run")
+        payload.setdefault("latest_run_started_at", None)
+        payload.setdefault("latest_run_completed_at", None)
+        payload.setdefault("latest_run_artifact_path", None)
+        payload["latest_run_completed_stages"] = tuple(
+            payload.get("latest_run_completed_stages", ())
+        )
+        payload["latest_run_errors"] = tuple(payload.get("latest_run_errors", ()))
         return FreestyleJob(**payload)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise FreestyleJobRefusedError(f"Could not read freestyle job {path.stem!r}.") from exc
@@ -1311,8 +1464,142 @@ def _print_job(job: FreestyleJob) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _redact_sensitive_env_values(text: str) -> str:
+    sensitive_values = {
+        value
+        for name, value in os.environ.items()
+        if value and value in text and _SENSITIVE_ENV_NAME.search(name)
+    }
+    if not sensitive_values:
+        return text
+    pattern = "|".join(
+        re.escape(value) for value in sorted(sensitive_values, key=len, reverse=True)
+    )
+    return re.sub(pattern, "[REDACTED]", text)
+
+
+def _bounded_cli_text(text: str, *, limit: int) -> str:
+    clean = " ".join(text.strip().split())
+    return _redact_sensitive_env_values(clean)[:limit]
+
+
+def _bounded_cli_error(exc: Exception) -> str:
+    text = str(exc)
+    cause = exc.__cause__
+    if isinstance(cause, FreestyleJobRefusedError) and str(cause) != text:
+        text = f"{text} Reason: {cause}"
+    message = _bounded_cli_text(text, limit=_MAX_CLI_ERROR_LENGTH)
+    return message or "Freestyle command was refused."
+
+
+def _display_job_id(job_id: str | None) -> str | None:
+    if job_id is None:
+        return None
+    display = _bounded_cli_text(job_id, limit=128)
+    return display or None
+
+
+def _cli_context(arguments: Sequence[str]) -> tuple[str | None, str | None, bool]:
+    command = arguments[0] if arguments and arguments[0] in _CLI_COMMANDS else None
+    job_id = None
+    if command not in {None, "cleanup-status", "create", "list"} and len(arguments) > 1:
+        candidate = arguments[1]
+        if not candidate.startswith("-"):
+            job_id = candidate
+    human_output = command == "status" and "--json" not in arguments
+    return command, job_id, human_output
+
+
+def _failed_artifact_path(command: str | None, job_id: str | None) -> str | None:
+    if job_id is None:
+        return None
+    artifact_fields = {
+        "propose": ("proposal_status", {"error"}, "proposal_artifact_path"),
+        "generate-edits": (
+            "edit_generation_status",
+            {"error"},
+            "edit_generation_artifact_path",
+        ),
+        "apply-edits": (
+            "edit_apply_status",
+            {"error", "inconsistent"},
+            "edit_artifact_path",
+        ),
+        "review": ("review_status", {"error", "inconsistent"}, "review_artifact_path"),
+        "run-checks": ("checks_status", {"error"}, "checks_artifact_path"),
+        "run": (
+            "latest_run_status",
+            {"error", "failed", "refused"},
+            "latest_run_artifact_path",
+        ),
+    }
+    artifact_spec = artifact_fields.get(command)
+    if artifact_spec is None:
+        return None
+    try:
+        job = get_freestyle_job(job_id)
+    except FreestyleJobRefusedError:
+        return None
+    status_field, failed_statuses, artifact_field = artifact_spec
+    if getattr(job, status_field) not in failed_statuses:
+        return None
+    artifact_path = getattr(job, artifact_field)
+    if not isinstance(artifact_path, str):
+        return None
+    display = _bounded_cli_text(artifact_path, limit=_MAX_CLI_ERROR_LENGTH)
+    path = PurePosixPath(display)
+    if (
+        not display
+        or "\\" in display
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        return None
+    return display
+
+
+def _print_cli_error(
+    exc: Exception,
+    *,
+    error_type: str,
+    command: str | None,
+    job_id: str | None,
+    human_output: bool,
+) -> None:
+    message = _bounded_cli_error(exc)
+    display_job_id = _display_job_id(job_id)
+    artifact_path = _failed_artifact_path(command, job_id)
+    if human_output:
+        details = [f"ERROR [{error_type}]: {message}"]
+        if command:
+            details.append(f"command: {command}")
+        if display_job_id:
+            details.append(f"job_id: {display_job_id}")
+        if artifact_path:
+            details.append(f"artifact_path: {artifact_path}")
+        print("\n".join(details), file=sys.stderr)
+        return
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error_type": error_type,
+        "message": message,
+    }
+    if command:
+        payload["command"] = command
+        payload["stage"] = command
+    if display_job_id:
+        payload["job_id"] = display_job_id
+    if artifact_path:
+        payload["artifact_path"] = artifact_path
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Manage developer-only freestyle jobs.")
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    command, job_id, human_output = _cli_context(arguments)
+    parser = FreestyleArgumentParser(
+        description="Manage developer-only freestyle jobs."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_parser = subparsers.add_parser("create", help="Create an isolated job.")
@@ -1325,8 +1612,21 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     subparsers.add_parser("list", help="List local freestyle jobs.")
+    subparsers.add_parser(
+        "cleanup-status",
+        help="Read-only inventory of jobs, worktrees, branches, and artifacts.",
+    )
     show_parser = subparsers.add_parser("show", help="Show one local freestyle job.")
     show_parser.add_argument("job_id")
+    status_parser = subparsers.add_parser(
+        "status", help="Show a concise read-only human handoff for one local job."
+    )
+    status_parser.add_argument("job_id")
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the handoff as JSON instead of Markdown.",
+    )
     reapprove_parser = subparsers.add_parser(
         "reapprove", help="Explicitly reapprove one existing local freestyle job."
     )
@@ -1374,9 +1674,64 @@ def main(argv: list[str] | None = None) -> int:
         help="Allowlisted check id to run (repeatable); defaults to every "
         "available allowlisted check.",
     )
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Advance existing safe stages and stop at explicit human boundaries.",
+    )
+    run_parser.add_argument("job_id")
+    run_parser.add_argument(
+        "--apply-latest-generated",
+        action="store_true",
+        help="Request deterministic application of the latest valid generated bundle.",
+    )
+    run_parser.add_argument(
+        "--confirm-apply",
+        action="store_true",
+        help="Explicitly confirm applying the latest generated bundle.",
+    )
+    run_parser.add_argument(
+        "--run-checks",
+        action="store_true",
+        help="Run allowlisted checks after edits have been applied and reviewed.",
+    )
+    run_parser.add_argument(
+        "--check",
+        action="append",
+        dest="check_ids",
+        metavar="CHECK_ID",
+        help="Allowlisted check id to run (repeatable); requires --run-checks.",
+    )
+    cleanup_parser = subparsers.add_parser(
+        "cleanup", help="Explicitly clean one safe local freestyle job."
+    )
+    cleanup_parser.add_argument("job_id")
+    cleanup_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Confirm removal of this one local freestyle job.",
+    )
+    cleanup_parser.add_argument(
+        "--discard-worktree-changes",
+        action="store_true",
+        help="Also confirm deletion of unreviewed isolated worktree changes.",
+    )
+    recover_parser = subparsers.add_parser(
+        "recover", help="Explicitly clear stale lock metadata to failed states."
+    )
+    recover_parser.add_argument("job_id")
+    recover_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Confirm recovery of stale lock metadata.",
+    )
+    recover_parser.add_argument(
+        "--confirm-inconsistent",
+        action="store_true",
+        help="Claim manual verification before clearing inconsistent edit metadata.",
+    )
 
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(arguments)
         if args.command == "create":
             _print_job(
                 create_freestyle_job(
@@ -1388,8 +1743,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "list":
             for job in list_freestyle_jobs():
                 _print_job(job)
+        elif args.command == "cleanup-status":
+            print(json.dumps(get_freestyle_cleanup_status(), indent=2, sort_keys=True))
         elif args.command == "show":
             _print_job(get_freestyle_job(args.job_id))
+        elif args.command == "status":
+            handoff = get_freestyle_handoff(args.job_id)
+            if args.json:
+                print(json.dumps(handoff, indent=2, sort_keys=True))
+            else:
+                from app.dev.freestyle_handoff import render_freestyle_handoff_markdown
+
+                print(render_freestyle_handoff_markdown(handoff), end="")
         elif args.command == "reapprove":
             _print_job(
                 reapprove_freestyle_job(
@@ -1407,10 +1772,55 @@ def main(argv: list[str] | None = None) -> int:
             _print_job(apply_freestyle_edit_bundle(args.job_id, args.bundle_path))
         elif args.command == "review":
             _print_job(review_freestyle_job(args.job_id))
-        else:
+        elif args.command == "run-checks":
             _print_job(run_freestyle_checks(args.job_id, check_ids=args.check_ids))
+        elif args.command == "cleanup":
+            print(
+                json.dumps(
+                    cleanup_freestyle_job(
+                        args.job_id,
+                        confirm=args.confirm,
+                        discard_worktree_changes=args.discard_worktree_changes,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "recover":
+            _print_job(
+                recover_freestyle_job(
+                    args.job_id,
+                    confirm=args.confirm,
+                    confirm_inconsistent=args.confirm_inconsistent,
+                )
+            )
+        else:
+            _print_job(
+                run_freestyle_job(
+                    args.job_id,
+                    apply_latest_generated=args.apply_latest_generated,
+                    confirm_apply=args.confirm_apply,
+                    run_checks=args.run_checks,
+                    check_ids=args.check_ids,
+                )
+            )
+    except FreestyleCliInputError as exc:
+        _print_cli_error(
+            exc,
+            error_type="invalid_cli_input",
+            command=command,
+            job_id=job_id,
+            human_output=human_output,
+        )
+        return 2
     except FreestyleJobRefusedError as exc:
-        print(f"REFUSED: {exc}")
+        _print_cli_error(
+            exc,
+            error_type="freestyle_job_refused",
+            command=command,
+            job_id=job_id,
+            human_output=human_output,
+        )
         return 1
     return 0
 

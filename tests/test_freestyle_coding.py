@@ -329,7 +329,9 @@ def test_reapprove_requires_explicit_flag_and_only_updates_job_metadata(
     monkeypatch.setattr(freestyle, "ROOT_DIR", root)
 
     assert freestyle.main(["reapprove", job.job_id]) == 1
-    assert "Explicit developer approval" in capsys.readouterr().out
+    error = json.loads(capsys.readouterr().err)
+    assert error["error_type"] == "freestyle_job_refused"
+    assert "Explicit developer approval" in error["message"]
     assert metadata_path.read_bytes() == metadata_before
 
     def forbidden_subprocess(*args, **kwargs):

@@ -777,6 +777,8 @@ def test_run_checks_cli_refuses_unknown_ids_without_executing(
     )
 
     assert exit_code == 1
-    assert "REFUSED" in capsys.readouterr().out
+    error = json.loads(capsys.readouterr().err)
+    assert error["error_type"] == "freestyle_job_refused"
+    assert error["command"] == "run-checks"
     failed = get_freestyle_job(job.job_id, project_root=root)
     assert failed.checks_status == "error"
