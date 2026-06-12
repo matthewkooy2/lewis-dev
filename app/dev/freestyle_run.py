@@ -10,19 +10,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 import uuid
 
 from app.config import ROOT_DIR
+from app.dev.freestyle_artifacts import (
+    encode_json_artifact,
+    safe_artifact_reference,
+    write_artifact_bytes,
+)
 from app.dev.freestyle_coding import (
-    DEV_STATE_DIR_NAME,
     FreestyleJob,
     FreestyleJobRefusedError,
     _bounded_error,
     _require_explicit_developer_approval,
-    _require_state_inside_project,
     _utc_now,
     _validated_job_worktree,
     _write_job,
@@ -34,27 +36,26 @@ from app.dev.freestyle_coding import (
     review_freestyle_job,
     run_freestyle_checks,
 )
+from app.dev.freestyle_policy import (
+    NO_INTEGRATION_STATEMENT_RUN,
+    recovery_message,
+)
+from app.dev.freestyle_state import (
+    ACTIVE_STATES,
+    is_materialized,
+    resolved_roots,
+)
 
 RUN_SCHEMA_VERSION = 1
 MAX_RUN_ARTIFACT_BYTES = 250_000
 MAX_RUN_ERRORS = 3
-_NO_INTEGRATION_STATEMENT = (
-    "No commit, merge, push, pull, fetch, remote operation, branch switch, PR "
-    "creation, or auto-merge occurred."
-)
-_RECOVERY_GUIDANCE = (
-    "Recover or verify the isolated worktree and job metadata before starting "
-    "another orchestration run."
-)
+_NO_INTEGRATION_STATEMENT = NO_INTEGRATION_STATEMENT_RUN
+_RECOVERY_GUIDANCE = recovery_message("starting another orchestration run")
+# Unlike maintenance, orchestration also refuses to run over an inconsistent
+# edit application.
 _ACTIVE_STATES = {
-    "status": {"preparing", "materializing"},
-    "materialization_status": {"materializing"},
-    "proposal_status": {"proposing"},
-    "edit_generation_status": {"generating"},
+    **ACTIVE_STATES,
     "edit_apply_status": {"applying", "inconsistent"},
-    "review_status": {"reviewing"},
-    "checks_status": {"running"},
-    "latest_run_status": {"running"},
 }
 
 
@@ -77,9 +78,7 @@ def run_freestyle_job(
         run_checks=run_checks,
         check_ids=check_ids,
     )
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     _preflight_job(
         job,
@@ -116,7 +115,7 @@ def run_freestyle_job(
             current,
             stages,
             completed_stages,
-            skip=_is_materialized(current),
+            skip=is_materialized(current),
             skip_reason="already_materialized",
             operation=lambda: materialize_freestyle_job(
                 job_id, project_root=root, state_root=state
@@ -302,7 +301,7 @@ def _preflight_job(
                 f"{_RECOVERY_GUIDANCE}"
             )
     _validated_job_worktree(job, root, state)
-    if _is_materialized(job):
+    if is_materialized(job):
         if job.status != "materialized":
             raise FreestyleJobRefusedError(
                 f"Freestyle job {job.job_id!r} has inconsistent materialization "
@@ -451,46 +450,29 @@ def _persist_run_result(
 def _write_run_artifact(
     artifact: dict[str, Any], state: Path, job_id: str, run_id: str
 ) -> str:
-    runs_dir = state / "runs"
-    job_dir = runs_dir / job_id
-    for directory in (runs_dir, job_dir):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise FreestyleJobRefusedError(
-                "Freestyle orchestration artifact path is unsafe."
-            )
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve(strict=True).relative_to(state)
-        except (OSError, ValueError) as exc:
-            raise FreestyleJobRefusedError(
-                "Freestyle orchestration artifact path must stay inside local dev state."
-            ) from exc
-    name = f"run-{run_id}.json"
-    path = job_dir / name
-    temporary = job_dir / f"{name}.tmp"
-    for candidate in (path, temporary):
-        if candidate.exists() or candidate.is_symlink():
-            raise FreestyleJobRefusedError(
-                "Freestyle orchestration artifact path is unsafe."
-            )
-    encoded = (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_RUN_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError(
             "Freestyle orchestration artifact exceeds the size limit."
         )
-    temporary.write_bytes(encoded)
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
+    return write_artifact_bytes(
+        state,
+        "runs",
+        job_id,
+        f"run-{run_id}.json",
+        encoded,
+        label="orchestration",
+    )
 
 
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
-        "proposal": _safe_artifact_reference(job.proposal_artifact_path),
-        "edit_generation": _safe_artifact_reference(job.edit_generation_artifact_path),
-        "generated_bundle": _safe_artifact_reference(job.edit_bundle_path),
-        "applied_edits": _safe_artifact_reference(job.edit_artifact_path),
-        "review": _safe_artifact_reference(job.review_artifact_path),
-        "checks": _safe_artifact_reference(job.checks_artifact_path),
+        "proposal": safe_artifact_reference(job.proposal_artifact_path),
+        "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
+        "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
+        "applied_edits": safe_artifact_reference(job.edit_artifact_path),
+        "review": safe_artifact_reference(job.review_artifact_path),
+        "checks": safe_artifact_reference(job.checks_artifact_path),
     }
 
 
@@ -517,10 +499,6 @@ def _human_next_steps(job: FreestyleJob, status: str) -> list[str]:
             steps.append(f"Inspect the check artifact at {job.checks_artifact_path!r}.")
     steps.append(_NO_INTEGRATION_STATEMENT)
     return steps
-
-
-def _is_materialized(job: FreestyleJob) -> bool:
-    return job.status == "materialized" and job.materialization_status == "materialized"
 
 
 def _has_proposal(job: FreestyleJob) -> bool:
@@ -555,7 +533,7 @@ def _required_bundle_path(job: FreestyleJob, state: Path) -> Path:
 def _generated_reference_id(
     value: Any, prefix: str, job_id: str
 ) -> str | None:
-    safe = _safe_artifact_reference(value)
+    safe = safe_artifact_reference(value)
     if safe is None:
         return None
     parts = PurePosixPath(safe).parts
@@ -573,7 +551,7 @@ def _generated_reference_id(
 
 
 def _is_safe_generated_file(value: Any, state: Path) -> bool:
-    safe = _safe_artifact_reference(value)
+    safe = safe_artifact_reference(value)
     if safe is None:
         return False
     relative = PurePosixPath(safe)
@@ -591,22 +569,6 @@ def _is_safe_generated_file(value: Any, state: Path) -> bool:
     except (OSError, ValueError):
         return False
     return True
-
-
-def _safe_artifact_reference(value: Any) -> str | None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 500
-        or "\x00" in value
-        or "\\" in value
-        or any(ord(character) < 32 for character in value)
-    ):
-        return None
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        return None
-    return path.as_posix()
 
 
 def _checks_are_current(

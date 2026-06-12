@@ -57,6 +57,7 @@ from app.code_proposal_path_safety import (
     SECRET_NAME_PATTERN,
 )
 from app.config import ROOT_DIR
+from app.dev.freestyle_policy import is_job_id
 
 MAX_GOAL_LENGTH = 10_000
 MAX_TITLE_LENGTH = 120
@@ -1424,11 +1425,7 @@ def _validated_jobs_dir(state: Path, *, create: bool) -> Path:
 
 
 def _validate_job_id(job_id: str) -> None:
-    if (
-        not isinstance(job_id, str)
-        or len(job_id) != 32
-        or any(character not in "0123456789abcdef" for character in job_id)
-    ):
+    if not is_job_id(job_id):
         raise FreestyleJobRefusedError("Job id must be a 32-character lowercase hex id.")
 
 

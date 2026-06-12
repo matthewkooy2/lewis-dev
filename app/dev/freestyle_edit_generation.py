@@ -19,13 +19,12 @@ import uuid
 
 from app.config import ROOT_DIR
 from app.deepseek_client import create_deepseek_client
+from app.dev.freestyle_artifacts import encode_json_artifact, write_artifact_bytes
 from app.dev.freestyle_coding import (
-    DEV_STATE_DIR_NAME,
     FreestyleJob,
     FreestyleJobRefusedError,
     _bounded_error,
     _require_explicit_developer_approval,
-    _require_state_inside_project,
     _utc_now,
     _validated_job_worktree,
     _write_job,
@@ -44,6 +43,11 @@ from app.dev.freestyle_proposal import (
     _safe_suggested_path,
     _validate_deepseek_config,
     build_proposal_context,
+)
+from app.dev.freestyle_state import (
+    require_materialized,
+    require_no_active_edit_application,
+    resolved_roots,
 )
 
 MAX_PROPOSAL_ARTIFACT_BYTES = 250_000
@@ -75,9 +79,7 @@ def generate_edit_bundle(
     deepseek_client: Any | None = None,
 ) -> FreestyleJob:
     """Generate, validate, and persist one edit bundle without applying it."""
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     _require_generation_prerequisites(job)
     worktree = _validated_job_worktree(job, root, state)
@@ -214,19 +216,12 @@ def generate_edit_bundle(
 
 def _require_generation_prerequisites(job: FreestyleJob) -> None:
     _require_explicit_developer_approval(job, "generate edits")
-    if job.status != "materialized" or job.materialization_status != "materialized":
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job.job_id!r} must be successfully materialized first."
-        )
+    require_materialized(job, "must be successfully materialized first.")
     if job.proposal_status != "proposed" or not job.proposal_artifact_path:
         raise FreestyleJobRefusedError(
             f"Freestyle job {job.job_id!r} must have a successful proposal artifact."
         )
-    if job.edit_apply_status in {"applying", "inconsistent"}:
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job.job_id!r} has an in-progress or inconsistent edit "
-            "application; refusing to generate a bundle."
-        )
+    require_no_active_edit_application(job, "; refusing to generate a bundle.")
     if job.edit_generation_status == "generating":
         raise FreestyleJobRefusedError(
             f"Freestyle job {job.job_id!r} already has an in-progress edit generation."
@@ -402,18 +397,14 @@ def _write_valid_bundle(
     job_id: str,
     generation_id: str,
 ) -> str:
-    path = _artifact_file_path(
-        state, job_id, f"bundle-{generation_id}.json", temporary=False
+    return write_artifact_bytes(
+        state,
+        "edit-bundles",
+        job_id,
+        f"bundle-{generation_id}.json",
+        encode_json_artifact(validation.bundle),
+        label="edit-generation",
     )
-    temporary = _artifact_file_path(
-        state, job_id, f"bundle-{generation_id}.json.tmp", temporary=True
-    )
-    temporary.write_text(
-        json.dumps(validation.bundle, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
 
 
 def _build_generation_artifact(
@@ -504,48 +495,14 @@ def _model_metadata(config: Any, response: Any | None) -> dict[str, Any]:
 def _write_generation_artifact(
     artifact: dict[str, Any], state: Path, job_id: str, generation_id: str
 ) -> str:
-    path = _artifact_file_path(
-        state, job_id, f"generation-{generation_id}.json", temporary=False
+    return write_artifact_bytes(
+        state,
+        "edit-bundles",
+        job_id,
+        f"generation-{generation_id}.json",
+        encode_json_artifact(artifact),
+        label="edit-generation",
     )
-    temporary = _artifact_file_path(
-        state, job_id, f"generation-{generation_id}.json.tmp", temporary=True
-    )
-    temporary.write_text(
-        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
-
-
-def _artifact_file_path(
-    state: Path,
-    job_id: str,
-    name: str,
-    *,
-    temporary: bool,
-) -> Path:
-    edit_bundles_dir = state / "edit-bundles"
-    job_dir = edit_bundles_dir / job_id
-    for directory in (edit_bundles_dir, job_dir):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise FreestyleJobRefusedError(
-                "Freestyle edit-generation artifact path is unsafe."
-            )
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve(strict=True).relative_to(state)
-        except (OSError, ValueError) as exc:
-            raise FreestyleJobRefusedError(
-                "Freestyle edit-generation artifact path must stay inside local dev state."
-            ) from exc
-    path = job_dir / name
-    if path.exists() or path.is_symlink():
-        label = "temporary " if temporary else ""
-        raise FreestyleJobRefusedError(
-            f"Freestyle edit-generation {label}artifact path is unsafe."
-        )
-    return path
 
 
 def _bounded_generation_error(exc: Exception, api_key: Any) -> str:

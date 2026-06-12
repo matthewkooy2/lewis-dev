@@ -10,10 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import difflib
-import json
 import os
 from pathlib import Path, PurePosixPath
-import re
 import subprocess
 from typing import Any
 import uuid
@@ -25,6 +23,11 @@ from app.code_proposal_path_safety import (
     SECRET_NAME_PATTERN,
 )
 from app.config import ROOT_DIR
+from app.dev.freestyle_artifacts import (
+    encode_json_artifact,
+    safe_artifact_reference,
+    write_artifact_bytes,
+)
 from app.dev.freestyle_coding import (
     DEV_STATE_DIR_NAME,
     FreestyleJob,
@@ -32,11 +35,20 @@ from app.dev.freestyle_coding import (
     _bounded_error,
     _is_commit_id,
     _require_explicit_developer_approval,
-    _require_state_inside_project,
     _utc_now,
     _validated_job_worktree,
     _write_job,
     get_freestyle_job,
+)
+from app.dev.freestyle_policy import (
+    GENERATED_OR_CACHE_PARTS,
+    contains_sensitive_content,
+    recovery_message,
+)
+from app.dev.freestyle_state import (
+    require_materialized,
+    require_no_active_edit_application,
+    resolved_roots,
 )
 
 REVIEW_SCHEMA_VERSION = 1
@@ -46,7 +58,6 @@ MAX_REVIEW_TEXT_FILE_BYTES = 64 * 1024
 MAX_REVIEW_DIFF_SNIPPET_BYTES = 12 * 1024
 MAX_REVIEW_TOTAL_DIFF_BYTES = 96 * 1024
 MAX_REVIEW_ARTIFACT_BYTES = 500 * 1024
-MAX_REVIEW_REFERENCE_CHARS = 500
 _GIT_TIMEOUT_SECONDS = 30
 
 _REVIEW_GIT_PREFIX = (
@@ -73,24 +84,9 @@ _IGNORED_SUFFIX = (
     "--exclude-standard",
     "-z",
 )
-_GENERATED_OR_CACHE_PARTS = {
-    ".cache",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "cache",
-    "coverage",
-    "dist",
-    "generated",
-    "htmlcov",
-    "node_modules",
-    "target",
-    "vendor",
-}
+# The review slice also omits plain "cache" directories, beyond the shared
+# generated-or-cache exclusion the proposal and edit slices use.
+_GENERATED_OR_CACHE_PARTS = GENERATED_OR_CACHE_PARTS | {"cache"}
 _BINARY_SUFFIXES = {
     ".7z",
     ".a",
@@ -126,20 +122,8 @@ _BINARY_SUFFIXES = {
     ".woff2",
     ".zip",
 }
-_SENSITIVE_CONTENT_PATTERNS = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
-    re.compile(
-        r"\b(?:api[_-]?key|credential|password|passwd|secret|token)\b"
-        r"\s*[:=]\s*[\"'][^\"'\r\n]{8,}[\"']",
-        re.IGNORECASE,
-    ),
-)
 _CONFLICT_STATUSES = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
-_RECOVERY_MESSAGE = (
-    "Recover or verify the isolated worktree and job metadata before retrying review."
-)
+_RECOVERY_MESSAGE = recovery_message("retrying review")
 _EXECUTION_STATEMENT = (
     "This review is read-only: merge, push, pull, fetch, commit, PR creation, "
     "auto-merge, checks, formatters, package managers, repository scripts, and "
@@ -169,9 +153,7 @@ def generate_freestyle_review(
     state_root: Path | None = None,
 ) -> FreestyleJob:
     """Persist one bounded review artifact without mutating the job worktree."""
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
 
     started_at = _utc_now()
@@ -234,16 +216,8 @@ def generate_freestyle_review(
 
 def _require_review_prerequisites(job: FreestyleJob) -> None:
     _require_explicit_developer_approval(job, "review")
-    if job.status != "materialized" or job.materialization_status != "materialized":
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job.job_id!r} must be successfully materialized before "
-            "review."
-        )
-    if job.edit_apply_status in {"applying", "inconsistent"}:
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job.job_id!r} has an in-progress or inconsistent edit "
-            f"application. {_RECOVERY_MESSAGE}"
-        )
+    require_materialized(job, "must be successfully materialized before review.")
+    require_no_active_edit_application(job, f". {_RECOVERY_MESSAGE}")
 
 
 def _persist_review_failure(
@@ -445,7 +419,7 @@ def _build_review_artifact(
         "execution_statement": _EXECUTION_STATEMENT,
         "source_mutation_performed": False,
     }
-    encoded = _encoded_artifact(artifact)
+    encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_REVIEW_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError("Review artifact exceeds the total size limit.")
     return artifact
@@ -603,7 +577,7 @@ def _content_omission_reason(before: bytes, after: bytes) -> str | None:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             return "binary"
-        if any(pattern.search(text) for pattern in _SENSITIVE_CONTENT_PATTERNS):
+        if contains_sensitive_content(text):
             return "sensitive_content"
     return None
 
@@ -647,62 +621,29 @@ def _unified_diff(
 
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
-        "proposal_artifact_path": _safe_artifact_reference(job.proposal_artifact_path),
-        "edit_generation_artifact_path": _safe_artifact_reference(
+        "proposal_artifact_path": safe_artifact_reference(job.proposal_artifact_path),
+        "edit_generation_artifact_path": safe_artifact_reference(
             job.edit_generation_artifact_path
         ),
-        "generated_edit_bundle_path": _safe_artifact_reference(job.edit_bundle_path),
-        "applied_edit_artifact_path": _safe_artifact_reference(job.edit_artifact_path),
+        "generated_edit_bundle_path": safe_artifact_reference(job.edit_bundle_path),
+        "applied_edit_artifact_path": safe_artifact_reference(job.edit_artifact_path),
     }
-
-
-def _safe_artifact_reference(value: Any) -> str | None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > MAX_REVIEW_REFERENCE_CHARS
-        or "\x00" in value
-        or "\\" in value
-        or any(ord(character) < 32 for character in value)
-    ):
-        return None
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        return None
-    return path.as_posix()
 
 
 def _write_review_artifact(
     artifact: dict[str, Any], state: Path, job_id: str
 ) -> str:
-    reviews_dir = state / "reviews"
-    job_dir = reviews_dir / job_id
-    for directory in (reviews_dir, job_dir):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise FreestyleJobRefusedError("Freestyle review artifact path is unsafe.")
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve(strict=True).relative_to(state)
-        except (OSError, ValueError) as exc:
-            raise FreestyleJobRefusedError(
-                "Freestyle review artifact path must stay inside local dev state."
-            ) from exc
-    name = f"review-{artifact['review_id']}.json"
-    path = job_dir / name
-    temporary = job_dir / f"{name}.tmp"
-    for candidate in (path, temporary):
-        if candidate.exists() or candidate.is_symlink():
-            raise FreestyleJobRefusedError("Freestyle review artifact path is unsafe.")
-    encoded = _encoded_artifact(artifact)
+    encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_REVIEW_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError("Review artifact exceeds the total size limit.")
-    temporary.write_bytes(encoded)
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
-
-
-def _encoded_artifact(artifact: dict[str, Any]) -> bytes:
-    return (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return write_artifact_bytes(
+        state,
+        "reviews",
+        job_id,
+        f"review-{artifact['review_id']}.json",
+        encoded,
+        label="review",
+    )
 
 
 def _decode_short_git_text(result: _GitResult, fallback: str) -> str:

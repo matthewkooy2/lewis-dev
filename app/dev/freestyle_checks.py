@@ -20,7 +20,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 import hashlib
 import importlib.util
-import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
@@ -31,22 +30,27 @@ from typing import Any
 import uuid
 
 from app.config import ROOT_DIR
+from app.dev.freestyle_artifacts import encode_json_artifact, write_artifact_bytes
 from app.dev.freestyle_coding import (
-    DEV_STATE_DIR_NAME,
     FreestyleJob,
     FreestyleJobRefusedError,
     _bounded_error,
     _require_explicit_developer_approval,
-    _require_state_inside_project,
     _utc_now,
     _validated_job_worktree,
     _write_job,
     get_freestyle_job,
 )
+from app.dev.freestyle_policy import recovery_message
 from app.dev.freestyle_review import (
     _ChangedPath,
     _path_omission_reason,
     _read_changed_paths,
+)
+from app.dev.freestyle_state import (
+    require_materialized,
+    require_no_active_edit_application,
+    resolved_roots,
 )
 
 CHECKS_SCHEMA_VERSION = 1
@@ -100,10 +104,7 @@ _CHECK_ENVIRONMENT = {
     "PYTHONIOENCODING": "utf-8",
     "PYTHONNOUSERSITE": "1",
 }
-_RECOVERY_MESSAGE = (
-    "Recover or verify the isolated worktree and job metadata before retrying "
-    "checks."
-)
+_RECOVERY_MESSAGE = recovery_message("retrying checks")
 _CHECKS_EXECUTION_STATEMENT = (
     "This check run executed only static allowlisted checks inside the "
     "isolated job worktree: no commit, merge, push, pull, fetch, rebase, "
@@ -219,9 +220,7 @@ def run_freestyle_checks(
     state_root: Path | None = None,
 ) -> FreestyleJob:
     """Run only static allowlisted checks inside one isolated job worktree."""
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     if job.checks_status == "running":
         # Refuse without persisting so the "running" lock survives until the
@@ -312,16 +311,10 @@ def run_freestyle_checks(
 
 def _require_checks_prerequisites(job: FreestyleJob) -> None:
     _require_explicit_developer_approval(job, "run checks")
-    if job.status != "materialized" or job.materialization_status != "materialized":
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job.job_id!r} must be successfully materialized "
-            "before checks can run."
-        )
-    if job.edit_apply_status in {"applying", "inconsistent"}:
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job.job_id!r} has an in-progress or inconsistent "
-            f"edit application. {_RECOVERY_MESSAGE}"
-        )
+    require_materialized(
+        job, "must be successfully materialized before checks can run."
+    )
+    require_no_active_edit_application(job, f". {_RECOVERY_MESSAGE}")
 
 
 def _validated_check_selection(
@@ -613,7 +606,7 @@ def _build_checks_artifact(
         },
         "execution_statement": _CHECKS_EXECUTION_STATEMENT,
     }
-    encoded = _encoded_checks_artifact(artifact)
+    encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_CHECKS_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError(
             "Check-run artifact exceeds the total size limit."
@@ -624,36 +617,19 @@ def _build_checks_artifact(
 def _write_checks_artifact(
     artifact: dict[str, Any], state: Path, job_id: str
 ) -> str:
-    checks_dir = state / "checks"
-    job_dir = checks_dir / job_id
-    for directory in (checks_dir, job_dir):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise FreestyleJobRefusedError("Freestyle check artifact path is unsafe.")
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve(strict=True).relative_to(state)
-        except (OSError, ValueError) as exc:
-            raise FreestyleJobRefusedError(
-                "Freestyle check artifact path must stay inside local dev state."
-            ) from exc
-    name = f"checks-{artifact['run_id']}.json"
-    path = job_dir / name
-    temporary = job_dir / f"{name}.tmp"
-    for candidate in (path, temporary):
-        if candidate.exists() or candidate.is_symlink():
-            raise FreestyleJobRefusedError("Freestyle check artifact path is unsafe.")
-    encoded = _encoded_checks_artifact(artifact)
+    encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_CHECKS_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError(
             "Check-run artifact exceeds the total size limit."
         )
-    temporary.write_bytes(encoded)
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
-
-
-def _encoded_checks_artifact(artifact: dict[str, Any]) -> bytes:
-    return (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return write_artifact_bytes(
+        state,
+        "checks",
+        job_id,
+        f"checks-{artifact['run_id']}.json",
+        encoded,
+        label="check",
+    )
 
 
 def _persist_checks_failure(

@@ -15,18 +15,24 @@ from urllib.parse import urlparse
 from app.code_proposal_path_safety import validate_relative_project_path
 from app.config import ROOT_DIR
 from app.deepseek_client import create_deepseek_client
+from app.dev.freestyle_artifacts import encode_json_artifact, write_artifact_bytes
 from app.dev.freestyle_coding import (
-    DEV_STATE_DIR_NAME,
     FreestyleJob,
     FreestyleJobRefusedError,
     _bounded_error,
     _require_explicit_developer_approval,
-    _require_state_inside_project,
     _utc_now,
     _validated_job_worktree,
     _write_job,
     get_freestyle_job,
 )
+from app.dev.freestyle_policy import (
+    APPROVAL_STORE_CLASS_NAME,
+    APPROVAL_STORE_PATH_NAMES,
+    GENERATED_OR_CACHE_PARTS,
+    contains_sensitive_content,
+)
+from app.dev.freestyle_state import require_materialized, resolved_roots
 
 DEEPSEEK_API_BASE_URL = "https://api.deepseek.com"
 MAX_CONTEXT_SCAN_FILES = 5_000
@@ -52,29 +58,6 @@ _HIGH_SIGNAL_NAMES = {
     "cargo.toml": 920,
     "go.mod": 920,
 }
-_GENERATED_OR_CACHE_PARTS = {
-    ".cache",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "coverage",
-    "dist",
-    "generated",
-    "htmlcov",
-    "node_modules",
-    "target",
-    "vendor",
-}
-_APPROVAL_STORE_PATH_NAMES = {
-    "approval_service.py",
-    "approvals.py",
-    "test_approvals.py",
-}
-_APPROVAL_STORE_CLASS_NAME = "Approval" "Store"
 _GOAL_STOP_WORDS = {
     "add",
     "and",
@@ -90,16 +73,6 @@ _GOAL_STOP_WORDS = {
     "this",
     "with",
 }
-_SENSITIVE_CONTENT_PATTERNS = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
-    re.compile(
-        r"\b(?:api[_-]?key|credential|password|passwd|secret|token)\b"
-        r"\s*[:=]\s*[\"'][^\"'\r\n]{8,}[\"']",
-        re.IGNORECASE,
-    ),
-)
 _ERROR_SECRET_PATTERN = re.compile(
     r"\b(api[_-]?key|authorization|bearer|credential|password|secret|token)"
     r"\s*[:=]\s*\S+",
@@ -160,15 +133,10 @@ def generate_freestyle_proposal(
     deepseek_client: Any | None = None,
 ) -> FreestyleJob:
     """Generate and persist one structured proposal without editing the worktree."""
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     _require_explicit_developer_approval(job, "propose")
-    if job.status != "materialized" or job.materialization_status != "materialized":
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job_id!r} must be successfully materialized first."
-        )
+    require_materialized(job, "must be successfully materialized first.")
 
     started = replace(
         job,
@@ -302,12 +270,12 @@ def build_proposal_context(
             if reason is not None:
                 _record_omission(omissions, omission_counts, relative, reason)
                 continue
-            if _APPROVAL_STORE_CLASS_NAME in sample:
+            if APPROVAL_STORE_CLASS_NAME in sample:
                 _record_omission(
                     omissions, omission_counts, relative, "approval_store"
                 )
                 continue
-            if _contains_sensitive_content(sample):
+            if contains_sensitive_content(sample):
                 _record_omission(
                     omissions, omission_counts, relative, "sensitive_content"
                 )
@@ -349,12 +317,12 @@ def build_proposal_context(
                 omissions, omission_counts, candidate.relative_path, reason
             )
             continue
-        if _APPROVAL_STORE_CLASS_NAME in text:
+        if APPROVAL_STORE_CLASS_NAME in text:
             _record_omission(
                 omissions, omission_counts, candidate.relative_path, "approval_store"
             )
             continue
-        if _contains_sensitive_content(text):
+        if contains_sensitive_content(text):
             _record_omission(
                 omissions, omission_counts, candidate.relative_path, "sensitive_content"
             )
@@ -624,33 +592,15 @@ def _build_artifact(
 
 
 def _write_artifact(artifact: dict[str, Any], state: Path, job_id: str) -> str:
-    proposals_dir = state / "proposals"
-    job_dir = proposals_dir / job_id
-    for directory in (proposals_dir, job_dir):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise FreestyleJobRefusedError("Freestyle proposal artifact path is unsafe.")
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve(strict=True).relative_to(state)
-        except (OSError, ValueError) as exc:
-            raise FreestyleJobRefusedError(
-                "Freestyle proposal artifact path must stay inside local dev state."
-            ) from exc
-    path = job_dir / "proposal.json"
-    temporary = job_dir / "proposal.json.tmp"
-    for candidate in (path, temporary):
-        if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
-            raise FreestyleJobRefusedError("Freestyle proposal artifact path is unsafe.")
-    if temporary.exists():
-        raise FreestyleJobRefusedError(
-            "Freestyle proposal temporary artifact path is unsafe."
-        )
-    temporary.write_text(
-        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    return write_artifact_bytes(
+        state,
+        "proposals",
+        job_id,
+        "proposal.json",
+        encode_json_artifact(artifact),
+        label="proposal",
+        allow_replace=True,
     )
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
 
 
 def _context_path_omission_reason(
@@ -659,11 +609,11 @@ def _context_path_omission_reason(
     parts = tuple(part.casefold() for part in PurePosixPath(relative).parts)
     if path.is_symlink():
         return "symlink"
-    if any(part in _GENERATED_OR_CACHE_PARTS for part in parts):
+    if any(part in GENERATED_OR_CACHE_PARTS for part in parts):
         return "generated_or_cache"
     normalized_name = re.sub(r"[^a-z0-9]", "", path.name.casefold())
     if (
-        path.name.casefold() in _APPROVAL_STORE_PATH_NAMES
+        path.name.casefold() in APPROVAL_STORE_PATH_NAMES
         or "approvalstore" in normalized_name
     ):
         return "approval_store"
@@ -757,10 +707,6 @@ def _goal_terms(goal: str) -> tuple[str, ...]:
     return tuple(sorted(terms, key=lambda term: (-len(term), term))[:20])
 
 
-def _contains_sensitive_content(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _SENSITIVE_CONTENT_PATTERNS)
-
-
 def _record_omission(
     records: list[dict[str, str]],
     counts: Counter[str],
@@ -792,8 +738,8 @@ def _safe_suggested_path(raw_path: str, worktree: Path) -> str | None:
         )
         if (
             reason is not None
-            or _APPROVAL_STORE_CLASS_NAME in text
-            or _contains_sensitive_content(text)
+            or APPROVAL_STORE_CLASS_NAME in text
+            or contains_sensitive_content(text)
         ):
             return None
     return safe_path

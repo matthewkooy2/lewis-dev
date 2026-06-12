@@ -63,18 +63,27 @@ from app.code_proposal_path_safety import (
     validate_relative_project_path,
 )
 from app.config import ROOT_DIR
+from app.dev.freestyle_artifacts import encode_json_artifact, write_artifact_bytes
 from app.dev.freestyle_coding import (
-    DEV_STATE_DIR_NAME,
     FreestyleJob,
     FreestyleJobRefusedError,
     _bounded_error,
     _require_explicit_developer_approval,
-    _require_state_inside_project,
     _utc_now,
     _validated_job_worktree,
     _WINDOWS_RESERVED_NAMES,
     _write_job,
     get_freestyle_job,
+)
+from app.dev.freestyle_policy import (
+    APPROVAL_STORE_PATH_NAMES,
+    APPROVAL_STORE_TOKEN,
+    GENERATED_OR_CACHE_PARTS,
+)
+from app.dev.freestyle_state import (
+    require_materialized,
+    require_no_active_edit_application,
+    resolved_roots,
 )
 
 EDIT_BUNDLE_SCHEMA_VERSION = 1
@@ -102,29 +111,6 @@ _EXECUTABLE_SUFFIXES = {
     ".so",
     ".vbs",
 }
-_GENERATED_OR_CACHE_PARTS = {
-    ".cache",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "coverage",
-    "dist",
-    "generated",
-    "htmlcov",
-    "node_modules",
-    "target",
-    "vendor",
-}
-_APPROVAL_STORE_PATH_NAMES = {
-    "approval_service.py",
-    "approvals.py",
-    "test_approvals.py",
-}
-_APPROVAL_STORE_TOKEN = "approvalstore"
 _BUNDLE_REQUIRED_FIELDS = frozenset(
     {"schema_version", "job_id", "created_at", "operation_count", "operations"}
 )
@@ -174,21 +160,13 @@ def apply_edit_bundle(
     state_root: Path | None = None,
 ) -> FreestyleJob:
     """Apply one validated edit bundle inside one materialized job worktree."""
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     _require_explicit_developer_approval(job, "apply edits")
-    if job.status != "materialized" or job.materialization_status != "materialized":
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job_id!r} must be successfully materialized before "
-            "edits can be applied."
-        )
-    if job.edit_apply_status in {"applying", "inconsistent"}:
-        raise FreestyleJobRefusedError(
-            f"Freestyle job {job_id!r} has an in-progress or inconsistent edit "
-            "application; refusing to apply another bundle."
-        )
+    require_materialized(
+        job, "must be successfully materialized before edits can be applied."
+    )
+    require_no_active_edit_application(job, "; refusing to apply another bundle.")
 
     started = replace(
         job,
@@ -541,13 +519,13 @@ def _validated_edit_path(raw_path: Any, worktree: Path, label: str) -> str:
     except ValueError as exc:
         raise FreestyleJobRefusedError(str(exc)) from exc
     lowered = tuple(part.casefold() for part in posix_path.parts)
-    if any(part in _GENERATED_OR_CACHE_PARTS for part in lowered):
+    if any(part in GENERATED_OR_CACHE_PARTS for part in lowered):
         raise FreestyleJobRefusedError(
             f"Edit bundle {label} path targets a generated or cache directory."
         )
     name = lowered[-1]
     normalized_name = re.sub(r"[^a-z0-9]", "", name)
-    if name in _APPROVAL_STORE_PATH_NAMES or _APPROVAL_STORE_TOKEN in normalized_name:
+    if name in APPROVAL_STORE_PATH_NAMES or APPROVAL_STORE_TOKEN in normalized_name:
         raise FreestyleJobRefusedError(
             f"Edit bundle {label} path targets approval-record code."
         )
@@ -866,30 +844,14 @@ def _build_edit_artifact(
 
 
 def _write_edit_artifact(artifact: dict[str, Any], state: Path, job_id: str) -> str:
-    edits_dir = state / "edits"
-    job_dir = edits_dir / job_id
-    for directory in (edits_dir, job_dir):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise FreestyleJobRefusedError("Freestyle edit artifact path is unsafe.")
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve(strict=True).relative_to(state)
-        except (OSError, ValueError) as exc:
-            raise FreestyleJobRefusedError(
-                "Freestyle edit artifact path must stay inside local dev state."
-            ) from exc
-    name = f"apply-{uuid.uuid4().hex[:12]}.json"
-    path = job_dir / name
-    temporary = job_dir / f"{name}.tmp"
-    for candidate in (path, temporary):
-        if candidate.exists() or candidate.is_symlink():
-            raise FreestyleJobRefusedError("Freestyle edit artifact path is unsafe.")
-    temporary.write_text(
-        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    return write_artifact_bytes(
+        state,
+        "edits",
+        job_id,
+        f"apply-{uuid.uuid4().hex[:12]}.json",
+        encode_json_artifact(artifact),
+        label="edit",
     )
-    temporary.replace(path)
-    return path.relative_to(state).as_posix()
 
 
 def _sha256_or_none(data: bytes | None) -> str | None:

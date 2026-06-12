@@ -21,21 +21,26 @@ from app.dev.freestyle_coding import (
     _bounded_error,
     _is_commit_id,
     _require_git_toplevel,
-    _require_state_inside_project,
     _utc_now,
     _validate_job_id,
     _write_job,
     get_freestyle_job,
     list_freestyle_jobs,
 )
+from app.dev.freestyle_policy import (
+    NO_INTEGRATION_STATEMENT_MAINTENANCE,
+    is_job_id,
+)
+from app.dev.freestyle_state import (
+    ACTIVE_STATES,
+    INCONSISTENT_STATES,
+    resolved_roots,
+)
 
 MAINTENANCE_SCHEMA_VERSION = 1
 STALE_AFTER = timedelta(hours=1)
 MAX_MAINTENANCE_ARTIFACT_BYTES = 250_000
-_NO_INTEGRATION_STATEMENT = (
-    "No commit, merge, push, pull, fetch, remote operation, PR creation, or "
-    "auto-merge occurred."
-)
+_NO_INTEGRATION_STATEMENT = NO_INTEGRATION_STATEMENT_MAINTENANCE
 _JOB_ARTIFACT_DIRS = (
     "proposals",
     "edit-bundles",
@@ -44,17 +49,6 @@ _JOB_ARTIFACT_DIRS = (
     "checks",
     "runs",
 )
-_ACTIVE_STATES = {
-    "status": {"preparing", "materializing"},
-    "materialization_status": {"materializing"},
-    "proposal_status": {"proposing"},
-    "edit_generation_status": {"generating"},
-    "edit_apply_status": {"applying"},
-    "review_status": {"reviewing"},
-    "checks_status": {"running"},
-    "latest_run_status": {"running"},
-}
-_INCONSISTENT_STATES = {"edit_apply_status": {"inconsistent"}}
 _MAINTENANCE_GIT_PREFIX = (
     "git",
     "--no-optional-locks",
@@ -362,8 +356,8 @@ def _job_cleanup_status(
             or (worktree_registered and registered_branch != expected_branch)
         )
     )
-    active_fields = _matching_states(job, _ACTIVE_STATES)
-    inconsistent_fields = _matching_states(job, _INCONSISTENT_STATES)
+    active_fields = _matching_states(job, ACTIVE_STATES)
+    inconsistent_fields = _matching_states(job, INCONSISTENT_STATES)
     dirty_paths: list[str] = []
     status_error: str | None = None
     branch_diverged = bool(
@@ -506,10 +500,7 @@ def _orphan_branch_status(branch: str, commit: str) -> dict[str, Any]:
 def _maintenance_roots(
     project_root: Path | None, state_root: Path | None
 ) -> tuple[Path, Path]:
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
-    return root, state
+    return resolved_roots(project_root or ROOT_DIR, state_root)
 
 
 def _matching_states(
@@ -540,7 +531,7 @@ def _artifact_job_ids(state: Path) -> set[str]:
         parent = state / name
         if parent.is_dir() and not parent.is_symlink():
             for child in parent.iterdir():
-                if _is_job_id(child.name):
+                if is_job_id(child.name):
                     found.add(child.name)
     return found
 
@@ -600,7 +591,7 @@ def _freestyle_branches(root: Path) -> dict[str, str]:
 
 def _job_id_from_branch(branch: str) -> str | None:
     suffix = branch.removeprefix(BRANCH_PREFIX)
-    return suffix if _is_job_id(suffix) else None
+    return suffix if is_job_id(suffix) else None
 
 
 def _job_id_from_worktree_path(path: Path, state: Path) -> str | None:
@@ -608,11 +599,7 @@ def _job_id_from_worktree_path(path: Path, state: Path) -> str | None:
         relative = path.relative_to(state / "worktrees")
     except ValueError:
         return None
-    return relative.name if len(relative.parts) == 1 and _is_job_id(relative.name) else None
-
-
-def _is_job_id(value: str) -> bool:
-    return len(value) == 32 and all(character in "0123456789abcdef" for character in value)
+    return relative.name if len(relative.parts) == 1 and is_job_id(relative.name) else None
 
 
 def _parse_status_paths(output: str) -> list[str]:
@@ -635,7 +622,7 @@ def _remove_allowed_state_path(path: Path, state: Path) -> None:
 
 def _validate_allowed_state_path(path: Path, state: Path) -> None:
     allowed_parents = {state / name for name in _JOB_ARTIFACT_DIRS}
-    if path.parent not in allowed_parents or not _is_job_id(path.name):
+    if path.parent not in allowed_parents or not is_job_id(path.name):
         raise FreestyleJobRefusedError("Cleanup path is outside allowed local artifacts.")
     if path.parent.is_symlink() or not path.parent.is_dir():
         raise FreestyleJobRefusedError("Cleanup artifact parent is unsafe.")
@@ -785,7 +772,7 @@ def _is_allowed_maintenance_git(args: tuple[str, ...]) -> bool:
         path = Path(suffix[-1])
         return (
             path.is_absolute()
-            and _is_job_id(path.name)
+            and is_job_id(path.name)
             and path.parent.name == "worktrees"
             and path.parent.parent.name == DEV_STATE_DIR_NAME
         )

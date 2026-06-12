@@ -7,24 +7,22 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config import ROOT_DIR
+from app.dev.freestyle_artifacts import safe_artifact_reference
 from app.dev.freestyle_coding import (
-    DEV_STATE_DIR_NAME,
     FreestyleJob,
     FreestyleJobRefusedError,
     _bounded_error,
-    _require_state_inside_project,
     _validated_job_worktree,
     get_freestyle_job,
 )
+from app.dev.freestyle_policy import NO_INTEGRATION_STATEMENT_HANDOFF
 from app.dev.freestyle_review import _read_changed_paths
+from app.dev.freestyle_state import resolved_roots
 
 MAX_HANDOFF_ARTIFACT_BYTES = 1_000_000
 MAX_HANDOFF_ERRORS = 20
 MAX_HANDOFF_RISKS = 20
-_NO_INTEGRATION_STATEMENT = (
-    "Lewis has not committed, merged, pushed, pulled, fetched, opened a PR, "
-    "or auto-merged this job."
-)
+_NO_INTEGRATION_STATEMENT = NO_INTEGRATION_STATEMENT_HANDOFF
 _DEEPSEEK_CONFIG_MARKERS = (
     "deepseek proposal configuration",
     "deepseek_api_key",
@@ -40,9 +38,7 @@ def get_freestyle_handoff(
     state_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build one read-only human handoff from local dev state and worktree status."""
-    root = (project_root or ROOT_DIR).resolve()
-    state = (state_root or root / DEV_STATE_DIR_NAME).resolve()
-    _require_state_inside_project(state, root)
+    root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
 
     errors = _job_errors(job)
@@ -164,30 +160,14 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
 
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
-        "proposal": _safe_artifact_reference(job.proposal_artifact_path),
-        "generated_bundle": _safe_artifact_reference(job.edit_bundle_path),
-        "edit_generation": _safe_artifact_reference(job.edit_generation_artifact_path),
-        "applied_edit": _safe_artifact_reference(job.edit_artifact_path),
-        "review": _safe_artifact_reference(job.review_artifact_path),
-        "checks": _safe_artifact_reference(job.checks_artifact_path),
-        "orchestration_run": _safe_artifact_reference(job.latest_run_artifact_path),
+        "proposal": safe_artifact_reference(job.proposal_artifact_path),
+        "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
+        "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
+        "applied_edit": safe_artifact_reference(job.edit_artifact_path),
+        "review": safe_artifact_reference(job.review_artifact_path),
+        "checks": safe_artifact_reference(job.checks_artifact_path),
+        "orchestration_run": safe_artifact_reference(job.latest_run_artifact_path),
     }
-
-
-def _safe_artifact_reference(value: Any) -> str | None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 500
-        or "\x00" in value
-        or "\\" in value
-        or any(ord(character) < 32 for character in value)
-    ):
-        return None
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        return None
-    return path.as_posix()
 
 
 def _read_optional_artifact(
