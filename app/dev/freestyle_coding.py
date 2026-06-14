@@ -28,6 +28,7 @@ Invocation:
     python -m app.dev.freestyle_coding run <job-id>
     python -m app.dev.freestyle_coding run <job-id> \
         --apply-latest-generated --confirm-apply [--run-checks]
+    python -m app.dev.freestyle_coding refine <job-id> --goal "<goal>" --approve
     python -m app.dev.freestyle_coding cleanup-status
     python -m app.dev.freestyle_coding recover <job-id> --confirm
     python -m app.dev.freestyle_coding cleanup <job-id> --confirm
@@ -83,6 +84,7 @@ _CLI_COMMANDS = {
     "materialize",
     "propose",
     "recover",
+    "refine",
     "reapprove",
     "review",
     "run",
@@ -237,6 +239,20 @@ class FreestyleJob:
     latest_run_artifact_path: str | None = None
     latest_run_completed_stages: tuple[str, ...] = ()
     latest_run_errors: tuple[str, ...] = ()
+    original_artifacts: dict[str, str | None] | None = None
+    original_stage_statuses: dict[str, str] | None = None
+    refinement_count: int = 0
+    latest_refinement_id: str | None = None
+    latest_refinement_goal: str | None = None
+    latest_refinement_status: str = "not_refined"
+    latest_refinement_artifact_path: str | None = None
+    latest_refinement_proposal_artifact_path: str | None = None
+    latest_refinement_edit_generation_artifact_path: str | None = None
+    latest_refinement_edit_bundle_path: str | None = None
+    latest_refinement_edit_artifact_path: str | None = None
+    latest_refinement_review_artifact_path: str | None = None
+    latest_refinement_checks_artifact_path: str | None = None
+    refinement_history: tuple[dict[str, Any], ...] = ()
 
     @property
     def approval_state(self) -> str:
@@ -425,17 +441,28 @@ def propose_freestyle_job(
     state_root: Path | None = None,
     deepseek_config: Any | None = None,
     deepseek_client: Any | None = None,
+    goal_override: str | None = None,
+    title_override: str | None = None,
+    artifact_name: str = "proposal.json",
+    failure_artifact_name: str = "proposal-failure.json",
+    artifact_metadata: dict[str, Any] | None = None,
 ) -> FreestyleJob:
     """Generate a structured DeepSeek proposal for one materialized job."""
     from app.dev.freestyle_proposal import generate_freestyle_proposal
 
-    return generate_freestyle_proposal(
+    completed = generate_freestyle_proposal(
         job_id,
         project_root=project_root,
         state_root=state_root,
         deepseek_config=deepseek_config,
         deepseek_client=deepseek_client,
+        goal_override=goal_override,
+        title_override=title_override,
+        artifact_name=artifact_name,
+        failure_artifact_name=failure_artifact_name,
+        artifact_metadata=artifact_metadata,
     )
+    return _sync_refinement_if_needed(completed, project_root, state_root)
 
 
 def apply_freestyle_edit_bundle(
@@ -448,12 +475,13 @@ def apply_freestyle_edit_bundle(
     """Apply one structured edit bundle inside one materialized job worktree."""
     from app.dev.freestyle_edit_bundle import apply_edit_bundle
 
-    return apply_edit_bundle(
+    completed = apply_edit_bundle(
         job_id,
         bundle_path,
         project_root=project_root,
         state_root=state_root,
     )
+    return _sync_refinement_if_needed(completed, project_root, state_root)
 
 
 def generate_freestyle_edit_bundle(
@@ -463,17 +491,24 @@ def generate_freestyle_edit_bundle(
     state_root: Path | None = None,
     deepseek_config: Any | None = None,
     deepseek_client: Any | None = None,
+    goal_override: str | None = None,
+    title_override: str | None = None,
+    artifact_metadata: dict[str, Any] | None = None,
 ) -> FreestyleJob:
     """Generate and validate one DeepSeek edit bundle without applying it."""
     from app.dev.freestyle_edit_generation import generate_edit_bundle
 
-    return generate_edit_bundle(
+    completed = generate_edit_bundle(
         job_id,
         project_root=project_root,
         state_root=state_root,
         deepseek_config=deepseek_config,
         deepseek_client=deepseek_client,
+        goal_override=goal_override,
+        title_override=title_override,
+        artifact_metadata=artifact_metadata,
     )
+    return _sync_refinement_if_needed(completed, project_root, state_root)
 
 
 def review_freestyle_job(
@@ -485,11 +520,12 @@ def review_freestyle_job(
     """Persist one deterministic, read-only review of an isolated job worktree."""
     from app.dev.freestyle_review import generate_freestyle_review
 
-    return generate_freestyle_review(
+    completed = generate_freestyle_review(
         job_id,
         project_root=project_root,
         state_root=state_root,
     )
+    return _sync_refinement_if_needed(completed, project_root, state_root)
 
 
 def run_freestyle_checks(
@@ -502,11 +538,56 @@ def run_freestyle_checks(
     """Run only static allowlisted checks inside one isolated job worktree."""
     from app.dev.freestyle_checks import run_freestyle_checks as run_checks
 
-    return run_checks(
+    completed = run_checks(
         job_id,
         check_ids=check_ids,
         project_root=project_root,
         state_root=state_root,
+    )
+    return _sync_refinement_if_needed(completed, project_root, state_root)
+
+
+def refine_freestyle_job(
+    job_id: str,
+    goal: str,
+    *,
+    developer_approved: bool = False,
+    apply_latest_generated: bool = False,
+    confirm_apply: bool = False,
+    run_checks: bool = False,
+    check_ids: Sequence[str] | None = None,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+    deepseek_config: Any | None = None,
+    deepseek_client: Any | None = None,
+) -> FreestyleJob:
+    """Generate a new refinement bundle from the current isolated worktree."""
+    from app.dev.freestyle_refinement import refine_freestyle_job as refine
+
+    return refine(
+        job_id,
+        goal,
+        developer_approved=developer_approved,
+        apply_latest_generated=apply_latest_generated,
+        confirm_apply=confirm_apply,
+        run_checks=run_checks,
+        check_ids=check_ids,
+        project_root=project_root,
+        state_root=state_root,
+        deepseek_config=deepseek_config,
+        deepseek_client=deepseek_client,
+    )
+
+
+def _sync_refinement_if_needed(
+    job: FreestyleJob, project_root: Path | None, state_root: Path | None
+) -> FreestyleJob:
+    if job.latest_refinement_id is None:
+        return job
+    from app.dev.freestyle_refinement import sync_latest_refinement
+
+    return sync_latest_refinement(
+        job, project_root=project_root, state_root=state_root
     )
 
 
@@ -1455,6 +1536,25 @@ def _read_job(path: Path) -> FreestyleJob:
             payload.get("latest_run_completed_stages", ())
         )
         payload["latest_run_errors"] = tuple(payload.get("latest_run_errors", ()))
+        payload.setdefault("original_artifacts", None)
+        payload.setdefault("original_stage_statuses", None)
+        payload.setdefault("refinement_count", 0)
+        payload.setdefault("latest_refinement_id", None)
+        payload.setdefault("latest_refinement_goal", None)
+        payload.setdefault("latest_refinement_status", "not_refined")
+        payload.setdefault("latest_refinement_artifact_path", None)
+        payload.setdefault("latest_refinement_proposal_artifact_path", None)
+        payload.setdefault("latest_refinement_edit_generation_artifact_path", None)
+        payload.setdefault("latest_refinement_edit_bundle_path", None)
+        payload.setdefault("latest_refinement_edit_artifact_path", None)
+        payload.setdefault("latest_refinement_review_artifact_path", None)
+        payload.setdefault("latest_refinement_checks_artifact_path", None)
+        history = payload.get("refinement_history", ())
+        if not isinstance(history, (list, tuple)) or any(
+            not isinstance(item, dict) for item in history
+        ):
+            raise ValueError("Refinement history must be a list of objects.")
+        payload["refinement_history"] = tuple(history)
         return FreestyleJob(**payload)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise FreestyleJobRefusedError(f"Could not read freestyle job {path.stem!r}.") from exc
@@ -1581,6 +1681,11 @@ def _failed_artifact_path(command: str | None, job_id: str | None) -> str | None
             "latest_run_status",
             {"error", "failed", "refused"},
             "latest_run_artifact_path",
+        ),
+        "refine": (
+            "latest_refinement_status",
+            {"failed"},
+            "latest_refinement_artifact_path",
         ),
     }
     artifact_spec = artifact_fields.get(command)
@@ -1751,6 +1856,39 @@ def main(argv: list[str] | None = None) -> int:
         metavar="CHECK_ID",
         help="Allowlisted check id to run (repeatable); requires --run-checks.",
     )
+    refine_parser = subparsers.add_parser(
+        "refine",
+        help="Generate a refinement bundle from the current isolated worktree.",
+    )
+    refine_parser.add_argument("job_id")
+    refine_parser.add_argument("--goal", required=True)
+    refine_parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="Explicitly approve this refinement of the isolated worktree.",
+    )
+    refine_parser.add_argument(
+        "--apply-latest-generated",
+        action="store_true",
+        help="Request application of the newly generated refinement bundle.",
+    )
+    refine_parser.add_argument(
+        "--confirm-apply",
+        action="store_true",
+        help="Explicitly confirm applying the newly generated refinement bundle.",
+    )
+    refine_parser.add_argument(
+        "--run-checks",
+        action="store_true",
+        help="Run allowlisted checks after explicitly applying the refinement.",
+    )
+    refine_parser.add_argument(
+        "--check",
+        action="append",
+        dest="check_ids",
+        metavar="CHECK_ID",
+        help="Allowlisted check id to run (repeatable); requires --run-checks.",
+    )
     cleanup_parser = subparsers.add_parser(
         "cleanup", help="Explicitly clean one safe local freestyle job."
     )
@@ -1842,6 +1980,18 @@ def main(argv: list[str] | None = None) -> int:
                     args.job_id,
                     confirm=args.confirm,
                     confirm_inconsistent=args.confirm_inconsistent,
+                )
+            )
+        elif args.command == "refine":
+            _print_job(
+                refine_freestyle_job(
+                    args.job_id,
+                    args.goal,
+                    developer_approved=args.approve,
+                    apply_latest_generated=args.apply_latest_generated,
+                    confirm_apply=args.confirm_apply,
+                    run_checks=args.run_checks,
+                    check_ids=args.check_ids,
                 )
             )
         else:

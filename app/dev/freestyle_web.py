@@ -23,6 +23,7 @@ from app.dev.freestyle_coding import (
     get_freestyle_job,
     list_freestyle_jobs,
     materialize_freestyle_job,
+    refine_freestyle_job,
     recover_freestyle_job,
     review_freestyle_job,
     run_freestyle_checks,
@@ -163,6 +164,36 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
         return _redirect(
             job_id,
             message="Applied the latest validated generated bundle to the isolated worktree.",
+        )
+
+    @app.post("/dev/freestyle/{job_id}/refine")
+    async def refine_freestyle_job_web(
+        request: Request, job_id: str
+    ) -> RedirectResponse:
+        fields = await _request_fields(request)
+        if set(fields) - {"goal", "developer_approved"}:
+            return _redirect(
+                job_id,
+                error="Refine only accepts a refinement goal and explicit approval.",
+            )
+        if fields.get("developer_approved") != "approved":
+            return _redirect(
+                job_id,
+                error="Explicit developer approval is required to refine this job.",
+            )
+        try:
+            refine_freestyle_job(
+                job_id,
+                str(fields.get("goal", "")),
+                developer_approved=True,
+                project_root=_project_root(request),
+                deepseek_config=_deepseek_config(request),
+            )
+        except Exception as exc:
+            return _redirect(job_id, error=_web_error(request, exc))
+        return _redirect(
+            job_id,
+            message="Generated a refinement bundle from the current isolated worktree.",
         )
 
     @app.post("/dev/freestyle/{job_id}/review")
@@ -532,6 +563,7 @@ def _job_detail(
             _job_actions(job, handoff),
             "</section>",
             _stage_status(handoff),
+            _refinement_status(handoff),
             _proposal_failure_diagnostics(handoff),
             _artifact_paths_and_previews(handoff, previews),
             _changed_files(handoff),
@@ -597,6 +629,7 @@ def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
             "".join(setup_actions),
             "</div><p class='muted'>Run stops at the generated bundle boundary. "
             "Every later action below is separate and manual.</p>",
+            _refine_form(job, running),
             "<section class='action-zone primary-zone'><h3>Primary Action</h3>",
             "<p>Apply only the latest generated bundle through the deterministic "
             "applier. It revalidates the generated reference and bundle, mutates "
@@ -620,6 +653,66 @@ def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
             "</div></section>",
             _danger_actions(job),
         ]
+    )
+
+
+def _refine_form(job: FreestyleJob, running: bool) -> str:
+    disabled = (
+        job.approval_state != "approved"
+        or job.materialization_status != "materialized"
+        or job.edit_apply_status == "inconsistent"
+        or running
+    )
+    if disabled:
+        return ""
+    return (
+        "<section class='action-zone primary-zone'><h3>Refine This Job</h3>"
+        "<p>This will inspect and modify only this job's isolated worktree. "
+        "It will not touch the main checkout, commit, merge, push, pull, fetch, "
+        "or use any provider except DeepSeek. The default action stops at a "
+        "new validated generated bundle.</p>"
+        f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/refine'>"
+        "<label class='control'><span>Refinement goal</span>"
+        "<textarea name='goal' rows='4' maxlength='10000' required "
+        "placeholder='Describe the minimal targeted refinement'></textarea></label>"
+        f"{_confirmation('developer_approved', 'approved', 'I explicitly approve refining this job in its current isolated worktree.')}"
+        "<button type='submit'>Generate Refinement Bundle</button></form></section>"
+    )
+
+
+def _refinement_status(handoff: dict[str, Any]) -> str:
+    refinement = handoff.get("refinement", {})
+    if not isinstance(refinement, dict) or not refinement.get("count"):
+        return ""
+    latest = refinement.get("latest_artifacts", {})
+    original = refinement.get("original_artifacts", {})
+    original_stages = refinement.get("original_stages", {})
+    history = refinement.get("history", [])
+    rows = "".join(
+        field(label.replace("_", " "), path or "none")
+        for label, path in latest.items()
+    )
+    original_rows = "".join(
+        field(f"original {label.replace('_', ' ')}", path or "none")
+        for label, path in original.items()
+    )
+    original_stage_rows = "".join(
+        field(f"original {label.replace('_', ' ')} status", status)
+        for label, status in original_stages.items()
+    )
+    items = "".join(
+        f"<li>Iteration {escape(item.get('iteration', ''))}: "
+        f"{escape(item.get('goal', ''))} ({escape(item.get('status', 'unknown'))})</li>"
+        for item in history
+        if isinstance(item, dict)
+    )
+    return (
+        "<section class='band'><h2>Refinement History</h2>"
+        f"<p>Latest refinement: {escape(refinement.get('latest_goal', ''))}</p>"
+        f"<div class='meta'>{status_badge(refinement.get('latest_status', 'unknown'))}"
+        f"<span>{escape(refinement.get('count', 0))} iteration(s)</span></div>"
+        f"<div class='fields'>{original_stage_rows}{original_rows}{rows}</div>"
+        f"{f'<ul>{items}</ul>' if items else ''}</section>"
     )
 
 

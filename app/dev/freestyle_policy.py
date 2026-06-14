@@ -46,6 +46,38 @@ APPROVAL_STORE_PATH_NAMES = frozenset(
 APPROVAL_STORE_CLASS_NAME = "Approval" "Store"
 APPROVAL_STORE_TOKEN = "approvalstore"
 
+# A file that *defines* the approval-store class is part of the approval
+# record implementation and stays out of model context and likely-file
+# suggestions entirely. A file that merely imports or calls it (routes,
+# dashboards, tests) stays inspectable and proposable; only operations that
+# touch its approval-sensitive regions are blocked, via the region markers
+# below.
+APPROVAL_STORE_DEFINITION_PATTERN = re.compile(
+    r"\bclass\s+" + APPROVAL_STORE_CLASS_NAME + r"\b"
+)
+
+# Text markers for approval-sensitive code regions inside otherwise editable
+# files: the class itself, the approval-store route helper, approval
+# lifecycle mutators, approved-execution entry points, and imports of the
+# approval modules. Edit operations whose edited text matches any marker are
+# refused (fail closed); edits elsewhere in the same file remain allowed.
+APPROVAL_SENSITIVE_REGION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "approval-store class reference",
+        re.compile(r"\b" + APPROVAL_STORE_CLASS_NAME + r"\b"),
+    ),
+    ("approval-store helper reference", re.compile(r"\b_approval_store\b")),
+    (
+        "approval mutation call",
+        re.compile(r"\b(?:approve|reject)_approval\b"),
+    ),
+    ("approved-execution call", re.compile(r"\bexecute_approved\b")),
+    (
+        "approval module reference",
+        re.compile(r"\bapp[./]approval(?:s|_service)\b"),
+    ),
+)
+
 SENSITIVE_CONTENT_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE),
@@ -73,6 +105,26 @@ NO_INTEGRATION_STATEMENT_HANDOFF = (
 
 def contains_sensitive_content(text: str) -> bool:
     return any(pattern.search(text) for pattern in SENSITIVE_CONTENT_PATTERNS)
+
+
+def defines_approval_store(text: str) -> bool:
+    """Report whether text defines the approval-store class itself.
+
+    References (imports, calls, type annotations) intentionally do not
+    match: route and dashboard files that merely use the store must stay
+    inspectable for unrelated tasks, with their approval-sensitive regions
+    protected separately at the edit-operation level.
+    """
+    return APPROVAL_STORE_DEFINITION_PATTERN.search(text) is not None
+
+
+def approval_sensitive_region_labels(text: str) -> tuple[str, ...]:
+    """Return the labels of every approval-sensitive marker found in text."""
+    return tuple(
+        label
+        for label, pattern in APPROVAL_SENSITIVE_REGION_PATTERNS
+        if pattern.search(text)
+    )
 
 
 def recovery_message(action: str) -> str:

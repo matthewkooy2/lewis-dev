@@ -48,6 +48,7 @@ _JOB_ARTIFACT_DIRS = (
     "reviews",
     "checks",
     "runs",
+    "refinements",
 )
 _MAINTENANCE_GIT_PREFIX = (
     "git",
@@ -292,6 +293,17 @@ def recover_freestyle_job(
             latest_run_errors=_append_bounded(job.latest_run_errors, note),
         )
         actions.append("marked_stale_run_failed")
+    if job.latest_refinement_status == "running":
+        history = list(job.refinement_history)
+        if history:
+            latest = dict(history[-1])
+            latest.update(status="failed", completed_at=_utc_now())
+            history[-1] = latest
+        changes.update(
+            latest_refinement_status="failed",
+            refinement_history=tuple(history),
+        )
+        actions.append("marked_stale_refinement_failed")
     if job.checks_status == "running":
         changes.update(
             checks_status="error",
@@ -497,6 +509,7 @@ def _job_cleanup_status(
             "run": job.latest_run_status if job else None,
             "checks": job.checks_status if job else None,
             "apply": job.edit_apply_status if job else None,
+            "refinement": job.latest_refinement_status if job else None,
         },
         "artifact_directories_present": artifact_dirs,
         "active": active,
@@ -590,7 +603,12 @@ def _orphan_branch_status(branch: str, commit: str) -> dict[str, Any]:
         "registered_worktree_branch": None,
         "worktree_state": "missing_worktree",
         "worktree_not_checked_out": False,
-        "latest_states": {"run": None, "checks": None, "apply": None},
+        "latest_states": {
+            "run": None,
+            "checks": None,
+            "apply": None,
+            "refinement": None,
+        },
         "artifact_directories_present": [],
         "active": False,
         "active_fields": {},

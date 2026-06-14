@@ -34,10 +34,10 @@ from app.dev.freestyle_context_plan import (
     ui_context_gap,
 )
 from app.dev.freestyle_policy import (
-    APPROVAL_STORE_CLASS_NAME,
     APPROVAL_STORE_PATH_NAMES,
     GENERATED_OR_CACHE_PARTS,
     contains_sensitive_content,
+    defines_approval_store,
 )
 from app.dev.freestyle_state import require_materialized, resolved_roots
 
@@ -54,6 +54,19 @@ MAX_PROPOSAL_RESPONSE_CHARS = 20_000
 MAX_PROPOSAL_LIST_ITEMS = 20
 MAX_PROPOSAL_ITEM_CHARS = 500
 ALLOWED_SUGGESTED_CHECKS = frozenset({"pytest", "ruff"})
+# Generic advisory suggestions DeepSeek tends to produce, mapped onto the
+# static check-registry ids that actually exist. Anything outside this map is
+# ignored with one bounded advisory warning instead of failing the proposal:
+# suggested checks are advisory ids only, are never executed from here, and
+# check execution always revalidates against the static registry allowlist.
+SUGGESTED_CHECK_ALIASES = {
+    "pytest": "pytest-freestyle",
+    "pytest-freestyle": "pytest-freestyle",
+    "ruff": "ruff-check",
+    "ruff check": "ruff-check",
+    "ruff-check": "ruff-check",
+}
+MAX_SUGGESTED_CHECK_ITEMS = 8
 MAX_OUTPUT_PREVIEW_CHARS = 2_000
 MAX_REPAIR_ECHO_CHARS = 4_000
 MAX_REJECTED_PATH_PREVIEW_CHARS = 300
@@ -202,12 +215,27 @@ def generate_freestyle_proposal(
     state_root: Path | None = None,
     deepseek_config: DeepSeekProposalConfig | None = None,
     deepseek_client: Any | None = None,
+    goal_override: str | None = None,
+    title_override: str | None = None,
+    artifact_name: str = "proposal.json",
+    failure_artifact_name: str = "proposal-failure.json",
+    artifact_metadata: dict[str, Any] | None = None,
 ) -> FreestyleJob:
     """Generate and persist one structured proposal without editing the worktree."""
     root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
+    if job.latest_refinement_id is not None and goal_override is None:
+        raise FreestyleJobRefusedError(
+            "This job has refinement history; start another explicit refinement "
+            "instead of overwriting the original proposal."
+        )
     _require_explicit_developer_approval(job, "propose")
     require_materialized(job, "must be successfully materialized first.")
+    prompt_job = replace(
+        job,
+        goal=goal_override if goal_override is not None else job.goal,
+        title=title_override if title_override is not None else job.title,
+    )
 
     started = replace(
         job,
@@ -232,8 +260,13 @@ def generate_freestyle_proposal(
     try:
         _validate_deepseek_config(config)
         worktree = _validated_job_worktree(started, root, state)
-        plan = plan_context(started.goal, started.title)
-        context = build_proposal_context(worktree, started.goal, plan=plan)
+        prompt_job = replace(
+            started,
+            goal=prompt_job.goal,
+            title=prompt_job.title,
+        )
+        plan = plan_context(prompt_job.goal, prompt_job.title)
+        context = build_proposal_context(worktree, prompt_job.goal, plan=plan)
         if not context.files:
             raise FreestyleJobRefusedError(
                 "No safe text files were available for proposal context."
@@ -244,11 +277,11 @@ def generate_freestyle_proposal(
             base_url=config.base_url,
         )
         response, proposal_fields = _proposal_with_one_repair(
-            client, config, started, context, plan, worktree, attempts
+            client, config, prompt_job, context, plan, worktree, attempts
         )
         completed_at = _utc_now()
         artifact = _build_artifact(
-            started,
+            prompt_job,
             config,
             context,
             proposal_fields,
@@ -256,7 +289,11 @@ def generate_freestyle_proposal(
             completed_at,
             attempts,
         )
-        artifact_path = _write_artifact(artifact, state, started.job_id)
+        if artifact_metadata is not None:
+            artifact["refinement"] = artifact_metadata
+        artifact_path = _write_artifact(
+            artifact, state, started.job_id, artifact_name
+        )
     except Exception as exc:
         errors = [
             record["error"]
@@ -269,7 +306,7 @@ def generate_freestyle_proposal(
         try:
             failure_artifact_path = _write_failure_artifact(
                 _build_failure_artifact(
-                    started,
+                    prompt_job,
                     config,
                     context,
                     attempts,
@@ -278,6 +315,7 @@ def generate_freestyle_proposal(
                 ),
                 state,
                 started.job_id,
+                failure_artifact_name,
             )
         except Exception as artifact_exc:
             errors.append(
@@ -377,9 +415,9 @@ def build_proposal_context(
             if reason is not None:
                 _record_omission(omissions, omission_counts, relative, reason)
                 continue
-            if APPROVAL_STORE_CLASS_NAME in sample:
+            if defines_approval_store(sample):
                 _record_omission(
-                    omissions, omission_counts, relative, "approval_store"
+                    omissions, omission_counts, relative, "approval_store_definition"
                 )
                 continue
             if contains_sensitive_content(sample):
@@ -424,9 +462,12 @@ def build_proposal_context(
                 omissions, omission_counts, candidate.relative_path, reason
             )
             continue
-        if APPROVAL_STORE_CLASS_NAME in text:
+        if defines_approval_store(text):
             _record_omission(
-                omissions, omission_counts, candidate.relative_path, "approval_store"
+                omissions,
+                omission_counts,
+                candidate.relative_path,
+                "approval_store_definition",
             )
             continue
         if contains_sensitive_content(text):
@@ -540,7 +581,7 @@ def _proposal_with_one_repair(
                 )
             )
             raise
-        attempts.append({"attempt": 2, "status": "ok", "repair_retry": True})
+        attempts.append(_ok_attempt_record(2, fields, repair_retry=True))
         return response, fields
     except FreestyleJobRefusedError as exc:
         attempts.append(
@@ -556,8 +597,22 @@ def _proposal_with_one_repair(
             )
         )
         raise
-    attempts.append({"attempt": 1, "status": "ok"})
+    attempts.append(_ok_attempt_record(1, fields))
     return response, fields
+
+
+def _ok_attempt_record(
+    attempt: int, fields: dict[str, list[str]], *, repair_retry: bool = False
+) -> dict[str, Any]:
+    """Record one accepted attempt, keeping ignored-check advisories visible
+    so a repaired-but-accepted proposal is never confused with a rejection."""
+    record: dict[str, Any] = {"attempt": attempt, "status": "ok"}
+    if repair_retry:
+        record["repair_retry"] = True
+    ignored = fields.get("suggested_check_warnings")
+    if ignored:
+        record["ignored_suggested_checks"] = list(ignored)
+    return record
 
 
 def _attempt_record(
@@ -813,25 +868,49 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
             status="unsafe_check",
             details={"validator_category": "forbidden_command"},
         )
-    checks = _validated_string_list(
+    raw_checks = _validated_string_list(
         payload.get("suggested_allowlisted_checks"),
         "suggested_allowlisted_checks",
         minimum=0,
-        maximum=len(ALLOWED_SUGGESTED_CHECKS),
+        maximum=MAX_SUGGESTED_CHECK_ITEMS,
         item_limit=40,
     )
-    if any(check not in ALLOWED_SUGGESTED_CHECKS for check in checks):
-        raise _ProposalSafetyError(
-            "DeepSeek suggested a check outside the fixed allowlist.",
-            status="unsafe_check",
-            details={"validator_category": "non_allowlisted_check"},
-        )
+    checks, check_warnings = _normalized_suggested_checks(raw_checks)
     return {
         "proposed_implementation_steps": steps,
         "likely_files_to_edit": likely_files,
         "risks_unknowns": risks,
         "suggested_allowlisted_checks": checks,
+        "suggested_check_warnings": check_warnings,
     }
+
+
+def _normalized_suggested_checks(
+    raw_checks: list[str],
+) -> tuple[list[str], list[str]]:
+    """Map advisory check suggestions onto static check-registry ids.
+
+    Generic suggestions ("pytest", "ruff") normalize to their single clear
+    registry id; unknown or unmappable suggestions are dropped with one
+    bounded advisory warning each instead of failing the proposal. Nothing
+    here executes: the output is advisory ids only, and any later check run
+    revalidates every id against the static registry allowlist.
+    """
+    from app.dev.freestyle_checks import CHECKS_BY_ID
+
+    mapped: list[str] = []
+    warnings: list[str] = []
+    for raw in raw_checks:
+        canonical = SUGGESTED_CHECK_ALIASES.get(" ".join(raw.casefold().split()))
+        if canonical is not None and canonical in CHECKS_BY_ID:
+            if canonical not in mapped:
+                mapped.append(canonical)
+            continue
+        warnings.append(
+            f"Ignored unsupported suggested check {raw[:40]!r}; suggested "
+            "checks are advisory allowlisted ids only and were not executed."
+        )
+    return mapped, warnings
 
 
 def _validated_string_list(
@@ -945,15 +1024,18 @@ def _build_artifact(
     }
 
 
-def _write_artifact(artifact: dict[str, Any], state: Path, job_id: str) -> str:
+def _write_artifact(
+    artifact: dict[str, Any], state: Path, job_id: str, name: str = "proposal.json"
+) -> str:
+    _require_safe_proposal_artifact_name(name, failure=False)
     return write_artifact_bytes(
         state,
         "proposals",
         job_id,
-        "proposal.json",
+        name,
         encode_json_artifact(artifact),
         label="proposal",
-        allow_replace=True,
+        allow_replace=name == "proposal.json",
     )
 
 
@@ -1015,8 +1097,12 @@ def _context_summary(context: ProposalContext | None) -> dict[str, Any]:
 
 
 def _write_failure_artifact(
-    artifact: dict[str, Any], state: Path, job_id: str
+    artifact: dict[str, Any],
+    state: Path,
+    job_id: str,
+    name: str = "proposal-failure.json",
 ) -> str:
+    _require_safe_proposal_artifact_name(name, failure=True)
     encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_PROPOSAL_FAILURE_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError(
@@ -1026,11 +1112,28 @@ def _write_failure_artifact(
         state,
         "proposals",
         job_id,
-        "proposal-failure.json",
+        name,
         encoded,
         label="proposal failure",
-        allow_replace=True,
+        allow_replace=name == "proposal-failure.json",
     )
+
+
+def _require_safe_proposal_artifact_name(name: str, *, failure: bool) -> None:
+    default = "proposal-failure.json" if failure else "proposal.json"
+    suffix = "-proposal-failure.json" if failure else "-proposal.json"
+    if name == default:
+        return
+    if (
+        not name.startswith("refinement-")
+        or not name.endswith(suffix)
+        or len(name) != len("refinement-") + 16 + len(suffix)
+        or any(
+            character not in "0123456789abcdef"
+            for character in name[len("refinement-") : -len(suffix)]
+        )
+    ):
+        raise FreestyleJobRefusedError("Proposal artifact name is unsafe.")
 
 
 def _context_path_omission_reason(
@@ -1208,12 +1311,12 @@ def _suggested_path_validation(
         )
         if (
             reason is not None
-            or APPROVAL_STORE_CLASS_NAME in text
+            or defines_approval_store(text)
             or contains_sensitive_content(text)
         ):
             category = reason or (
-                "approval_store"
-                if APPROVAL_STORE_CLASS_NAME in text
+                "approval_store_definition"
+                if defines_approval_store(text)
                 else "sensitive_content"
             )
             return None, _rejected_path_detail(raw_path, category)
@@ -1261,6 +1364,7 @@ def _rejected_path_detail(
         "hidden_or_dev_state",
         "database",
         "approval_store",
+        "approval_store_definition",
         "secrets",
         "sensitive_content",
     }:

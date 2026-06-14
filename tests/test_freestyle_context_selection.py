@@ -38,11 +38,44 @@ from app.dev.freestyle_context_plan import (
     PLAN_WARNING_NO_UI_FILES,
 )
 from app.dev.freestyle_handoff import render_freestyle_handoff_markdown
+from app.dev.freestyle_policy import APPROVAL_STORE_CLASS_NAME
 from app.dev.freestyle_proposal import DeepSeekProposalConfig
 from app.web import create_app
 
 _TETRIS_GOAL = (
     "Add a new tab under Overview called Shennanigans where I can play Tetris."
+)
+
+# Mirrors the real app/web_routes.py shape: it imports and uses the approval
+# store for approval routes, but route wiring for ordinary pages happens in
+# regions that never touch approval code. Assembled with the concatenated
+# class name so this test file itself never contains the definition text.
+_ROUTES_WITH_APPROVAL_REFERENCES = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+from app.approval_service import approve_approval
+from app.web_pages import approvals_page, chat_page
+
+
+def register_web_routes(app):
+    @app.get("/chat")
+    def chat(request):
+        return _page("Chat", request, chat_page())
+
+    @app.post("/approvals/{{approval_id}}/approve")
+    def approve_item(request, approval_id):
+        return approve_approval(_approval_store(request), approval_id)
+
+
+def _approval_store(request):
+    return {APPROVAL_STORE_CLASS_NAME}(request.app.state.settings.database_path)
+
+
+def _page(title, request, content):
+    return content
+'''
+_APPROVAL_STORE_DEFINITION = (
+    f"class {APPROVAL_STORE_CLASS_NAME}:\n"
+    "    def __init__(self, database_path):\n"
+    "        self.database_path = database_path\n"
 )
 
 _WEB_FILES = {
@@ -336,6 +369,115 @@ def test_sensitive_files_stay_excluded_even_when_goal_asks_for_them(tmp_path):
     assert context.omission_counts.get("safety", 0) >= 1
     assert context.omission_counts.get("approval_store", 0) >= 1
     assert "web_ui" in context.context_plan["detected_goal_categories"]
+
+
+def _init_approval_referencing_web_repo(tmp_path: Path) -> Path:
+    """Web repo whose web_routes.py references (not defines) approval code."""
+    root = tmp_path / "project"
+    for relative, content in (
+        {
+            **_WEB_FILES,
+            "app/web_routes.py": _ROUTES_WITH_APPROVAL_REFERENCES,
+            "app/legacy_store.py": _APPROVAL_STORE_DEFINITION,
+            "tests/test_web_shenanigans.py": (
+                "def test_shenanigans_placeholder():\n    assert True\n"
+            ),
+            "README.md": "Web project\n",
+            "pyproject.toml": "[project]\nname = 'web-project'\n",
+        }
+    ).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return _commit_repo(root)
+
+
+_SHENANIGANS_ROUTE_GOAL = (
+    "Wire the existing shenanigans_page into app/web_routes.py so GET "
+    "/shenanigans returns the Shenanigans page using the same _page(...) "
+    "wrapper pattern, and add a focused web route test."
+)
+
+
+def test_web_routes_referencing_approval_store_stays_context_eligible(tmp_path):
+    """Regression for the Tetris refinement false positive: a routes file that
+    merely imports and calls the approval store must stay inspectable for a
+    web route task, while a file defining the store stays excluded."""
+    root = _init_approval_referencing_web_repo(tmp_path)
+    job = _materialized_job(root, goal=_SHENANIGANS_ROUTE_GOAL)
+
+    context = proposal.build_proposal_context(Path(job.worktree_path), job.goal)
+
+    included = list(context.inspected_paths)
+    assert "app/web_routes.py" in included
+    assert "app/web_routes.py" in context.context_plan["included_priority_files"]
+    assert "app/legacy_store.py" not in included
+    omitted = {
+        record["path"]: record["reason"] for record in context.omitted_files
+    }
+    assert omitted["app/legacy_store.py"] == "approval_store_definition"
+    assert context.omission_counts.get("approval_store", 0) == 0
+    serialized = json.dumps(context.files)
+    assert "_approval_store" in serialized
+    assert "legacy_store" not in serialized
+
+
+def test_proposal_accepts_likely_web_route_files_for_shenanigans_route_task(
+    tmp_path,
+):
+    root = _init_approval_referencing_web_repo(tmp_path)
+    job = _materialized_job(root, goal=_SHENANIGANS_ROUTE_GOAL)
+    client = _FakeDeepSeekClient(
+        _proposal_content(["app/web_routes.py", "tests/test_web_shenanigans.py"])
+    )
+
+    completed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.proposal_status == "proposed"
+    artifact = _read_state_artifact(root, completed.proposal_artifact_path)
+    assert artifact["likely_files_to_edit"] == [
+        "app/web_routes.py",
+        "tests/test_web_shenanigans.py",
+    ]
+    assert artifact["attempts"] == [{"attempt": 1, "status": "ok"}]
+    assert artifact["suggested_allowlisted_checks"] == ["pytest-freestyle"]
+
+
+@pytest.mark.parametrize(
+    ("likely_file", "category"),
+    [
+        ("app/approvals.py", "approval_store"),
+        ("app/legacy_store.py", "approval_store_definition"),
+    ],
+)
+def test_proposal_still_rejects_approval_store_implementation_likely_files(
+    tmp_path, likely_file, category
+):
+    root = _init_approval_referencing_web_repo(tmp_path)
+    job = _materialized_job(root, goal=_SHENANIGANS_ROUTE_GOAL)
+    client = _FakeDeepSeekClient(_proposal_content([likely_file]))
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        propose_freestyle_job(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 1
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    failure = _read_state_artifact(root, failed.proposal_failure_artifact_path)
+    attempt = failure["proposal_attempts"][0]
+    assert attempt["status"] == "unsafe_likely_path"
+    assert attempt["validator_category"] == category
+    assert attempt["rejected_path_preview"] == f"[REDACTED_{category.upper()}]"
+    assert attempt["retry_skipped_reason"] == "safety_related"
 
 
 def test_proposal_artifact_records_context_plan_and_ui_prompt_guidance(tmp_path):

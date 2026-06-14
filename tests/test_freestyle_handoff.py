@@ -214,6 +214,7 @@ def test_status_surfaces_every_latest_artifact_reference(tmp_path):
         "review": references["review_artifact_path"],
         "checks": references["checks_artifact_path"],
         "orchestration_run": references["latest_run_artifact_path"],
+        "latest_refinement": None,
     }
 
 

@@ -1066,7 +1066,8 @@ def test_proposal_uses_deepseek_only_path_and_persists_artifact_metadata(
     assert artifact["proposed_implementation_steps"]
     assert artifact["likely_files_to_edit"]
     assert artifact["risks_unknowns"]
-    assert artifact["suggested_allowlisted_checks"] == ["pytest", "ruff"]
+    assert artifact["suggested_allowlisted_checks"] == ["pytest-freestyle", "ruff-check"]
+    assert artifact["suggested_check_warnings"] == []
     assert artifact["model_metadata"]["provider"] == "deepseek"
     assert artifact["model_metadata"]["usage"]["total_tokens"] == 150
 
@@ -1215,9 +1216,7 @@ def test_proposal_invalid_config_still_persists_bounded_failure_metadata(tmp_pat
     assert failed.proposal_errors == ("DeepSeek proposal configuration is invalid.",)
 
 
-def test_proposal_rejects_shell_package_manager_and_non_allowlisted_check_text(
-    tmp_path,
-):
+def test_proposal_rejects_shell_package_manager_command_text(tmp_path):
     root = _init_repo(tmp_path)
     job = _materialized_job(root)
     unsafe_content = json.dumps(
@@ -1240,6 +1239,55 @@ def test_proposal_rejects_shell_package_manager_and_non_allowlisted_check_text(
     failed = get_freestyle_job(job.job_id, project_root=root)
     assert failed.proposal_status == "error"
     assert failed.proposal_artifact_path is None
+
+
+def test_generic_and_unknown_suggested_checks_normalize_and_warn_advisory_only(
+    tmp_path,
+):
+    """Generic check names map to real registry ids; unknown ones are ignored
+    with one advisory warning each and never fail the proposal or become
+    commands."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    content = json.dumps(
+        {
+            "proposed_implementation_steps": ["Update the tracked file."],
+            "likely_files_to_edit": ["tracked.txt"],
+            "risks_unknowns": [],
+            "suggested_allowlisted_checks": ["pytest", "ruff check", "curl", "mypy"],
+        }
+    )
+    client = _FakeDeepSeekClient(content=content)
+
+    completed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_deepseek_config(),
+        deepseek_client=client,
+    )
+
+    assert len(client.completions.calls) == 1
+    assert completed.proposal_status == "proposed"
+    artifact = json.loads(
+        (
+            root / freestyle.DEV_STATE_DIR_NAME / completed.proposal_artifact_path
+        ).read_text(encoding="utf-8")
+    )
+    assert artifact["suggested_allowlisted_checks"] == [
+        "pytest-freestyle",
+        "ruff-check",
+    ]
+    warnings = artifact["suggested_check_warnings"]
+    assert len(warnings) == 2
+    assert "'curl'" in warnings[0] and "advisory" in warnings[0]
+    assert "'mypy'" in warnings[1]
+    assert artifact["attempts"] == [
+        {
+            "attempt": 1,
+            "status": "ok",
+            "ignored_suggested_checks": warnings,
+        }
+    ]
 
 
 def test_proposal_repairs_malformed_json_with_exactly_one_retry(tmp_path):
@@ -1323,15 +1371,6 @@ def test_proposal_repair_retry_is_bounded_to_exactly_one_and_fails_closed(tmp_pa
                 "suggested_allowlisted_checks": ["pytest"],
             },
             id="unsafe_path",
-        ),
-        pytest.param(
-            {
-                "proposed_implementation_steps": ["Update the tracked file."],
-                "likely_files_to_edit": ["tracked.txt"],
-                "risks_unknowns": [],
-                "suggested_allowlisted_checks": ["curl"],
-            },
-            id="non_allowlisted_check",
         ),
     ],
 )

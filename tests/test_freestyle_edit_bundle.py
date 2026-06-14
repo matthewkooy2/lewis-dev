@@ -19,9 +19,77 @@ from app.dev.freestyle_coding import (
     get_freestyle_job,
     materialize_freestyle_job,
 )
+from app.dev.freestyle_policy import APPROVAL_STORE_CLASS_NAME
 
 TRACKED_SHA = hashlib.sha256(b"committed\n").hexdigest()
 NOTES_SHA = hashlib.sha256(b"note\n").hexdigest()
+SAMPLE_SHA = hashlib.sha256(b"VALUE = 1\n").hexdigest()
+
+# A worktree file with several distinct, non-overlapping anchors for
+# multi-replace_text tests.
+_MULTI_ANCHOR_TEXT = "ALPHA = 1\nBETA = 2\nGAMMA = 3\n"
+
+# A routes file that references approval code without defining it, mirroring
+# the real app/web_routes.py. Built with the concatenated class name so this
+# test file itself never contains the literal class text.
+_APPROVAL_REFERENCING_ROUTES = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+from app.approval_service import approve_approval
+from app.web_pages import approvals_page, chat_page
+
+
+def register_web_routes(app):
+    @app.get("/chat")
+    def chat(request):
+        return _page("Chat", request, chat_page())
+
+    @app.post("/approvals/{{approval_id}}/approve")
+    def approve_item(request, approval_id):
+        return approve_approval(_approval_store(request), approval_id)
+
+
+def _approval_store(request):
+    return {APPROVAL_STORE_CLASS_NAME}(request.app.state.settings.database_path)
+
+
+def _page(title, request, content):
+    return content
+'''
+
+_SAFE_ROUTE_ANCHOR = '        return _page("Chat", request, chat_page())'
+_WIRED_ROUTE_TEXT = (
+    '        return _page("Chat", request, chat_page())\n'
+    "\n"
+    '    @app.get("/shenanigans")\n'
+    "    def shenanigans(request):\n"
+    '        return _page("Shenanigans", request, shenanigans_page())'
+)
+
+
+def _routes_job(root: Path):
+    """Materialize one job whose worktree contains the routes file above."""
+    job = _materialized_job(root, goal="Wire the shenanigans page route.")
+    routes = Path(job.worktree_path) / "app" / "web_routes.py"
+    routes.parent.mkdir(parents=True, exist_ok=True)
+    routes.write_text(_APPROVAL_REFERENCING_ROUTES, encoding="utf-8")
+    return job, routes
+
+
+def _multi_anchor_job(root: Path):
+    """Materialize one job whose worktree holds a multi-anchor text file."""
+    job = _materialized_job(root)
+    target = Path(job.worktree_path) / "src" / "multi.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_MULTI_ANCHOR_TEXT, encoding="utf-8")
+    return job, target
+
+
+def _replace_text_op(path: str, old_text: str, new_text: str) -> dict:
+    return {
+        "op": "replace_text",
+        "path": path,
+        "old_text": old_text,
+        "new_text": new_text,
+    }
 
 
 def _git(root: Path, *args: str) -> str:
@@ -346,6 +414,123 @@ def test_rejects_protected_secret_db_cache_and_executable_paths(tmp_path, blocke
 
     assert failed.edit_apply_status == "error"
     assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_route_wiring_replace_text_is_allowed_in_approval_referencing_file(
+    tmp_path,
+):
+    """Regression for the Tetris refinement false positive: wiring an
+    ordinary page route into a file that references approval code must be
+    applicable when the edited region itself touches no approval marker."""
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    bundle_path = _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job.job_id,
+            [
+                {
+                    "op": "replace_text",
+                    "path": "app/web_routes.py",
+                    "old_text": _SAFE_ROUTE_ANCHOR,
+                    "new_text": _WIRED_ROUTE_TEXT,
+                }
+            ],
+        ),
+    )
+
+    updated = apply_freestyle_edit_bundle(
+        job.job_id, str(bundle_path), project_root=root
+    )
+
+    assert updated.edit_apply_status == "applied"
+    wired = routes.read_text(encoding="utf-8")
+    assert '"/shenanigans"' in wired
+    assert "def _approval_store(request):" in wired
+    assert "approve_approval(_approval_store(request), approval_id)" in wired
+
+
+@pytest.mark.parametrize(
+    ("old_text", "new_text"),
+    [
+        pytest.param(
+            "        return approve_approval(_approval_store(request), approval_id)",
+            "        return None",
+            id="old_text_targets_approval_region",
+        ),
+        pytest.param(
+            _SAFE_ROUTE_ANCHOR,
+            '        return _page("Chat", request, chat_page(_approval_store(request)))',
+            id="new_text_introduces_approval_reference",
+        ),
+    ],
+)
+def test_replace_text_touching_approval_sensitive_region_is_refused(
+    tmp_path, old_text, new_text
+):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    bundle_path = _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job.job_id,
+            [
+                {
+                    "op": "replace_text",
+                    "path": "app/web_routes.py",
+                    "old_text": old_text,
+                    "new_text": new_text,
+                }
+            ],
+        ),
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-sensitive region" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+def test_whole_file_operations_never_touch_approval_referencing_files(tmp_path):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    routes_sha = hashlib.sha256(before.encode("utf-8")).hexdigest()
+    operations = [
+        {
+            "op": "replace_file",
+            "path": "app/web_routes.py",
+            "content": "ROUTES = {}\n",
+            "expected_sha256": routes_sha,
+        },
+        {
+            "op": "delete_file",
+            "path": "app/web_routes.py",
+            "expected_sha256": routes_sha,
+        },
+        {
+            "op": "create_file",
+            "path": "app/approval_glue.py",
+            "content": f"store = {APPROVAL_STORE_CLASS_NAME}('db')\n",
+        },
+        {
+            "op": "replace_file",
+            "path": "tracked.txt",
+            "content": "from app.approval_service import approve_approval\n",
+            "expected_sha256": TRACKED_SHA,
+        },
+    ]
+    for operation in operations:
+        bundle_path = _write_bundle(
+            tmp_path,
+            _bundle_payload(job.job_id, [operation]),
+            name=f"bundle-{operation['op']}-{operation['path'].replace('/', '-')}.json",
+        )
+        failed = _refused_apply(root, job.job_id, bundle_path)
+        assert "approval-sensitive region" in failed.edit_errors[0], operation
+    assert routes.read_text(encoding="utf-8") == before
+    assert not (Path(job.worktree_path) / "app" / "approval_glue.py").exists()
 
 
 def test_rejects_binary_and_oversized_content_and_files(tmp_path):
@@ -709,6 +894,215 @@ def test_apply_uses_only_fixed_readonly_git_and_no_shell(tmp_path, monkeypatch):
         "reset",
     }
     assert all(forbidden.isdisjoint(call[0]) for call in calls)
+
+
+def test_multiple_non_overlapping_replace_text_apply_in_descending_offset_order(
+    tmp_path,
+):
+    """Several replace_text ops on one file validate, fold into one journaled
+    write, and apply correctly. The first edit grows the text, so a correct
+    result is only possible if same-file splices use the original offsets in
+    descending order."""
+    root = _init_repo(tmp_path)
+    job, target = _multi_anchor_job(root)
+    operations = [
+        _replace_text_op("src/multi.py", "ALPHA = 1", "ALPHA = 1111"),
+        _replace_text_op("src/multi.py", "GAMMA = 3", "GAMMA = 33"),
+    ]
+    bundle_path = _write_bundle(tmp_path, _bundle_payload(job.job_id, operations))
+
+    updated = apply_freestyle_edit_bundle(
+        job.job_id, str(bundle_path), project_root=root
+    )
+
+    assert updated.edit_apply_status == "applied"
+    assert updated.edit_applied_file_count == 1
+    assert target.read_text(encoding="utf-8") == (
+        "ALPHA = 1111\nBETA = 2\nGAMMA = 33\n"
+    )
+
+    artifact = json.loads(
+        (root / freestyle.DEV_STATE_DIR_NAME / updated.edit_artifact_path).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert artifact["operation_count"] == 2
+    assert artifact["touched_file_count"] == 1
+    entry = artifact["operations"][0]
+    assert entry["op"] == "replace_text"
+    assert entry["path"] == "src/multi.py"
+    assert entry["replacement_count"] == 2
+    assert entry["descending_offset_application"] is True
+    alpha_start = _MULTI_ANCHOR_TEXT.index("ALPHA = 1")
+    gamma_start = _MULTI_ANCHOR_TEXT.index("GAMMA = 3")
+    assert entry["replacement_ranges"] == [
+        [alpha_start, alpha_start + len("ALPHA = 1")],
+        [gamma_start, gamma_start + len("GAMMA = 3")],
+    ]
+    assert entry["before_sha256"] == _sha(_MULTI_ANCHOR_TEXT.encode("utf-8"))
+    assert entry["after_sha256"] == _sha(b"ALPHA = 1111\nBETA = 2\nGAMMA = 33\n")
+
+
+def test_overlapping_same_file_replace_text_fails_closed(tmp_path):
+    root = _init_repo(tmp_path)
+    job, target = _multi_anchor_job(root)
+    before = target.read_text(encoding="utf-8")
+    operations = [
+        _replace_text_op("src/multi.py", "ALPHA = 1\nBETA = 2", "X = 0"),
+        _replace_text_op("src/multi.py", "BETA = 2\nGAMMA = 3", "Y = 0"),
+    ]
+    bundle_path = _write_bundle(tmp_path, _bundle_payload(job.job_id, operations))
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "overlap" in failed.edit_errors[0]
+    assert target.read_text(encoding="utf-8") == before
+
+
+def test_multi_replace_text_missing_or_ambiguous_match_fails_closed(tmp_path):
+    root = _init_repo(tmp_path)
+    job, target = _multi_anchor_job(root)
+    before = target.read_text(encoding="utf-8")
+
+    missing = _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job.job_id,
+            [
+                _replace_text_op("src/multi.py", "ALPHA = 1", "ALPHA = 9"),
+                _replace_text_op("src/multi.py", "NOPE = 0", "NOPE = 1"),
+            ],
+        ),
+        name="missing.json",
+    )
+    failed = _refused_apply(root, job.job_id, missing)
+    assert "no exact match" in failed.edit_errors[0]
+    assert target.read_text(encoding="utf-8") == before
+
+    target.write_text("DUP = 1\nDUP = 1\nKEEP = 2\n", encoding="utf-8")
+    before_dup = target.read_text(encoding="utf-8")
+    ambiguous = _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job.job_id,
+            [
+                _replace_text_op("src/multi.py", "KEEP = 2", "KEEP = 3"),
+                _replace_text_op("src/multi.py", "DUP = 1", "DUP = 2"),
+            ],
+        ),
+        name="ambiguous.json",
+    )
+    failed = _refused_apply(root, job.job_id, ambiguous)
+    assert "ambiguous" in failed.edit_errors[0]
+    assert target.read_text(encoding="utf-8") == before_dup
+
+
+def test_same_path_whole_file_op_with_any_other_op_fails_closed(tmp_path):
+    """create_file, replace_file, and delete_file must each be the only
+    operation for their path; mixing them with anything else fails closed."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree = Path(job.worktree_path)
+    worktree_before = _worktree_snapshot(worktree)
+
+    cases: list[tuple[str, list[dict]]] = [
+        (
+            "replace-file-plus-text.json",
+            [
+                {
+                    "op": "replace_file",
+                    "path": "src/sample.py",
+                    "content": "VALUE = 5\n",
+                    "expected_sha256": SAMPLE_SHA,
+                },
+                _replace_text_op("src/sample.py", "VALUE = 1", "VALUE = 2"),
+            ],
+        ),
+        (
+            "delete-file-plus-text.json",
+            [
+                {
+                    "op": "delete_file",
+                    "path": "src/sample.py",
+                    "expected_sha256": SAMPLE_SHA,
+                },
+                _replace_text_op("src/sample.py", "VALUE = 1", "VALUE = 2"),
+            ],
+        ),
+        (
+            "create-file-twice.json",
+            [
+                _create_op(path="src/created.py", content="A = 1\n"),
+                _create_op(path="src/created.py", content="A = 2\n"),
+            ],
+        ),
+    ]
+    for name, operations in cases:
+        bundle_path = _write_bundle(
+            tmp_path, _bundle_payload(job.job_id, operations), name=name
+        )
+        failed = _refused_apply(root, job.job_id, bundle_path)
+        assert "more than one operation for the same path" in failed.edit_errors[0], (
+            name
+        )
+        assert _worktree_snapshot(worktree) == worktree_before, name
+    assert not (worktree / "src" / "created.py").exists()
+
+
+def test_same_file_multi_replace_text_touching_approval_marker_fails_closed(tmp_path):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    operations = [
+        _replace_text_op("app/web_routes.py", _SAFE_ROUTE_ANCHOR, _WIRED_ROUTE_TEXT),
+        _replace_text_op(
+            "app/web_routes.py",
+            "        return approve_approval(_approval_store(request), approval_id)",
+            "        return None",
+        ),
+    ]
+    bundle_path = _write_bundle(tmp_path, _bundle_payload(job.job_id, operations))
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-sensitive region" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+def test_multi_replace_text_file_rolls_back_when_a_later_op_fails(tmp_path, monkeypatch):
+    """The folded multi-replace_text write is journaled like any other, so a
+    later failing operation rolls the whole worktree back unchanged."""
+    root = _init_repo(tmp_path)
+    job, target = _multi_anchor_job(root)
+    worktree = Path(job.worktree_path)
+    worktree_before = _worktree_snapshot(worktree)
+    real_overwrite = edit_bundle._overwrite_file
+    state = {"calls": 0}
+
+    def flaky_overwrite(path, data):
+        state["calls"] += 1
+        if state["calls"] == 2:
+            raise OSError("simulated disk failure")
+        return real_overwrite(path, data)
+
+    monkeypatch.setattr(edit_bundle, "_overwrite_file", flaky_overwrite)
+    operations = [
+        _replace_text_op("src/multi.py", "ALPHA = 1", "ALPHA = 9"),
+        _replace_text_op("src/multi.py", "GAMMA = 3", "GAMMA = 9"),
+        {
+            "op": "replace_file",
+            "path": "tracked.txt",
+            "content": "new\n",
+            "expected_sha256": TRACKED_SHA,
+        },
+    ]
+    bundle_path = _write_bundle(tmp_path, _bundle_payload(job.job_id, operations))
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert failed.edit_apply_status == "error"
+    assert "simulated disk failure" in failed.edit_errors[0]
+    assert _worktree_snapshot(worktree) == worktree_before
 
 
 def test_module_has_no_model_shell_network_or_runtime_dependencies():

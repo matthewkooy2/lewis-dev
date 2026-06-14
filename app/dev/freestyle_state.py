@@ -29,6 +29,7 @@ ACTIVE_STATES: dict[str, set[str]] = {
     "review_status": {"reviewing"},
     "checks_status": {"running"},
     "latest_run_status": {"running"},
+    "latest_refinement_status": {"running"},
 }
 INCONSISTENT_STATES: dict[str, set[str]] = {"edit_apply_status": {"inconsistent"}}
 

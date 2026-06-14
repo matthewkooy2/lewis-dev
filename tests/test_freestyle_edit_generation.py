@@ -376,10 +376,6 @@ def test_valid_deepseek_json_is_validated_persisted_and_never_applied(
     [
         (lambda job_id: "not json", "valid UTF-8 JSON"),
         (
-            lambda job_id: _bundle_content("f" * 32),
-            "different job id",
-        ),
-        (
             lambda job_id: json.dumps(
                 {
                     "schema_version": 1,
@@ -471,7 +467,10 @@ def test_root_bundle_records_no_normalization_and_single_valid_attempt(tmp_path)
     assert completed.edit_generation_status == "generated"
     assert len(client.completions.calls) == 1
     artifact = _generation_artifact(root, completed)
-    assert artifact["normalization"] == {"unwrapped_bundle_key": False}
+    assert artifact["normalization"] == {
+        "unwrapped_bundle_key": False,
+        "normalized_metadata_fields": ["created_at", "job_id"],
+    }
     assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
 
 
@@ -496,7 +495,10 @@ def test_wrapped_bundle_key_is_normalized_validated_and_recorded(tmp_path):
     assert completed.edit_bundle_validation_status == "valid"
     assert len(client.completions.calls) == 1
     artifact = _generation_artifact(root, completed)
-    assert artifact["normalization"] == {"unwrapped_bundle_key": True}
+    assert artifact["normalization"] == {
+        "unwrapped_bundle_key": True,
+        "normalized_metadata_fields": ["created_at", "job_id"],
+    }
     assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
     persisted = json.loads(
         (root / freestyle.DEV_STATE_DIR_NAME / completed.edit_bundle_path).read_text(
@@ -555,6 +557,163 @@ def test_unacceptable_wrapper_shapes_still_fail_closed(tmp_path, wrapper_factory
         "error",
     ]
     assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_drifted_top_level_metadata_is_normalized_from_trusted_state(tmp_path):
+    """The live "Edit bundle goal is invalid" failure: the model echoed a long
+    multi-line goal (and other drifted provenance). All four trusted top-level
+    fields are pinned from local job/proposal state so the otherwise valid
+    bundle is accepted without a retry."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    drifted = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": "f" * 32,
+            "created_at": "not a real timestamp",
+            "operation_count": 1,
+            "proposal_id": "model-invented-proposal-id",
+            "goal": ("x" * 900) + "\nsecond line\nthird line",
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "VALUE = 1",
+                    "new_text": "VALUE = 2",
+                }
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(drifted)
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert completed.edit_bundle_validation_status == "valid"
+    assert len(client.completions.calls) == 1
+    persisted = json.loads(
+        (root / freestyle.DEV_STATE_DIR_NAME / completed.edit_bundle_path).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted["job_id"] == job.job_id
+    # created_at is now a parseable ISO timestamp from trusted generation state.
+    from datetime import datetime
+
+    datetime.fromisoformat(persisted["created_at"])
+    assert "\n" not in persisted["goal"]
+    assert len(persisted["goal"]) <= 500
+    assert persisted["goal"] == "Update the sample value."
+    artifact = _generation_artifact(root, completed)
+    assert persisted["proposal_id"] == artifact["proposal_id"]
+    assert artifact["normalization"]["normalized_metadata_fields"] == [
+        "created_at",
+        "goal",
+        "job_id",
+        "proposal_id",
+    ]
+
+
+def test_metadata_normalization_does_not_let_unsafe_operations_through(tmp_path):
+    """Pinning trusted top-level metadata never repairs an unsafe operation:
+    the bundle still fails closed on the path and is never retried."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    bundle = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": "f" * 32,
+            "created_at": "bad timestamp",
+            "operation_count": 1,
+            "goal": "drifted goal\nwith a newline",
+            "operations": [
+                {"op": "create_file", "path": "../escape.txt", "content": "x\n"}
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(bundle)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 1
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_generation_status == "error"
+    assert failed.edit_bundle_path is None
+    assert not (root / "escape.txt").exists()
+    assert not (tmp_path / "escape.txt").exists()
+    artifact = _generation_artifact(root, failed)
+    assert artifact["attempts"] == []
+    assert artifact["normalization"]["normalized_metadata_fields"] == [
+        "created_at",
+        "goal",
+        "job_id",
+    ]
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_multiple_replace_text_ops_on_one_file_generate_and_persist(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree = Path(job.worktree_path)
+    (worktree / "app" / "dev" / "sample.py").write_text(
+        "ALPHA = 1\nBETA = 2\n", encoding="utf-8"
+    )
+    bundle = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 2,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "ALPHA = 1",
+                    "new_text": "ALPHA = 11",
+                },
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "BETA = 2",
+                    "new_text": "BETA = 22",
+                },
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(bundle)
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert completed.edit_bundle_validation_status == "valid"
+    assert completed.edit_bundle_candidate_file_count == 1
+    assert len(client.completions.calls) == 1
+    assert (worktree / "app" / "dev" / "sample.py").read_text(
+        encoding="utf-8"
+    ) == "ALPHA = 1\nBETA = 2\n"
+    artifact = _generation_artifact(root, completed)
+    assert artifact["validation"]["operation_count"] == 2
+    operation = artifact["validation"]["operations"][0]
+    assert operation["op"] == "replace_text"
+    assert operation["replacement_count"] == 2
+    assert operation["descending_offset_application"] is True
 
 
 def test_malformed_json_is_repaired_with_exactly_one_retry(tmp_path):
@@ -727,6 +886,391 @@ def test_generation_uses_existing_deepseek_path_exact_schema_and_no_execution(
         "reset",
     }
     assert all(forbidden.isdisjoint(call_args[0]) for call_args in subprocess_calls)
+
+
+def _stale_anchor_bundle(job_id: str) -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "VALUE = 999",
+                    "new_text": "VALUE = 2",
+                }
+            ],
+        }
+    )
+
+
+def test_prompt_includes_exact_anchor_snippets_and_anchor_instructions(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _FakeDeepSeekClient(_bundle_content(job.job_id))
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    call = client.completions.calls[0]
+    system_prompt = call["messages"][0]["content"]
+    assert "copied exactly" in system_prompt
+    assert "never invent" in system_prompt
+    assert "avoid whole-file replace_file rewrites" in system_prompt
+    payload = json.loads(call["messages"][1]["content"])
+    snippets = payload["exact_anchor_snippets"]
+    snippet_paths = {item["path"] for item in snippets}
+    assert {"app/dev/sample.py", "tests/test_sample.py"} <= snippet_paths
+    worktree = Path(completed.worktree_path)
+    for item in snippets:
+        content = (worktree / Path(item["path"])).read_text(encoding="utf-8")
+        assert item["exact_text"] in content
+    labels = {item["label"] for item in snippets}
+    assert "test:test_value" in labels
+    artifact = _generation_artifact(root, completed)
+    anchor = artifact["anchor_snippets"]
+    assert {record["path"] for record in anchor["files"]} >= {
+        "app/dev/sample.py",
+        "tests/test_sample.py",
+    }
+    assert anchor["total_char_count"] > 0
+    assert anchor["retry"] == {
+        "used": False,
+        "failed_path": None,
+        "failed_old_text_preview": None,
+        "fresh_snippet_labels": [],
+        "error": None,
+        "skipped_reason": None,
+    }
+
+
+def test_no_exact_match_triggers_exactly_one_anchor_repair_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _SequenceDeepSeekClient(
+        [_stale_anchor_bundle(job.job_id), _bundle_content(job.job_id)]
+    )
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert completed.edit_bundle_validation_status == "valid"
+    assert len(client.completions.calls) == 2
+    repair_messages = client.completions.calls[1]["messages"]
+    assert [message["role"] for message in repair_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    repair_payload = json.loads(repair_messages[-1]["content"])
+    assert repair_payload["failed_path"] == "app/dev/sample.py"
+    assert "VALUE = 999" in repair_payload["failed_old_text_preview"]
+    assert "smaller exact anchor" in repair_payload["instruction"]
+    assert any(
+        snippet["exact_text"] == "VALUE = 1"
+        for snippet in repair_payload["fresh_exact_anchor_snippets"]
+    )
+    artifact = _generation_artifact(root, completed)
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "exact_match_error",
+        "valid",
+    ]
+    assert artifact["attempts"][0]["failed_path"] == "app/dev/sample.py"
+    assert artifact["attempts"][1]["repair_retry"] is True
+    assert artifact["attempts"][1]["anchor_repair"] is True
+    retry = artifact["anchor_snippets"]["retry"]
+    assert retry["used"] is True
+    assert retry["failed_path"] == "app/dev/sample.py"
+    assert "VALUE = 999" in retry["failed_old_text_preview"]
+    assert retry["fresh_snippet_labels"] == ["file-tail"]
+    assert retry["error"] is None
+
+
+def test_second_exact_match_failure_fails_closed_with_recorded_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    client = _FakeDeepSeekClient(_stale_anchor_bundle(job.job_id))
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 2
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_generation_status == "error"
+    assert failed.edit_bundle_path is None
+    assert "no exact match" in failed.edit_generation_errors[0]
+    artifact = _generation_artifact(root, failed)
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "exact_match_error",
+        "error",
+    ]
+    retry = artifact["anchor_snippets"]["retry"]
+    assert retry["used"] is True
+    assert retry["failed_path"] == "app/dev/sample.py"
+    assert "no exact match" in retry["error"]
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_approval_sensitive_anchor_mismatch_never_retries(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    bundle = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "store = _approval_store(request)",
+                    "new_text": "store = None",
+                }
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(bundle)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 1
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    artifact = _generation_artifact(root, failed)
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "exact_match_error"
+    ]
+    assert (
+        artifact["attempts"][0]["retry_skipped_reason"]
+        == "approval_sensitive_anchor"
+    )
+    retry = artifact["anchor_snippets"]["retry"]
+    assert retry["used"] is False
+    assert retry["skipped_reason"] == "approval_sensitive_anchor"
+
+
+def test_ambiguous_match_and_marker_touching_ops_never_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree = Path(job.worktree_path)
+    (worktree / "app" / "dup.py").write_text("X = 1\nX = 1\n", encoding="utf-8")
+    ambiguous = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dup.py",
+                    "old_text": "X = 1",
+                    "new_text": "X = 2",
+                }
+            ],
+        }
+    )
+    marker_touching = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "VALUE = 1",
+                    "new_text": "VALUE = execute_approved(1)",
+                }
+            ],
+        }
+    )
+    for content, expected_error in (
+        (ambiguous, "matched 2 times"),
+        (marker_touching, "approval-sensitive region"),
+    ):
+        client = _FakeDeepSeekClient(content)
+        with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+            generate_freestyle_edit_bundle(
+                job.job_id,
+                project_root=root,
+                deepseek_config=_config(),
+                deepseek_client=client,
+            )
+        assert len(client.completions.calls) == 1
+        failed = get_freestyle_job(job.job_id, project_root=root)
+        assert expected_error in failed.edit_generation_errors[0]
+        artifact = _generation_artifact(root, failed)
+        assert [record["status"] for record in artifact["attempts"]] == []
+        assert artifact["anchor_snippets"]["retry"]["used"] is False
+
+
+def test_truncated_high_priority_file_still_gets_exact_anchor_snippets(tmp_path):
+    root = _init_repo(tmp_path)
+    header = (
+        "from app.web_pages import (\n"
+        "    chat_page,\n"
+        "    usage_page,\n"
+        ")\n"
+        "\n"
+        "\n"
+        "def register_web_routes(app):\n"
+    )
+    filler = "".join(
+        f"    register_value_{index:04d} = {index}\n" for index in range(400)
+    )
+    late_routes = (
+        "\n"
+        '    @app.get("/usage")\n'
+        "    def usage(request):\n"
+        '        return _page("Usage", request, usage_page())\n'
+        "\n"
+        '    @app.get("/chat")\n'
+        "    def chat(request):\n"
+        '        return _page("Chat", request, chat_page())\n'
+    )
+    routes_text = header + filler + late_routes
+    assert len(routes_text) > proposal.MAX_CONTEXT_CHARS_PER_FILE
+    (root / "app" / "web_routes.py").write_text(routes_text, encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "."], check=True, shell=False
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "routes"],
+        check=True,
+        shell=False,
+        stdout=subprocess.PIPE,
+    )
+    job = create_freestyle_job(
+        "Wire the /usage route on the web routes page.",
+        developer_approved=True,
+        project_root=root,
+    )
+    materialize_freestyle_job(job.job_id, project_root=root)
+    propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=_FakeDeepSeekClient(
+            json.dumps(
+                {
+                    "proposed_implementation_steps": ["Wire the usage route."],
+                    "likely_files_to_edit": ["app/web_routes.py"],
+                    "risks_unknowns": [],
+                    "suggested_allowlisted_checks": ["pytest"],
+                }
+            )
+        ),
+    )
+    chat_block = (
+        '    @app.get("/chat")\n'
+        "    def chat(request):\n"
+        '        return _page("Chat", request, chat_page())'
+    )
+    bundle = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/web_routes.py",
+                    "old_text": chat_block,
+                    "new_text": chat_block + "\n\n    # wired\n",
+                }
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(bundle)
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    payload = json.loads(client.completions.calls[0]["messages"][1]["content"])
+    included = {
+        item["path"]: item for item in payload["safe_isolated_worktree_files"]
+    }
+    assert included["app/web_routes.py"]["truncated"] is True
+    truncated_content = included["app/web_routes.py"]["content"]
+    snippets = [
+        item
+        for item in payload["exact_anchor_snippets"]
+        if item["path"] == "app/web_routes.py"
+    ]
+    assert {item["label"] for item in snippets} >= {
+        "route:/usage",
+        "route:/chat",
+        "import-block:app.web_pages",
+    }
+    for item in snippets:
+        assert item["exact_text"] in routes_text
+    assert any(
+        item["exact_text"] not in truncated_content for item in snippets
+    )
+
+
+def test_anchor_mismatch_failure_surfaces_concise_handoff_warning(tmp_path):
+    from app.dev.freestyle_handoff import (
+        get_freestyle_handoff,
+        render_freestyle_handoff_markdown,
+    )
+
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _FakeDeepSeekClient(_stale_anchor_bundle(job.job_id))
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    handoff = get_freestyle_handoff(job.job_id, project_root=root)
+    anchor_risks = [
+        risk
+        for risk in handoff["risks"]
+        if "exact replace_text anchor mismatch" in risk
+    ]
+    assert len(anchor_risks) == 1
+    assert "app/dev/sample.py" in anchor_risks[0]
+    assert "one bounded repair retry" in anchor_risks[0]
+    assert len(anchor_risks[0]) <= 500
+    markdown = render_freestyle_handoff_markdown(handoff)
+    assert "exact replace_text anchor mismatch" in markdown
 
 
 def test_generation_has_no_fallback_provider_shell_or_runtime_registration():

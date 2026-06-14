@@ -16,6 +16,8 @@ from app.dev.freestyle_coding import FreestyleJob, FreestyleJobRefusedError
 from app.dev.freestyle_policy import (
     APPROVAL_STORE_CLASS_NAME,
     GENERATED_OR_CACHE_PARTS,
+    approval_sensitive_region_labels,
+    defines_approval_store,
     is_job_id,
     recovery_message,
 )
@@ -103,6 +105,7 @@ def test_active_states_cover_every_stage_lock_without_inconsistent():
         "review_status",
         "checks_status",
         "latest_run_status",
+        "latest_refinement_status",
     }
     assert "inconsistent" not in ACTIVE_STATES["edit_apply_status"]
     assert INCONSISTENT_STATES == {"edit_apply_status": {"inconsistent"}}
@@ -112,6 +115,53 @@ def test_policy_markers_and_review_cache_superset():
     assert APPROVAL_STORE_CLASS_NAME == "Approval" + "Store"
     assert "cache" not in GENERATED_OR_CACHE_PARTS
     assert review._GENERATED_OR_CACHE_PARTS == GENERATED_OR_CACHE_PARTS | {"cache"}
+
+
+def test_defines_approval_store_matches_definitions_not_references():
+    class_name = APPROVAL_STORE_CLASS_NAME
+    assert defines_approval_store(f"class {class_name}:\n    pass\n")
+    assert defines_approval_store(f"class  {class_name}(Base):\n    pass\n")
+    for reference_only in (
+        f"from app.approvals import {class_name}\n",
+        f"store = {class_name}(settings.database_path)\n",
+        f"def _store(request) -> {class_name}:\n    ...\n",
+        f"class {class_name}Stub:\n    pass\n",
+        "ROUTES = ['/shenanigans']\n",
+    ):
+        assert not defines_approval_store(reference_only)
+
+
+def test_approval_sensitive_region_labels_match_markers_without_page_helpers():
+    class_name = APPROVAL_STORE_CLASS_NAME
+    assert approval_sensitive_region_labels(
+        f"from app.approvals import {class_name}"
+    ) == (
+        "approval-store class reference",
+        "approval module reference",
+    )
+    assert approval_sensitive_region_labels("store = _approval_store(request)") == (
+        "approval-store helper reference",
+    )
+    assert approval_sensitive_region_labels(
+        "item = approve_approval(store, approval_id)"
+    ) == ("approval mutation call",)
+    assert approval_sensitive_region_labels("reject_approval(store, 3)") == (
+        "approval mutation call",
+    )
+    assert approval_sensitive_region_labels("result = execute_approved(store, 3)") == (
+        "approved-execution call",
+    )
+    assert approval_sensitive_region_labels("from app.approval_service import x") == (
+        "approval module reference",
+    )
+    for safe_text in (
+        "from app.web_pages import approvals_page, shenanigans_page\n",
+        'return _page("Shenanigans", request, shenanigans_page())\n',
+        "approvals_page(items, message)\n",
+        "the approval store is documented elsewhere\n",
+        "app.approvals_page\n",
+    ):
+        assert approval_sensitive_region_labels(safe_text) == ()
 
 
 def test_recovery_message_matches_slice_texts():

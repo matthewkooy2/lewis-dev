@@ -31,11 +31,16 @@ Edit bundle schema (version 1, one JSON object):
       ]
     }
 
-Only relative paths to safe text files inside the job worktree are accepted;
-each path may appear in at most one operation. The whole bundle is validated
-before the first write, every mutation is journaled, and any failure rolls
-the worktree back so it is never left partially edited. Written files are
-never marked executable. Whether a path appeared in the job's proposal
+Only relative paths to safe text files inside the job worktree are accepted.
+A path may carry more than one operation only when every operation for it is
+``replace_text`` and their exact matched regions do not overlap; any
+``create_file``, ``replace_file``, or ``delete_file`` must be the sole
+operation for its path. Same-file replacements are computed against the
+original bytes and spliced in descending match-offset order so earlier
+offsets stay valid, producing one journaled write per file. The whole bundle
+is validated before the first write, every mutation is journaled, and any
+failure rolls the worktree back so it is never left partially edited. Written
+files are never marked executable. Whether a path appeared in the job's proposal
 context is intentionally not enforced here: the proposal artifact records
 omissions only up to a bounded count, so this module revalidates every path
 and file independently instead, and a stricter proposal-context allowlist
@@ -79,6 +84,8 @@ from app.dev.freestyle_policy import (
     APPROVAL_STORE_PATH_NAMES,
     APPROVAL_STORE_TOKEN,
     GENERATED_OR_CACHE_PARTS,
+    approval_sensitive_region_labels,
+    contains_sensitive_content,
 )
 from app.dev.freestyle_state import (
     require_materialized,
@@ -123,9 +130,61 @@ _OPERATION_FIELDS = {
 }
 
 
+class EditBundleExactMatchError(FreestyleJobRefusedError):
+    """One replace_text old_text matched the current file exactly zero times.
+
+    Raised with the same refusal message as before so every existing caller
+    still fails closed unchanged; it additionally carries the failed path and
+    the operation's anchor text so edit generation can attempt one bounded
+    anchor-repair retry with fresh exact snippets. Never raised for schema,
+    path, content, ambiguous-match, or approval-sensitive failures, which
+    must never trigger any retry.
+    """
+
+    def __init__(self, message: str, *, path: str, old_text: str, new_text: str):
+        super().__init__(message)
+        self.path = path
+        self.old_text = old_text
+        self.new_text = new_text
+
+
+@dataclass(frozen=True)
+class _LocatedReplacement:
+    """One validated replace_text span located in the original file text.
+
+    ``start``/``end`` are character offsets into the original decoded text; the
+    span is computed before any write so same-file replacements can be checked
+    for overlap and spliced in descending offset order.
+    """
+
+    old_text: str
+    new_text: str
+    start: int
+    end: int
+    label: str
+
+
+@dataclass(frozen=True)
+class _OperationPlan:
+    """One validated operation before same-path replace_text grouping."""
+
+    kind: str
+    path: str
+    target: Path
+    original_bytes: bytes | None
+    new_bytes: bytes | None
+    located: _LocatedReplacement | None
+
+
 @dataclass(frozen=True)
 class PlannedEdit:
-    """One fully validated operation, computed before any worktree write."""
+    """One fully validated per-file edit unit, computed before any write.
+
+    A ``replace_text`` unit may fold several non-overlapping same-file
+    replacements into one journaled write; ``replacement_count``,
+    ``replacement_ranges`` (original-text offsets), and
+    ``descending_offset_application`` record that folding for artifacts.
+    """
 
     op: str
     path: str
@@ -134,6 +193,9 @@ class PlannedEdit:
     original_bytes: bytes | None
     before_sha256: str | None
     after_sha256: str | None
+    replacement_count: int = 1
+    replacement_ranges: tuple[tuple[int, int], ...] = ()
+    descending_offset_application: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,11 +341,21 @@ def edit_bundle_schema_for_prompt() -> dict[str, Any]:
         ],
         "operation_constraints": {
             "additional_fields_allowed": False,
-            "one_operation_per_path_case_insensitive": True,
+            "multiple_operations_per_path": (
+                "allowed only when every operation for that path is replace_text "
+                "and their exact old_text regions do not overlap; create_file, "
+                "replace_file, and delete_file must each be the only operation "
+                "for their path (paths compared case-insensitively)"
+            ),
             "max_path_chars": MAX_EDIT_PATH_LENGTH,
             "max_file_content_bytes": MAX_EDIT_FILE_BYTES,
             "max_total_content_bytes": MAX_BUNDLE_TOTAL_CONTENT_BYTES,
             "unsafe_secret_db_cache_generated_approval_store_and_executable_paths": "forbidden",
+            "approval_sensitive_code_regions": (
+                "forbidden in old_text, new_text, and content, and in the "
+                "current content of replace_file/delete_file targets; route "
+                "wiring elsewhere in the same file is allowed"
+            ),
             "binary_or_nul_content": "forbidden",
             "absolute_traversal_backslash_symlink_and_outside_worktree_paths": "forbidden",
         },
@@ -414,8 +486,30 @@ def _parse_bundle(bundle_bytes: bytes, job_id: str) -> dict[str, Any]:
 def _plan_operations(
     raw_operations: list[Any], worktree: Path, resolved_worktree: Path
 ) -> tuple[PlannedEdit, ...]:
-    planned: list[PlannedEdit] = []
-    total_content_bytes = 0
+    operations = _validate_operations(raw_operations, worktree, resolved_worktree)
+    planned = _grouped_planned_edits(operations)
+    _require_non_conflicting_edit_paths([item.path for item in planned])
+    total_content_bytes = sum(
+        len(item.original_bytes or b"") + len(item.new_bytes or b"")
+        for item in planned
+    )
+    if total_content_bytes > MAX_BUNDLE_TOTAL_CONTENT_BYTES:
+        raise FreestyleJobRefusedError(
+            "Edit bundle exceeds the total content size limit."
+        )
+    return planned
+
+
+def _validate_operations(
+    raw_operations: list[Any], worktree: Path, resolved_worktree: Path
+) -> list[_OperationPlan]:
+    """Validate every operation independently before same-path grouping.
+
+    replace_text operations are only *located* here (their unique match span is
+    computed against the original file); the actual splice happens once per file
+    in grouping so several same-file replacements compose correctly.
+    """
+    operations: list[_OperationPlan] = []
     for index, raw_operation in enumerate(raw_operations):
         label = f"operations[{index}]"
         if not isinstance(raw_operation, dict):
@@ -430,6 +524,7 @@ def _plan_operations(
                 f"Edit bundle {label} contains unexpected or missing fields."
             )
         path = _validated_edit_path(raw_operation.get("path"), worktree, label)
+        located: _LocatedReplacement | None = None
         if kind == "create_file":
             target = _validated_edit_target(
                 path, worktree, resolved_worktree, label, expect_file=False
@@ -444,9 +539,10 @@ def _plan_operations(
             )
             original_bytes = _read_current_text_file(target, path, label)
             if kind == "replace_text":
-                new_bytes = _planned_exact_replacement(
-                    original_bytes, raw_operation, path, label
+                located = _located_replacement(
+                    original_bytes.decode("utf-8"), raw_operation, path, label
                 )
+                new_bytes = None
             else:
                 _require_fresh_expected_sha256(
                     raw_operation.get("expected_sha256"), original_bytes, path, label
@@ -458,24 +554,109 @@ def _plan_operations(
                     if kind == "replace_file"
                     else None
                 )
-        total_content_bytes += len(original_bytes or b"") + len(new_bytes or b"")
-        if total_content_bytes > MAX_BUNDLE_TOTAL_CONTENT_BYTES:
-            raise FreestyleJobRefusedError(
-                "Edit bundle exceeds the total content size limit."
-            )
-        planned.append(
-            PlannedEdit(
-                op=kind,
+        _require_no_approval_sensitive_text(
+            kind, raw_operation, original_bytes, path, label
+        )
+        operations.append(
+            _OperationPlan(
+                kind=kind,
                 path=path,
                 target=target,
-                new_bytes=new_bytes,
                 original_bytes=original_bytes,
-                before_sha256=_sha256_or_none(original_bytes),
-                after_sha256=_sha256_or_none(new_bytes),
+                new_bytes=new_bytes,
+                located=located,
             )
         )
-    _require_non_conflicting_edit_paths([item.path for item in planned])
+    return operations
+
+
+def _grouped_planned_edits(
+    operations: list[_OperationPlan],
+) -> tuple[PlannedEdit, ...]:
+    """Fold same-path replace_text operations into one per-file edit unit.
+
+    A path with more than one operation is accepted only when every operation
+    for it is replace_text; any whole-file operation must be the sole operation
+    for its path, so it fails closed otherwise.
+    """
+    groups: dict[str, list[_OperationPlan]] = {}
+    order: list[str] = []
+    for operation in operations:
+        if operation.path not in groups:
+            groups[operation.path] = []
+            order.append(operation.path)
+        groups[operation.path].append(operation)
+    planned: list[PlannedEdit] = []
+    for path in order:
+        group = groups[path]
+        if len(group) > 1 and any(item.kind != "replace_text" for item in group):
+            raise FreestyleJobRefusedError(
+                "Edit bundle contains more than one operation for the same path."
+            )
+        if group[0].kind == "replace_text":
+            planned.append(_combined_text_edit(group, path))
+        else:
+            planned.append(_whole_file_planned_edit(group[0]))
     return tuple(planned)
+
+
+def _whole_file_planned_edit(operation: _OperationPlan) -> PlannedEdit:
+    return PlannedEdit(
+        op=operation.kind,
+        path=operation.path,
+        target=operation.target,
+        new_bytes=operation.new_bytes,
+        original_bytes=operation.original_bytes,
+        before_sha256=_sha256_or_none(operation.original_bytes),
+        after_sha256=_sha256_or_none(operation.new_bytes),
+    )
+
+
+def _combined_text_edit(group: list[_OperationPlan], path: str) -> PlannedEdit:
+    """Splice one or more non-overlapping same-file replacements into one write.
+
+    Every span was already required to match the original file exactly once.
+    Here the spans are additionally required not to overlap, then applied in
+    descending start-offset order so each splice leaves the earlier (smaller)
+    offsets of the original text valid.
+    """
+    original_bytes = group[0].original_bytes or b""
+    text = original_bytes.decode("utf-8")
+    replacements = [item.located for item in group if item.located is not None]
+    ordered = sorted(replacements, key=lambda item: item.start)
+    for previous, current in zip(ordered, ordered[1:]):
+        if current.start < previous.end:
+            raise FreestyleJobRefusedError(
+                f"Edit bundle replace_text operations for {path!r} overlap; "
+                "refusing an ambiguous multi-edit."
+            )
+    result = text
+    for replacement in sorted(
+        replacements, key=lambda item: item.start, reverse=True
+    ):
+        result = (
+            result[: replacement.start]
+            + replacement.new_text
+            + result[replacement.end :]
+        )
+    new_bytes = result.encode("utf-8")
+    if len(new_bytes) > MAX_EDIT_FILE_BYTES:
+        raise FreestyleJobRefusedError(
+            f"Edit bundle replace_text result for {path!r} exceeds the edit "
+            "size limit."
+        )
+    return PlannedEdit(
+        op="replace_text",
+        path=path,
+        target=group[0].target,
+        new_bytes=new_bytes,
+        original_bytes=original_bytes,
+        before_sha256=_sha256_or_none(original_bytes),
+        after_sha256=_sha256_or_none(new_bytes),
+        replacement_count=len(replacements),
+        replacement_ranges=tuple((item.start, item.end) for item in ordered),
+        descending_offset_application=len(replacements) > 1,
+    )
 
 
 def _validated_edit_path(raw_path: Any, worktree: Path, label: str) -> str:
@@ -648,9 +829,16 @@ def _require_fresh_expected_sha256(
         )
 
 
-def _planned_exact_replacement(
-    original_bytes: bytes, raw_operation: dict[str, Any], path: str, label: str
-) -> bytes:
+def _located_replacement(
+    text: str, raw_operation: dict[str, Any], path: str, label: str
+) -> _LocatedReplacement:
+    """Validate one replace_text op and locate its unique span in ``text``.
+
+    Raises ``EditBundleExactMatchError`` (and only that) for zero matches so a
+    bounded anchor-repair retry can be attempted upstream; ambiguous matches,
+    identical text, and oversized or binary text stay plain refusals that never
+    trigger any retry.
+    """
     old_text = raw_operation.get("old_text")
     new_text = raw_operation.get("new_text")
     if not isinstance(old_text, str) or not old_text:
@@ -670,24 +858,75 @@ def _planned_exact_replacement(
         raise FreestyleJobRefusedError(
             f"Edit bundle {label} old_text and new_text are identical."
         )
-    text = original_bytes.decode("utf-8")
     occurrences = text.count(old_text)
     if occurrences == 0:
-        raise FreestyleJobRefusedError(
+        raise EditBundleExactMatchError(
             f"Edit bundle {label} replace_text found no exact match in {path!r}; "
-            "the expected old_text is stale or wrong."
+            "the expected old_text is stale or wrong.",
+            path=path,
+            old_text=old_text,
+            new_text=new_text,
         )
     if occurrences > 1:
         raise FreestyleJobRefusedError(
             f"Edit bundle {label} replace_text matched {occurrences} times in "
             f"{path!r}; refusing an ambiguous replacement."
         )
-    new_bytes = text.replace(old_text, new_text, 1).encode("utf-8")
-    if len(new_bytes) > MAX_EDIT_FILE_BYTES:
-        raise FreestyleJobRefusedError(
-            f"Edit bundle {label} replace_text result exceeds the edit size limit."
-        )
-    return new_bytes
+    start = text.index(old_text)
+    return _LocatedReplacement(
+        old_text=old_text,
+        new_text=new_text,
+        start=start,
+        end=start + len(old_text),
+        label=label,
+    )
+
+
+def _require_no_approval_sensitive_text(
+    kind: str,
+    raw_operation: dict[str, Any],
+    original_bytes: bytes | None,
+    path: str,
+    label: str,
+) -> None:
+    """Fail closed when one operation would touch approval-sensitive code.
+
+    Path-level checks already block the approval-record implementation files
+    outright. This region-level guard additionally protects files that merely
+    reference approval code (routes, dashboards, tests): a replace_text whose
+    old_text or new_text touches an approval-sensitive marker is refused, and
+    whole-file create/replace/delete operations are refused whenever the
+    written content or the targeted current content contains one. replace_text
+    old_text/new_text is additionally refused when it carries sensitive secret
+    content. Edits to the rest of the same file remain allowed.
+    """
+    if kind == "replace_text":
+        scanned = [
+            ("old_text", str(raw_operation.get("old_text", ""))),
+            ("new_text", str(raw_operation.get("new_text", ""))),
+        ]
+    elif kind == "create_file":
+        scanned = [("content", str(raw_operation.get("content", "")))]
+    else:
+        scanned = [
+            ("current target content", (original_bytes or b"").decode("utf-8"))
+        ]
+        if kind == "replace_file":
+            scanned.append(("content", str(raw_operation.get("content", ""))))
+    for field_name, text in scanned:
+        matched = approval_sensitive_region_labels(text)
+        if matched:
+            raise FreestyleJobRefusedError(
+                f"Edit bundle {label} {field_name} touches an "
+                f"approval-sensitive region in {path!r} "
+                f"({', '.join(matched)}); approval-related code is only "
+                "changed by a human."
+            )
+        if kind == "replace_text" and contains_sensitive_content(text):
+            raise FreestyleJobRefusedError(
+                f"Edit bundle {label} {field_name} touches sensitive secret "
+                f"content in {path!r}; secrets are only changed by a human."
+            )
 
 
 def _require_non_conflicting_edit_paths(paths: list[str]) -> None:
@@ -825,22 +1064,34 @@ def _build_edit_artifact(
         "proposal_id": bundle.get("proposal_id"),
         "goal": bundle.get("goal"),
         "applied_at": applied_at,
-        "operation_count": len(planned),
+        "operation_count": sum(item.replacement_count for item in planned),
         "touched_file_count": len(planned),
-        "operations": [
-            {
-                "op": item.op,
-                "path": item.path,
-                "before_sha256": item.before_sha256,
-                "after_sha256": item.after_sha256,
-            }
-            for item in planned
-        ],
+        "operations": [_operation_artifact_record(item) for item in planned],
         "policy_notes": [
             "Proposal-context allowlisting is a later policy hook; every path "
-            "was revalidated independently before this application."
+            "was revalidated independently before this application.",
+            "Multiple replace_text operations on one path are spliced once in "
+            "descending original-offset order; whole-file operations stay "
+            "one-per-path.",
         ],
     }
+
+
+def _operation_artifact_record(item: PlannedEdit) -> dict[str, Any]:
+    """Summarize one applied per-file edit unit, including multi-op folding."""
+    record: dict[str, Any] = {
+        "op": item.op,
+        "path": item.path,
+        "before_sha256": item.before_sha256,
+        "after_sha256": item.after_sha256,
+        "replacement_count": item.replacement_count,
+    }
+    if item.op == "replace_text":
+        record["replacement_ranges"] = [
+            [start, end] for start, end in item.replacement_ranges
+        ]
+        record["descending_offset_application"] = item.descending_offset_application
+    return record
 
 
 def _write_edit_artifact(artifact: dict[str, Any], state: Path, job_id: str) -> str:

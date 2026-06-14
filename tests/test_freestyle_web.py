@@ -286,6 +286,7 @@ def test_actions_reject_arbitrary_fields_before_backend_calls(tmp_path, monkeypa
     for name in (
         "apply_freestyle_edit_bundle",
         "cleanup_freestyle_job",
+        "refine_freestyle_job",
         "recover_freestyle_job",
         "review_freestyle_job",
         "run_freestyle_checks",
@@ -294,7 +295,7 @@ def test_actions_reject_arbitrary_fields_before_backend_calls(tmp_path, monkeypa
         monkeypatch.setattr(freestyle_web, name, forbidden)
     client = _client(tmp_path, root)
 
-    for suffix in ("run", "apply", "review", "run-checks", "cleanup", "recover"):
+    for suffix in ("run", "apply", "refine", "review", "run-checks", "cleanup", "recover"):
         rejected = client.post(
             f"/dev/freestyle/{job.job_id}/{suffix}",
             data={
@@ -326,8 +327,85 @@ def test_action_routes_are_debug_only(tmp_path):
     job = _job(root)
     normal = _client(tmp_path, root, debug=False)
 
-    for suffix in ("apply", "review", "run-checks", "cleanup", "recover"):
+    for suffix in ("apply", "refine", "review", "run-checks", "cleanup", "recover"):
         assert normal.post(f"/dev/freestyle/{job.job_id}/{suffix}").status_code == 404
+
+
+def test_refine_web_requires_goal_and_approval_and_uses_safe_defaults(
+    tmp_path, monkeypatch
+):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    calls: list[dict[str, object]] = []
+
+    def fake_refine(job_id: str, goal: str, **kwargs):
+        calls.append({"job_id": job_id, "goal": goal, **kwargs})
+        return job
+
+    monkeypatch.setattr(freestyle_web, "refine_freestyle_job", fake_refine)
+    client = _client(tmp_path, root)
+    refused = client.post(
+        f"/dev/freestyle/{job.job_id}/refine", data={"goal": "Wire route."}
+    )
+    assert "Explicit developer approval is required" in refused.text
+    assert calls == []
+
+    response = client.post(
+        f"/dev/freestyle/{job.job_id}/refine",
+        data={"goal": "Wire route.", "developer_approved": "approved"},
+    )
+    assert "Generated a refinement bundle from the current isolated worktree" in response.text
+    assert calls == [
+        {
+            "job_id": job.job_id,
+            "goal": "Wire route.",
+            "developer_approved": True,
+            "project_root": root,
+            "deepseek_config": calls[0]["deepseek_config"],
+        }
+    ]
+
+
+def test_detail_renders_original_and_latest_refinement_state(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    freestyle.materialize_freestyle_job(job.job_id, project_root=root)
+    refinement_id = "1" * 16
+    reference = (
+        f"refinements/{job.job_id}/refinement-{refinement_id}-0001.json"
+    )
+    artifact = root / freestyle.DEV_STATE_DIR_NAME / reference
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}\n", encoding="utf-8")
+    _set_metadata(
+        root,
+        job.job_id,
+        original_artifacts={"proposal": f"proposals/{job.job_id}/proposal.json"},
+        original_stage_statuses={"edit_apply": "applied", "review": "reviewed"},
+        refinement_count=1,
+        latest_refinement_id=refinement_id,
+        latest_refinement_goal="Wire /shenanigans.",
+        latest_refinement_status="generated",
+        latest_refinement_artifact_path=reference,
+        refinement_history=[
+            {
+                "iteration": 1,
+                "refinement_id": refinement_id,
+                "refinement_goal": "Wire /shenanigans.",
+                "status": "generated",
+                "revision": 1,
+                "artifact_path": reference,
+            }
+        ],
+    )
+
+    response = _client(tmp_path, root).get(f"/dev/freestyle/{job.job_id}")
+
+    assert "Refine This Job" in response.text
+    assert "Refinement History" in response.text
+    assert "Wire /shenanigans." in response.text
+    assert "original edit apply status" in response.text
+    assert "original proposal" in response.text
 
 
 def test_apply_requires_confirmation_and_uses_validated_existing_applier(

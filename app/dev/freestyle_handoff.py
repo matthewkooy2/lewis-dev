@@ -72,6 +72,7 @@ def get_freestyle_handoff(
             "worktree_path": job.worktree_path,
         },
         "goal_fit_warnings": list(job.edit_bundle_goal_fit_warnings),
+        "refinement": _refinement_summary(job),
         "stages": {
             "materialize": job.materialization_status,
             "propose": job.proposal_status,
@@ -80,6 +81,7 @@ def get_freestyle_handoff(
             "review": job.review_status,
             "run-checks": job.checks_status,
             "run": job.latest_run_status,
+            "refine": job.latest_refinement_status,
         },
         "artifacts": artifacts,
         "proposal_failure_diagnostics": _proposal_failure_summary(
@@ -120,6 +122,13 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         f"- **{name}:** {f'`{path}`' if path else 'none'}"
         for name, path in handoff["artifacts"].items()
     )
+    refinement = handoff.get("refinement", {})
+    if refinement.get("count"):
+        lines.extend(["", "## Refinements", ""])
+        lines.append(f"- **Count:** {refinement['count']}")
+        lines.append(f"- **Latest ID:** `{refinement['latest_id']}`")
+        lines.append(f"- **Latest goal:** {refinement['latest_goal']}")
+        lines.append(f"- **Latest status:** {refinement['latest_status']}")
     diagnostics = handoff.get("proposal_failure_diagnostics")
     if diagnostics:
         lines.extend(["", "## Proposal Failure Diagnostics", ""])
@@ -198,6 +207,65 @@ def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
         "review": safe_artifact_reference(job.review_artifact_path),
         "checks": safe_artifact_reference(job.checks_artifact_path),
         "orchestration_run": safe_artifact_reference(job.latest_run_artifact_path),
+        "latest_refinement": safe_artifact_reference(
+            job.latest_refinement_artifact_path
+        ),
+    }
+
+
+def _refinement_summary(job: FreestyleJob) -> dict[str, Any]:
+    original = job.original_artifacts if isinstance(job.original_artifacts, dict) else {}
+    original_stages = (
+        job.original_stage_statuses
+        if isinstance(job.original_stage_statuses, dict)
+        else {}
+    )
+    return {
+        "count": job.refinement_count,
+        "latest_id": job.latest_refinement_id,
+        "latest_goal": job.latest_refinement_goal,
+        "latest_status": job.latest_refinement_status,
+        "latest_artifacts": {
+            "proposal": safe_artifact_reference(
+                job.latest_refinement_proposal_artifact_path
+            ),
+            "edit_generation": safe_artifact_reference(
+                job.latest_refinement_edit_generation_artifact_path
+            ),
+            "generated_bundle": safe_artifact_reference(
+                job.latest_refinement_edit_bundle_path
+            ),
+            "applied_edit": safe_artifact_reference(
+                job.latest_refinement_edit_artifact_path
+            ),
+            "review": safe_artifact_reference(
+                job.latest_refinement_review_artifact_path
+            ),
+            "checks": safe_artifact_reference(
+                job.latest_refinement_checks_artifact_path
+            ),
+            "manifest": safe_artifact_reference(job.latest_refinement_artifact_path),
+        },
+        "original_artifacts": {
+            str(name): safe_artifact_reference(reference)
+            for name, reference in original.items()
+            if isinstance(name, str)
+        },
+        "original_stages": {
+            str(name): str(status)[:50]
+            for name, status in original_stages.items()
+            if isinstance(name, str) and isinstance(status, str)
+        },
+        "history": [
+            {
+                "refinement_id": item.get("refinement_id"),
+                "iteration": item.get("iteration"),
+                "goal": item.get("refinement_goal"),
+                "status": item.get("status"),
+                "artifact_path": safe_artifact_reference(item.get("artifact_path")),
+            }
+            for item in job.refinement_history
+        ],
     }
 
 
@@ -369,6 +437,7 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
                 job.review_status,
                 job.checks_status,
                 job.latest_run_status,
+                job.latest_refinement_status,
             )
         ),
         "failed_checks": job.checks_status == "failed",
@@ -404,11 +473,19 @@ def _risk_summary(
         risks.extend(
             str(item)[:500] for item in proposal_risks if isinstance(item, str)
         )
+    check_warnings = (
+        proposal.get("suggested_check_warnings") if proposal is not None else None
+    )
+    if isinstance(check_warnings, list):
+        risks.extend(
+            str(item)[:500] for item in check_warnings if isinstance(item, str)
+        )
     risks.extend(
         str(warning)[:500] for warning in job.edit_bundle_goal_fit_warnings
     )
     risks.extend(_context_plan_risks("proposal", proposal))
     risks.extend(_context_plan_risks("edit-generation", generation))
+    risks.extend(_anchor_mismatch_risks(generation))
     risks.extend(blocked["reasons"])
     if checks["modified_worktree"]:
         risks.append("The latest check run modified the isolated worktree.")
@@ -417,6 +494,39 @@ def _risk_summary(
     if errors:
         risks.append("The job has bounded recorded errors that require inspection.")
     return list(dict.fromkeys(risks))
+
+
+def _anchor_mismatch_risks(generation: dict[str, Any] | None) -> list[str]:
+    """Surface one concise warning when edit generation failed on an exact
+    replace_text anchor mismatch, noting whether exact worktree snippets and
+    the bounded repair retry were already used."""
+    if generation is None:
+        return []
+    anchor = generation.get("anchor_snippets")
+    validation = generation.get("validation")
+    if not isinstance(anchor, dict) or not isinstance(validation, dict):
+        return []
+    if validation.get("status") == "valid":
+        return []
+    retry = anchor.get("retry")
+    if not isinstance(retry, dict) or retry.get("failed_path") is None:
+        return []
+    path = str(retry.get("failed_path"))[:240]
+    if retry.get("used"):
+        message = (
+            f"Edit generation failed on an exact replace_text anchor mismatch "
+            f"in {path}; exact worktree snippets and one bounded repair retry "
+            "were used but did not produce a valid bundle. Inspect the "
+            "edit-generation artifact."
+        )
+    else:
+        skipped = str(retry.get("skipped_reason") or "unknown reason")[:50]
+        message = (
+            f"Edit generation failed on an exact replace_text anchor mismatch "
+            f"in {path}; the bounded repair retry was not attempted "
+            f"({skipped}). Inspect the edit-generation artifact."
+        )
+    return [message[:500]]
 
 
 def _context_plan_risks(label: str, artifact: dict[str, Any] | None) -> list[str]:
