@@ -40,3 +40,5 @@ data/lewis.sqlite3
 Thumbs.db
 .idea/
 .vscode/
+
+.lewis-dev/
