@@ -719,7 +719,10 @@ def _refinement_status(handoff: dict[str, Any]) -> str:
 def _goal_fit_warning_block(handoff: dict[str, Any]) -> str:
     warnings = [
         warning
-        for warning in handoff.get("goal_fit_warnings", [])
+        for warning in (
+            *handoff.get("goal_fit_warnings", []),
+            *handoff.get("semantic_warnings", []),
+        )
         if isinstance(warning, str) and warning
     ]
     if not warnings:

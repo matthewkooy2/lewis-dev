@@ -14,6 +14,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import time
 from typing import Any
 import uuid
 
@@ -28,6 +29,7 @@ from app.dev.freestyle_artifacts import (
     safe_artifact_reference,
     write_artifact_bytes,
 )
+from app.dev.freestyle_bundle_critique import CritiqueOperation, critique_bundle
 from app.dev.freestyle_coding import (
     FreestyleJob,
     FreestyleJobRefusedError,
@@ -54,6 +56,7 @@ from app.dev.freestyle_edit_bundle import (
     edit_bundle_schema_for_prompt,
     validate_edit_bundle_bytes,
 )
+from app.dev.freestyle_intake import build_intake_summary
 from app.dev.freestyle_policy import (
     approval_sensitive_region_labels,
     contains_sensitive_content,
@@ -76,6 +79,7 @@ from app.dev.freestyle_proposal import (
     _ui_goal_guidance,
     _validate_deepseek_config,
     build_proposal_context,
+    safe_response_envelope,
 )
 from app.dev.freestyle_state import (
     require_materialized,
@@ -129,8 +133,13 @@ class _EditBundleFormatError(FreestyleJobRefusedError):
     """Model output failed envelope schema/shape checks; safe to repair-retry once.
 
     Never raised for operation, path, or content safety failures, which must
-    not trigger any retry.
+    not trigger any retry. ``diagnostic_details`` carries bounded, secret-free
+    metadata (such as the empty-response envelope) into the attempt record.
     """
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.diagnostic_details = details or {}
 
 
 def generate_edit_bundle(
@@ -192,8 +201,11 @@ def generate_edit_bundle(
     prompt_job = replace(started, goal=prompt_job.goal, title=prompt_job.title)
     plan = plan_context(prompt_job.goal, prompt_job.title)
     fit_warnings: tuple[str, ...] = ()
+    semantic_warnings: tuple[str, ...] = ()
     attempts: list[dict[str, Any]] = []
     capture: dict[str, Any] = {}
+    generation_monotonic_start = time.monotonic()
+    prompt_char_count: int | None = None
     anchor_metadata: dict[str, Any] | None = None
     trusted_metadata = _trusted_bundle_metadata(
         started.job_id, proposal, prompt_job.goal, started_at
@@ -219,6 +231,7 @@ def generate_edit_bundle(
         context, user_prompt = _fit_prompt(
             prompt_job, proposal, context, plan, anchor_snippets
         )
+        prompt_char_count = len(user_prompt) + len(_system_prompt(plan))
         _require_goal_grounded_context(context)
         client = deepseek_client or create_deepseek_client(
             api_key=config.api_key,
@@ -316,6 +329,7 @@ def generate_edit_bundle(
         fit_warnings = goal_fit_warnings(
             plan, tuple((item.op, item.path) for item in validation.planned)
         )
+        semantic_warnings = _semantic_warnings(prompt_job, proposal, validation)
         completed_at = _utc_now()
         bundle_path = _write_valid_bundle(
             validation, state, started.job_id, generation_id
@@ -329,6 +343,7 @@ def generate_edit_bundle(
             completed_at,
             plan=plan,
             fit_warnings=fit_warnings,
+            semantic_warnings=semantic_warnings,
             validation_status="valid",
             validation=validation,
             bundle_path=bundle_path,
@@ -337,6 +352,14 @@ def generate_edit_bundle(
             attempts=attempts,
             normalization=capture.get("normalization"),
             anchor_metadata=anchor_metadata,
+        )
+        artifact["response_diagnostics"] = _response_diagnostics(
+            response,
+            context,
+            attempts,
+            prompt_char_count=prompt_char_count,
+            elapsed_ms=_elapsed_ms(generation_monotonic_start),
+            response_text=capture.get("response_text"),
         )
         if artifact_metadata is not None:
             artifact["refinement"] = artifact_metadata
@@ -363,6 +386,7 @@ def generate_edit_bundle(
                 completed_at,
                 plan=plan,
                 fit_warnings=(),
+                semantic_warnings=(),
                 validation_status=validation_status,
                 validation=None,
                 bundle_path=None,
@@ -371,6 +395,14 @@ def generate_edit_bundle(
                 attempts=attempts,
                 normalization=capture.get("normalization"),
                 anchor_metadata=anchor_metadata,
+            )
+            artifact["response_diagnostics"] = _response_diagnostics(
+                response,
+                context,
+                attempts,
+                prompt_char_count=prompt_char_count,
+                elapsed_ms=_elapsed_ms(generation_monotonic_start),
+                response_text=capture.get("response_text"),
             )
             if artifact_metadata is not None:
                 artifact["refinement"] = artifact_metadata
@@ -392,6 +424,7 @@ def generate_edit_bundle(
             edit_bundle_validation_status=validation_status,
             edit_bundle_candidate_file_count=0,
             edit_bundle_goal_fit_warnings=(),
+            edit_bundle_semantic_warnings=(),
             edit_generation_model=_safe_model_name(getattr(config, "model", None)),
             edit_generation_errors=tuple(errors[:MAX_GENERATION_ARTIFACT_ERRORS]),
             updated_at=completed_at,
@@ -411,6 +444,7 @@ def generate_edit_bundle(
         edit_bundle_validation_status="valid",
         edit_bundle_candidate_file_count=len(validation.planned),
         edit_bundle_goal_fit_warnings=fit_warnings,
+        edit_bundle_semantic_warnings=semantic_warnings,
         edit_generation_model=config.model,
         edit_generation_errors=(),
         updated_at=completed_at,
@@ -586,6 +620,10 @@ def _fit_prompt(
                     [str(item["path"]) for item in files],
                     omitted,
                     priority_candidate_count=priority_candidate_count,
+                    candidate_paths=[
+                        str(item["path"]) for item in files
+                    ]
+                    + [str(record.get("path", "")) for record in omitted],
                 ),
             )
             return fitted, user_prompt
@@ -802,6 +840,9 @@ def _validated_response_bundle(
     plain refusal and is never retried. ``capture`` records the response text
     and normalization outcome for artifacts even when validation fails.
     """
+    # Record the raw content up front so an empty/oversized response still has
+    # its bounded content length available for response diagnostics.
+    capture["response_text"] = _response_preview_text(response)
     response_text, _ = _response_bundle_bytes(response)
     capture["response_text"] = response_text
     bundle_bytes, normalization = _normalized_bundle_bytes(
@@ -940,7 +981,11 @@ def _response_bundle_bytes(response: Any) -> tuple[str, bytes]:
         ) from exc
     if not isinstance(content, str) or not content.strip():
         raise _EditBundleFormatError(
-            "DeepSeek returned an empty edit-bundle response."
+            "DeepSeek returned an empty edit-bundle response.",
+            details={
+                "validator_category": "empty_response",
+                "response_diagnostics": safe_response_envelope(response),
+            },
         )
     if len(content) > MAX_EDIT_RESPONSE_CHARS:
         raise _EditBundleFormatError(
@@ -976,6 +1021,7 @@ def _build_generation_artifact(
     *,
     plan: ContextPlan,
     fit_warnings: tuple[str, ...],
+    semantic_warnings: tuple[str, ...],
     validation_status: str,
     validation: EditBundleValidation | None,
     bundle_path: str | None,
@@ -1045,6 +1091,10 @@ def _build_generation_artifact(
             "warnings": list(fit_warnings),
             "advisory_only": True,
         },
+        "semantic_critique": {
+            "warnings": list(semantic_warnings),
+            "advisory_only": True,
+        },
         "source_mutation_performed": False,
         "bundle_applied": False,
     }
@@ -1054,6 +1104,45 @@ def _build_generation_artifact(
             len(response_text) > MAX_RECORDED_MODEL_OUTPUT_CHARS
         )
     return artifact
+
+
+def _semantic_warnings(
+    job: FreestyleJob,
+    proposal: dict[str, Any],
+    validation: EditBundleValidation,
+) -> tuple[str, ...]:
+    """Deterministically critique a validated bundle for goal fit.
+
+    Advisory only: this is computed after structural/safety validation has
+    already passed and never blocks the deterministic applier. It only inspects
+    the already-validated new file contents and the deterministic intake plan.
+    """
+    intake = build_intake_summary(job.goal, job.title)
+    operations = tuple(
+        CritiqueOperation(
+            op=item.op,
+            path=item.path,
+            new_content=_decoded_new_content(item),
+        )
+        for item in validation.planned
+    )
+    return critique_bundle(
+        requires_implementation=intake["requires_implementation_change"],
+        named_implementation_files=intake["named_implementation_files"],
+        proposal_likely_files=tuple(proposal.get("likely_files_to_edit", ())),
+        forbidden_paths=intake["forbidden_paths"],
+        operations=operations,
+    )
+
+
+def _decoded_new_content(item: Any) -> str:
+    new_bytes = getattr(item, "new_bytes", None)
+    if not isinstance(new_bytes, bytes):
+        return ""
+    try:
+        return new_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
 
 
 def _planned_operation_summary(item: Any) -> dict[str, Any]:
@@ -1103,6 +1192,61 @@ def _write_generation_artifact(
         encode_json_artifact(artifact),
         label="edit-generation",
     )
+
+
+def _response_diagnostics(
+    response: Any | None,
+    context: ProposalContext | None,
+    attempts: list[dict[str, Any]],
+    *,
+    prompt_char_count: int | None,
+    elapsed_ms: int,
+    response_text: str | None,
+) -> dict[str, Any]:
+    """Build one bounded, secret-free response diagnostic for the artifact.
+
+    Surfaces enough context to explain an empty or unusable DeepSeek response
+    — finish reason, usage, content length, prompt size estimate, included and
+    omitted context counts, attempt/retry state, and elapsed time — without
+    ever storing the prompt, the response body, API keys, or any unbounded
+    value. The empty-response case is the one this exists for.
+    """
+    final_status = attempts[-1]["status"] if attempts else None
+    content_length = len(response_text) if isinstance(response_text, str) else None
+    diagnostics: dict[str, Any] = {
+        "attempt_count": len(attempts),
+        "final_attempt_status": final_status,
+        # A second attempt only ever happens via the one bounded repair retry,
+        # whether that retry then succeeded or failed.
+        "repair_retry_used": len(attempts) >= 2
+        or any(record.get("repair_retry") for record in attempts),
+        "empty_response": final_status in {"format_error", "error"}
+        and content_length == 0,
+        "elapsed_ms": elapsed_ms,
+        "prompt_char_count": prompt_char_count,
+        "prompt_token_estimate": (
+            prompt_char_count // 4 if isinstance(prompt_char_count, int) else None
+        ),
+        "included_file_count": len(context.files) if context is not None else 0,
+        "included_char_count": (
+            context.included_char_count if context is not None else 0
+        ),
+        "omitted_file_counts": (
+            context.omission_counts if context is not None else {}
+        ),
+    }
+    if response is not None:
+        envelope = safe_response_envelope(response)
+        if "content_length" not in envelope and content_length is not None:
+            envelope["content_length"] = content_length
+        diagnostics.update(envelope)
+    elif content_length is not None:
+        diagnostics["content_length"] = content_length
+    return diagnostics
+
+
+def _elapsed_ms(monotonic_start: float) -> int:
+    return max(0, int((time.monotonic() - monotonic_start) * 1000))
 
 
 def _bounded_generation_error(exc: Exception, api_key: Any) -> str:

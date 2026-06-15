@@ -411,6 +411,9 @@ def _persist_run_result(
         "generated_bundle_goal_fit_warnings": list(
             job.edit_bundle_goal_fit_warnings
         ),
+        "generated_bundle_semantic_warnings": list(
+            job.edit_bundle_semantic_warnings
+        ),
         "edits_applied": job.edit_apply_status == "applied",
         "edits_applied_by_run": edits_applied_by_run,
         "final_edit_apply_status": job.edit_apply_status,
@@ -493,10 +496,10 @@ def _human_next_steps(job: FreestyleJob, status: str) -> list[str]:
     steps: list[str] = []
     if job.edit_apply_status != "applied":
         steps.append(f"Review the generated bundle at {job.edit_bundle_path!r}.")
-        if job.edit_bundle_goal_fit_warnings:
+        if job.edit_bundle_goal_fit_warnings or job.edit_bundle_semantic_warnings:
             steps.append(
-                "Inspect the recorded goal-fit warnings before applying; the "
-                "bundle may not actually implement the goal."
+                "Inspect the recorded goal-fit warnings and bundle critique "
+                "before applying; the bundle may not actually implement the goal."
             )
         steps.append(
             "To apply it, rerun with --apply-latest-generated --confirm-apply."

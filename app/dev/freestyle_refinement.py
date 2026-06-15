@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Any
 import uuid
@@ -75,7 +76,8 @@ def refine_freestyle_job(
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     _preflight_refinement(job, root, state)
     refinement_id = uuid.uuid4().hex[:16]
-    effective_goal = _effective_refinement_goal(job, refinement_goal)
+    memory = _previous_attempt_memory(job, state)
+    effective_goal = _effective_refinement_goal(job, refinement_goal, memory)
     metadata = {
         "refinement_id": refinement_id,
         "iteration": job.refinement_count + 1,
@@ -83,6 +85,7 @@ def refine_freestyle_job(
         "original_goal": job.goal,
         "refinement_goal": refinement_goal,
         "current_isolated_worktree": True,
+        "previous_attempt_memory": memory,
     }
     started_at = _utc_now()
     original_artifacts = job.original_artifacts or _artifact_snapshot(job)
@@ -371,15 +374,132 @@ def _is_refinement_id(value: Any) -> bool:
     )
 
 
-def _effective_refinement_goal(job: FreestyleJob, refinement_goal: str) -> str:
-    return (
+MAX_MEMORY_ARTIFACT_BYTES = 300_000
+MAX_MEMORY_FILES = 20
+
+
+def _effective_refinement_goal(
+    job: FreestyleJob,
+    refinement_goal: str,
+    memory: dict[str, Any] | None = None,
+) -> str:
+    base = (
         "This is a refinement of the current isolated worktree, not a fresh job. "
         "Preserve existing working changes unless this refinement requires modifying "
         "them, and prefer minimal targeted edits.\n\n"
         f"Original job title: {job.title}\n"
         f"Original job goal: {job.goal}\n\n"
-        f"New refinement goal: {refinement_goal}"
     )
+    base += _memory_prompt_section(memory)
+    return base + f"New refinement goal: {refinement_goal}"
+
+
+def _memory_prompt_section(memory: dict[str, Any] | None) -> str:
+    """Render the previous attempt's behaviour so a refinement does not repeat it."""
+    if not memory:
+        return ""
+    lines: list[str] = []
+    touched = memory.get("previous_bundle_touched_files") or []
+    likely = memory.get("previous_proposal_likely_files") or []
+    warnings = memory.get("previous_warnings") or []
+    if touched:
+        lines.append(
+            "The previous bundle changed these files: " + ", ".join(touched) + "."
+        )
+    if likely:
+        lines.append(
+            "The previous proposal expected to edit: " + ", ".join(likely) + "."
+        )
+    if warnings:
+        lines.append(
+            "The previous attempt was flagged with: "
+            + " ".join(warnings)
+            + " Do not repeat those rejected patterns; satisfy the refinement "
+            "goal with a real, wired implementation change."
+        )
+    if not lines:
+        return ""
+    return (
+        "Previous attempt memory (do not treat this refinement as unrelated):\n"
+        + "\n".join(f"- {line}" for line in lines)
+        + "\n\n"
+    )
+
+
+def _previous_attempt_memory(job: FreestyleJob, state: Path) -> dict[str, Any]:
+    """Collect a bounded record of what the previous attempt did and why it was
+    flagged, so refinement generation can avoid repeating a rejected pattern.
+
+    Best-effort and fail-open: any unreadable or malformed artifact yields an
+    empty field rather than blocking the refinement. Only bounded, safe path
+    strings and the previous attempt's own advisory warnings are carried; no
+    file contents, secrets, or prompts are read.
+    """
+    touched = _previous_bundle_touched_files(job, state)
+    likely = _previous_proposal_likely_files(job, state)
+    warnings = [
+        str(warning)[:500]
+        for warning in (
+            *job.edit_bundle_goal_fit_warnings,
+            *job.edit_bundle_semantic_warnings,
+        )
+        if isinstance(warning, str) and warning
+    ]
+    return {
+        "previous_bundle_touched_files": touched,
+        "previous_proposal_likely_files": likely,
+        "previous_warnings": warnings,
+    }
+
+
+def _previous_bundle_touched_files(job: FreestyleJob, state: Path) -> list[str]:
+    artifact = _read_state_artifact(job.edit_generation_artifact_path, state)
+    if artifact is None:
+        return []
+    validation = artifact.get("validation")
+    if not isinstance(validation, dict):
+        return []
+    operations = validation.get("operations")
+    if not isinstance(operations, list):
+        return []
+    paths: list[str] = []
+    for operation in operations:
+        if isinstance(operation, dict) and isinstance(operation.get("path"), str):
+            path = operation["path"]
+            if path and path not in paths:
+                paths.append(path)
+    return paths[:MAX_MEMORY_FILES]
+
+
+def _previous_proposal_likely_files(job: FreestyleJob, state: Path) -> list[str]:
+    artifact = _read_state_artifact(job.proposal_artifact_path, state)
+    if artifact is None:
+        return []
+    likely = artifact.get("likely_files_to_edit")
+    if not isinstance(likely, list):
+        return []
+    return [item for item in likely if isinstance(item, str) and item][
+        :MAX_MEMORY_FILES
+    ]
+
+
+def _read_state_artifact(
+    reference: str | None, state: Path
+) -> dict[str, Any] | None:
+    relative = safe_artifact_reference(reference)
+    if relative is None:
+        return None
+    path = state / relative
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        path.resolve(strict=True).relative_to(state.resolve())
+        if path.stat().st_size > MAX_MEMORY_ARTIFACT_BYTES:
+            return None
+        payload = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _artifact_snapshot(job: FreestyleJob) -> dict[str, str | None]:

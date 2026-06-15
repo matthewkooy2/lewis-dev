@@ -27,7 +27,9 @@ from app.dev.freestyle_coding import (
     get_freestyle_job,
 )
 from app.dev.freestyle_context_plan import (
+    NAMED_TARGET_BUDGET_BLOCKER,
     ContextPlan,
+    is_named_target,
     plan_context,
     priority_rank,
     summarize_context_plan,
@@ -178,15 +180,19 @@ class _ContextCandidate:
     score: int
     preferred: bool
     priority_rank: int | None
+    named_target: bool = False
 
     @property
-    def selection_key(self) -> tuple[int, int, int, str]:
-        """Deterministic selection order: proposal-preferred paths first, then
-        priority-ranked files strictly by pattern rank (core implementation
-        patterns precede test patterns), then everything else by score. Rank
-        dominates the generic score so broad test files can never crowd out
-        core implementation files within a goal's priority surface."""
+    def selection_key(self) -> tuple[int, int, int, int, str]:
+        """Deterministic selection order: files explicitly named in the goal or
+        refinement first, then proposal-preferred paths, then priority-ranked
+        files strictly by pattern rank (core implementation patterns precede
+        test patterns), then everything else by score. The named-target tier
+        sits above both preferred and rank so an implementation file a human
+        explicitly named can never be displaced by generic tests, broad glob
+        matches, or poisoned model-preferred paths."""
         return (
+            0 if self.named_target else 1,
             0 if self.preferred else 1,
             self.priority_rank if self.priority_rank is not None else _UNRANKED,
             -self.score,
@@ -432,6 +438,7 @@ def build_proposal_context(
                     score=_context_score(relative, sample, goal_terms, preferred, plan),
                     preferred=relative.casefold() in preferred,
                     priority_rank=priority_rank(relative, plan),
+                    named_target=is_named_target(relative, plan),
                 )
             )
 
@@ -509,15 +516,31 @@ def build_proposal_context(
             [str(item["path"]) for item in selected],
             omissions,
             priority_candidate_count=priority_candidate_count,
+            candidate_paths=[candidate.relative_path for candidate in candidates],
         ),
     )
 
 
 def _require_goal_grounded_context(context: ProposalContext) -> None:
-    """Fail closed before any DeepSeek call when a UI goal got no UI context."""
+    """Fail closed before any DeepSeek call when context cannot ground the goal.
+
+    Two deterministic gates run before any model call: a web/UI goal whose
+    safe UI candidates were all dropped, and an explicitly named safe target
+    file omitted only because the bounded context budget filled up. Both refuse
+    rather than ask DeepSeek to edit something it was never shown.
+    """
     gap = ui_context_gap(context.context_plan)
     if gap is not None:
         raise FreestyleJobRefusedError(gap)
+    _require_named_targets_available(context)
+
+
+def _require_named_targets_available(context: ProposalContext) -> None:
+    if not isinstance(context.context_plan, dict):
+        return
+    named = context.context_plan.get("named_target_files")
+    if isinstance(named, dict) and named.get("omitted_due_to_budget"):
+        raise FreestyleJobRefusedError(NAMED_TARGET_BUDGET_BLOCKER)
 
 
 def _proposal_with_one_repair(
@@ -654,6 +677,58 @@ def _response_preview_text(response: Any) -> str:
     except (AttributeError, IndexError, TypeError):
         return ""
     return content if isinstance(content, str) else ""
+
+
+def safe_response_envelope(response: Any) -> dict[str, Any]:
+    """Extract bounded, secret-free provider response metadata for diagnostics.
+
+    Captures only structural envelope fields (model, response id/object,
+    creation timestamp, finish reason, content length, token usage). It never
+    reads or stores the message content body, the prompt, API keys, or any
+    unbounded value, so it is safe to persist verbatim in failure artifacts.
+    """
+    envelope: dict[str, Any] = {}
+    model = getattr(response, "model", None)
+    if isinstance(model, str) and model:
+        envelope["response_model"] = model[:120]
+    for attribute, key in (("id", "response_id"), ("object", "response_object")):
+        value = getattr(response, attribute, None)
+        if isinstance(value, str) and value:
+            envelope[key] = value[:120]
+    created = getattr(response, "created", None)
+    if isinstance(created, int) and not isinstance(created, bool):
+        envelope["response_created"] = created
+    finish_reason, content_length = _choice_metadata(response)
+    if finish_reason is not None:
+        envelope["finish_reason"] = finish_reason
+    if content_length is not None:
+        envelope["content_length"] = content_length
+    usage = _usage_values(response)
+    if usage:
+        envelope["usage"] = usage
+    return envelope
+
+
+def _choice_metadata(response: Any) -> tuple[str | None, int | None]:
+    try:
+        choice = response.choices[0]
+    except (AttributeError, IndexError, TypeError):
+        return None, None
+    finish = getattr(choice, "finish_reason", None)
+    finish_reason = finish[:60] if isinstance(finish, str) and finish else None
+    content = getattr(getattr(choice, "message", None), "content", None)
+    content_length = len(content) if isinstance(content, str) else None
+    return finish_reason, content_length
+
+
+def _usage_values(response: Any) -> dict[str, int]:
+    usage = getattr(response, "usage", None)
+    values: dict[str, int] = {}
+    for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = getattr(usage, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            values[name] = value
+    return values
 
 
 def _redacted_preview(text: str, api_key: Any) -> str:
@@ -804,7 +879,12 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
         ) from exc
     if not isinstance(content, str) or not content.strip():
         raise _ProposalFormatError(
-            "DeepSeek returned an empty proposal response.", status="empty_response"
+            "DeepSeek returned an empty proposal response.",
+            status="empty_response",
+            details={
+                "validator_category": "empty_response",
+                "response_diagnostics": safe_response_envelope(response),
+            },
         )
     if len(content) > MAX_PROPOSAL_RESPONSE_CHARS:
         raise _ProposalFormatError(

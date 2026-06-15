@@ -20,12 +20,53 @@ import re
 from typing import Any
 
 MAX_PLAN_OMISSION_RECORDS = 50
+MAX_NAMED_TARGET_PATHS = 20
+MAX_NAMED_TARGET_PATH_CHARS = 200
 # Files dropped only because a bounded context budget filled up, as opposed
 # to safety or readability exclusions.
 BUDGET_OMISSION_REASONS = frozenset(
     {"file_count_limit", "total_context_limit", "total_prompt_limit"}
 )
 DEFAULT_GOAL_CATEGORY = "core_app"
+
+# Extensions recognised when extracting explicitly named repo-relative file
+# paths from a goal. The set is deliberately narrow so arbitrary tokens that
+# merely contain a slash are not treated as edit targets.
+_NAMED_PATH_EXTENSIONS = frozenset(
+    {
+        "cfg",
+        "css",
+        "csv",
+        "html",
+        "ini",
+        "js",
+        "json",
+        "jsx",
+        "md",
+        "py",
+        "rst",
+        "sql",
+        "toml",
+        "ts",
+        "tsx",
+        "txt",
+        "yaml",
+        "yml",
+    }
+)
+# One repo-relative path: at least one "/" separator and a final extension,
+# bounded to path-safe characters so surrounding quotes/backticks/prose are
+# excluded by construction.
+_NAMED_PATH_PATTERN = re.compile(
+    r"(?<![\w./-])((?:[A-Za-z0-9_.+-]+/)+[A-Za-z0-9_.+-]+\.[A-Za-z0-9]+)"
+)
+
+NAMED_TARGET_BUDGET_BLOCKER = (
+    "An explicitly named target file from the goal was safe and present in the "
+    "isolated worktree but could not fit within the bounded model context; "
+    "refusing to call DeepSeek without the file the goal explicitly requires "
+    "inspecting or changing."
+)
 
 # Fixed canonical ordering keeps detected categories and the concatenated
 # priority patterns deterministic for identical goals.
@@ -185,10 +226,21 @@ class ContextPlan:
     goal_categories: tuple[str, ...]
     priority_patterns: tuple[str, ...]
     demote_freestyle_internals: bool
+    named_target_paths: tuple[str, ...] = ()
 
 
-def plan_context(goal: str, title: str | None = None) -> ContextPlan:
-    """Classify one goal/title into fixed categories without calling a model."""
+def plan_context(
+    goal: str,
+    title: str | None = None,
+    *,
+    extra_named_paths: Sequence[str] = (),
+) -> ContextPlan:
+    """Classify one goal/title into fixed categories without calling a model.
+
+    ``extra_named_paths`` lets a refinement contribute file paths named in the
+    refinement instruction (or carried from a prior bundle/proposal) so they
+    are protected alongside paths named in the goal text itself.
+    """
     terms = _classification_terms(goal, title)
     detected = tuple(
         category
@@ -203,11 +255,121 @@ def plan_context(goal: str, title: str | None = None) -> ContextPlan:
         for pattern in _PRIORITY_PATTERNS[category]:
             if pattern not in patterns:
                 patterns.append(pattern)
+    named = extract_named_paths(goal)
+    if isinstance(title, str):
+        named = _merge_named_paths(named, extract_named_paths(title))
+    named = _merge_named_paths(named, _clean_named_paths(extra_named_paths))
     return ContextPlan(
         goal_categories=detected,
         priority_patterns=tuple(patterns),
         demote_freestyle_internals="freestyle_internal" not in detected,
+        named_target_paths=named,
     )
+
+
+def extract_named_paths(text: str) -> tuple[str, ...]:
+    """Extract explicitly named, repo-relative-looking file paths from text.
+
+    Deterministic and conservative: only forward/backslash separated tokens
+    that end in a recognised code or text extension are returned, traversal
+    and absolute paths are dropped, and the result is bounded. Path *safety*
+    (worktree containment, excluded categories) is enforced separately by the
+    caller; this only surfaces the candidate names a human wrote.
+    """
+    normalized = text.replace("\\", "/")
+    found: list[str] = []
+    for match in _NAMED_PATH_PATTERN.finditer(normalized):
+        candidate = match.group(1)
+        if _is_named_path_candidate(candidate):
+            found.append(candidate)
+    return _clean_named_paths(found)
+
+
+def _is_named_path_candidate(candidate: str) -> bool:
+    if len(candidate) > MAX_NAMED_TARGET_PATH_CHARS:
+        return False
+    parts = candidate.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    suffix = candidate.rsplit(".", 1)[-1].casefold()
+    return suffix in _NAMED_PATH_EXTENSIONS
+
+
+def _clean_named_paths(paths: Sequence[str]) -> tuple[str, ...]:
+    """Casefold-dedupe while preserving first-seen order and the bound."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        if not isinstance(raw, str):
+            continue
+        candidate = raw.strip().replace("\\", "/")
+        if not candidate or len(candidate) > MAX_NAMED_TARGET_PATH_CHARS:
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+        if len(ordered) >= MAX_NAMED_TARGET_PATHS:
+            break
+    return tuple(ordered)
+
+
+def _merge_named_paths(
+    first: Sequence[str], second: Sequence[str]
+) -> tuple[str, ...]:
+    return _clean_named_paths((*first, *second))
+
+
+def is_named_target(relative_path: str, plan: ContextPlan) -> bool:
+    """Report whether one path was explicitly named in the goal/refinement."""
+    lowered = relative_path.casefold()
+    return any(named.casefold() == lowered for named in plan.named_target_paths)
+
+
+def named_target_availability(
+    plan: ContextPlan,
+    included_paths: Sequence[str],
+    omitted_records: Sequence[dict[str, str]],
+    candidate_paths: Sequence[str],
+) -> dict[str, Any]:
+    """Classify every explicitly named target by how it reached model context.
+
+    Buckets each named path as included, omitted only because a context budget
+    filled up (a fail-closed blocker), excluded by a safety/readability policy,
+    or simply absent from the worktree. This is deterministic and auditable and
+    never inspects file contents, so it can only report on already-safe paths.
+    """
+    included_set = {path.casefold() for path in included_paths}
+    candidate_set = {path.casefold() for path in candidate_paths}
+    first_omission: dict[str, str] = {}
+    for record in omitted_records:
+        key = str(record.get("path", "")).casefold()
+        if key and key not in first_omission:
+            first_omission[key] = str(record.get("reason", ""))
+    included: list[str] = []
+    budget: list[dict[str, str]] = []
+    excluded: list[str] = []
+    not_found: list[str] = []
+    for raw in plan.named_target_paths:
+        key = raw.casefold()
+        reason = first_omission.get(key)
+        if key in included_set:
+            included.append(raw)
+        elif reason in BUDGET_OMISSION_REASONS:
+            budget.append({"path": raw, "reason": reason})
+        elif key in candidate_set or key in first_omission:
+            excluded.append(raw)
+        else:
+            not_found.append(raw)
+    return {
+        "named_target_paths": list(plan.named_target_paths),
+        "included": included,
+        "omitted_due_to_budget": budget[:MAX_PLAN_OMISSION_RECORDS],
+        "excluded_by_policy": excluded[:MAX_PLAN_OMISSION_RECORDS],
+        "not_found": not_found[:MAX_PLAN_OMISSION_RECORDS],
+        "has_budget_blocker": bool(budget),
+    }
 
 
 def priority_rank(relative_path: str, plan: ContextPlan) -> int | None:
@@ -225,6 +387,7 @@ def summarize_context_plan(
     omitted_records: Sequence[dict[str, str]],
     *,
     priority_candidate_count: int,
+    candidate_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build the readable context-plan section recorded in artifacts."""
     included_priority = [
@@ -250,6 +413,11 @@ def summarize_context_plan(
     warnings: list[str] = []
     if "web_ui" in plan.goal_categories and priority_candidate_count == 0:
         warnings.append(PLAN_WARNING_NO_UI_FILES)
+    named_targets = named_target_availability(
+        plan, included_paths, omitted_records, candidate_paths
+    )
+    if named_targets["has_budget_blocker"]:
+        warnings.append(NAMED_TARGET_BUDGET_BLOCKER)
     return {
         "detected_goal_categories": list(plan.goal_categories),
         "high_priority_patterns": list(plan.priority_patterns),
@@ -274,6 +442,7 @@ def summarize_context_plan(
         "priority_files_omitted_due_to_budget": any(
             record["reason"] in BUDGET_OMISSION_REASONS for record in omitted_priority
         ),
+        "named_target_files": named_targets,
         "warnings": warnings,
     }
 

@@ -207,6 +207,7 @@ class FreestyleJob:
     edit_bundle_validation_status: str = "not_validated"
     edit_bundle_candidate_file_count: int = 0
     edit_bundle_goal_fit_warnings: tuple[str, ...] = ()
+    edit_bundle_semantic_warnings: tuple[str, ...] = ()
     edit_generation_model: str | None = None
     edit_generation_errors: tuple[str, ...] = ()
     edit_apply_status: str = "not_applied"
@@ -1499,6 +1500,9 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("edit_bundle_candidate_file_count", 0)
         payload["edit_bundle_goal_fit_warnings"] = tuple(
             payload.get("edit_bundle_goal_fit_warnings", ())
+        )
+        payload["edit_bundle_semantic_warnings"] = tuple(
+            payload.get("edit_bundle_semantic_warnings", ())
         )
         payload.setdefault("edit_generation_model", None)
         payload["edit_generation_errors"] = tuple(
