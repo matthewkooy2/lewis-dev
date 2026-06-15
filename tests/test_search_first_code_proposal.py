@@ -3,7 +3,6 @@ from pathlib import Path
 from app.approvals import ApprovalStore
 import app.search_first_code_proposal as search_first_code_proposal
 from app.code_proposal_patch_preview import (
-    PATCH_PREVIEW_UNAVAILABLE_NOTE,
     GroundedPatchPreview,
 )
 from app.project_search import ProjectFileSearch
@@ -50,7 +49,7 @@ def test_grounded_proposal_adds_preview_from_real_safe_matching_context(
     assert target.read_bytes() == before
 
 
-def test_grounded_proposal_omits_unconfident_preview_and_keeps_review_planning(
+def test_unconfident_preview_saves_no_approval_and_explains_why(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "project"
@@ -70,13 +69,15 @@ def test_grounded_proposal_omits_unconfident_preview_and_keeps_review_planning(
         store=store,
     )
 
-    assert result.approval is not None
-    assert result.approval.status == "pending"
-    assert "patch_preview" not in result.approval.payload
+    assert result.approval is None
+    assert store.list(status="pending") == []
     assert (
-        PATCH_PREVIEW_UNAVAILABLE_NOTE in result.approval.payload["proposed_approach"]
+        "Cleaned goal: Add a small label to the command center chat UI."
+        in result.message
     )
-    assert PATCH_PREVIEW_UNAVAILABLE_NOTE in result.approval.payload["safety_notes"]
+    assert "Candidate files found: yes (app/web_components.py)." in result.message
+    assert "without a patch_preview is prohibited" in result.message
+    assert "No pending code proposal was saved." in result.message
 
 
 def test_search_first_flow_calls_grounded_preview_generator(

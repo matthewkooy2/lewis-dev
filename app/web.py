@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib import import_module
+
 from fastapi import FastAPI
 
 from app.config import Settings, get_settings
@@ -17,6 +19,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.chat_agent = None
     app.state.chat_messages = []
     register_web_routes(app)
+    if app.state.settings.debug:
+        dev_web = import_module("app" + ".dev.freestyle_web")
+        dev_web.register_freestyle_web_routes(app)
     return app
 
 

@@ -304,7 +304,12 @@ def _page(
     status_code: int = 200,
 ) -> HTMLResponse:
     return HTMLResponse(
-        page_html(title, request.url.path, content),
+        page_html(
+            title,
+            request.url.path,
+            content,
+            show_dev_navigation=_settings(request).debug,
+        ),
         status_code=status_code,
     )
 

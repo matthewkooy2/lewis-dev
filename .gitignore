@@ -35,6 +35,9 @@ data/lewis.sqlite3
 *.tmp
 *.bak
 
+# Developer-only local job state and isolated worktrees
+.lewis-dev/
+
 # OS and editor noise
 .DS_Store
 Thumbs.db

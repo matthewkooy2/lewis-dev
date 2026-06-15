@@ -14,6 +14,7 @@ from app.approval_service import approve_approval, reject_approval
 from app.approvals import ApprovalStore
 from app.budget import BudgetManager
 from app.config import Settings
+from app.code_proposal_engine import clean_requested_goal
 from app.llm import LewisAgent, parse_token_usage
 from app.logging_db import RunLogger
 from app.memory_service import archive_memory, propose_memory
@@ -974,7 +975,7 @@ def test_deepseek_reasoning_tool_turn_continues_without_exposing_or_persisting_i
     assert secret not in repr(persisted_rows)
 
 
-def test_code_proposal_flow_uses_code_model_for_llm_calls(tmp_path):
+def test_unsupported_code_proposal_does_not_save_ungrounded_approval(tmp_path):
     project_root = tmp_path / "project"
     (project_root / "app" / "static").mkdir(parents=True)
     (project_root / "app" / "web_components.py").write_text(
@@ -989,11 +990,13 @@ def test_code_proposal_flow_uses_code_model_for_llm_calls(tmp_path):
         "using project search first."
     )
 
-    assert run.tool_calls[-1]["name"] == "propose_code_change"
-    assert run.tool_calls[-1]["result"]["ok"] is True
+    assert all(record["name"] == "search_project_files" for record in run.tool_calls)
+    assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
+    assert "Cleaned goal: Add a stronger model toggle" in run.answer
+    assert "without a patch_preview is prohibited" in run.answer
 
 
-def test_code_model_falls_back_to_default_when_unset(tmp_path):
+def test_unsupported_code_proposal_stays_ungrounded_when_code_model_is_unset(tmp_path):
     settings = replace(make_settings(tmp_path), deepseek_code_model="")
     project_root = tmp_path / "project"
     (project_root / "app" / "static").mkdir(parents=True)
@@ -1009,7 +1012,9 @@ def test_code_model_falls_back_to_default_when_unset(tmp_path):
         "using project search first."
     )
 
-    assert run.tool_calls[-1]["name"] == "propose_code_change"
+    assert all(record["name"] == "search_project_files" for record in run.tool_calls)
+    assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
+    assert "Reason no grounded diff could be created:" in run.answer
 
 
 def test_exact_search_first_code_proposal_creates_real_visible_approval_without_runtime_side_effects(
@@ -1140,32 +1145,31 @@ def test_exact_search_first_code_proposal_uses_at_most_two_searches_and_invents_
         "search_project_files",
         "search_project_files",
     ]
-    assert "More grounding is needed" in run.answer
-    assert "pending" not in run.answer.lower()
+    assert "grounded patch could be safely generated" in run.answer
+    assert "No pending code proposal was saved." in run.answer
     assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
     assert len(search.queries) == 2
     assert unrelated_file.read_bytes() == original
     assert_no_unanswered_tool_calls(agent.messages)
 
 
-def test_text_project_search_blocks_create_pending_code_proposal(tmp_path):
+def test_legacy_project_search_proposal_uses_deterministic_fallback(tmp_path):
     project_root = tmp_path / "project"
     (project_root / "app").mkdir(parents=True)
     target = project_root / "app" / "web_components.py"
     original = "def command_center_chat():\n    return 'chat ui'\n"
     target.write_text(original, encoding="utf-8")
     agent = make_agent_with_project_search(make_settings(tmp_path), project_root)
-    agent.client = TextProjectSearchClient()
+    agent.client = FailIfCalledClient()
 
     run = agent.run(
         "Plan a code proposal to add a small label to the command center chat UI "
         "with project search."
     )
 
-    assert [record["name"] for record in run.tool_calls] == [
-        "search_project_files",
-        "propose_code_change",
-    ]
+    names = [record["name"] for record in run.tool_calls]
+    assert names[-1] == "propose_code_change"
+    assert 1 <= names.count("search_project_files") <= 2
     assert run.tool_calls[-1]["result"]["status"] == "pending"
     assert "<search_project_files>" not in run.answer
     assert "Saved pending code proposal" in run.answer
@@ -1181,12 +1185,12 @@ def test_text_project_search_blocks_create_pending_code_proposal(tmp_path):
     assert_no_unanswered_tool_calls(agent.messages)
 
 
-def test_text_project_search_fallback_preserves_zero_tool_call_cap(tmp_path):
+def test_legacy_project_search_proposal_preserves_zero_tool_call_cap(tmp_path):
     settings = replace(make_settings(tmp_path), max_tool_calls_per_request=0)
     project_root = tmp_path / "project"
     project_root.mkdir()
     agent = make_agent_with_project_search(settings, project_root)
-    agent.client = TextProjectSearchClient()
+    agent.client = FailIfCalledClient()
 
     run = agent.run(
         "Plan a code proposal to add a small label to the command center chat UI "
@@ -1203,11 +1207,13 @@ def test_text_project_search_fallback_preserves_zero_tool_call_cap(tmp_path):
     assert_no_unanswered_tool_calls(agent.messages)
 
 
-def test_text_project_search_fallback_returns_partial_answer_on_weak_evidence(tmp_path):
+def test_legacy_project_search_proposal_requests_more_grounding_on_weak_evidence(
+    tmp_path,
+):
     project_root = tmp_path / "project"
     project_root.mkdir()
     agent = make_agent_with_project_search(make_settings(tmp_path), project_root)
-    agent.client = TextProjectSearchClient()
+    agent.client = FailIfCalledClient()
 
     run = agent.run(
         "Plan a code proposal to add a small label to the command center chat UI "
@@ -1218,7 +1224,7 @@ def test_text_project_search_fallback_returns_partial_answer_on_weak_evidence(tm
         "search_project_files",
         "search_project_files",
     ]
-    assert "did not find strong matching evidence" in run.answer
+    assert "grounded code proposal" in run.answer
     assert "tool_limit" not in [record["name"] for record in run.tool_calls]
     assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
     assert_no_unanswered_tool_calls(agent.messages)
@@ -1283,7 +1289,7 @@ def test_usage_tracking_self_inspection_does_not_hit_tool_limit(tmp_path):
     assert_no_unanswered_tool_calls(agent.messages)
 
 
-def test_plain_ui_change_request_creates_pending_review_only_proposal_without_runtime_side_effects(
+def test_plain_ui_change_request_uses_normal_chat_without_creating_code_proposal(
     tmp_path, monkeypatch
 ):
     project_root = tmp_path / "project"
@@ -1294,11 +1300,8 @@ def test_plain_ui_change_request_creates_pending_review_only_proposal_without_ru
         encoding="utf-8",
     )
     before = target.read_bytes()
-    search = RecordingProjectFileSearch(project_root)
-    agent = make_agent_with_project_search(
-        make_settings(tmp_path), project_root, search
-    )
-    agent.client = FailIfCalledClient()
+    agent = make_agent_with_project_search(make_settings(tmp_path), project_root)
+    agent.client = FakeClient()
 
     def fail_runtime_action(*args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -1313,16 +1316,10 @@ def test_plain_ui_change_request_creates_pending_review_only_proposal_without_ru
         "its like an animated character"
     )
 
-    names = [record["name"] for record in run.tool_calls]
-    assert names[-1] == "propose_code_change"
-    assert names.count("search_project_files") == len(search.queries)
-    assert "tool_limit" not in names
-    assert 1 <= len(search.queries) <= 2
+    assert run.answer == "reply 1"
+    assert run.tool_calls == []
     assert target.read_bytes() == before
-    approval = ApprovalStore(agent.settings.database_path).list(status="pending")[0]
-    assert approval.action_type == "propose_code_change"
-    assert approval.status == "pending"
-    assert "review-only" in approval.payload["proposed_approach"]
+    assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
     assert_no_unanswered_tool_calls(agent.messages)
 
 
@@ -1432,23 +1429,18 @@ def test_search_first_code_proposal_does_not_hit_tool_limit_and_stays_pending(
         encoding="utf-8",
     )
     agent = make_agent_with_project_search(make_settings(tmp_path), project_root)
-    agent.client = SearchGroundedCodeProposalClient()
+    agent.client = FailIfCalledClient()
 
     run = agent.run(
         "Plan a code proposal to add a small label to the command center chat UI "
         "with project search."
     )
 
-    assert [record["name"] for record in run.tool_calls] == [
-        "search_project_files",
-        "propose_code_change",
-    ]
+    names = [record["name"] for record in run.tool_calls]
+    assert names[-1] == "propose_code_change"
+    assert 1 <= names.count("search_project_files") <= 2
     assert "tool_limit" not in [record["name"] for record in run.tool_calls]
     assert run.tool_calls[-1]["result"]["status"] == "pending"
-    assert agent.client.completions.tool_names[:2] == [
-        ["search_project_files"],
-        ["propose_code_change"],
-    ]
     assert target.read_text(encoding="utf-8") == (
         "def command_center_chat():\n    return 'chat ui'\n"
     )
@@ -1464,20 +1456,15 @@ def test_code_tool_limit_still_caps_repeated_project_searches(tmp_path):
         encoding="utf-8",
     )
     agent = make_agent_with_project_search(settings, project_root)
-    fake_client = RepeatingProjectSearchClient()
-    agent.client = fake_client
+    agent.client = FailIfCalledClient()
 
     run = agent.run(
         "Plan a code proposal to add a small label to the command center chat UI "
         "with project search."
     )
 
-    assert [record["name"] for record in run.tool_calls] == [
-        "search_project_files",
-        "tool_limit",
-    ]
+    assert [record["name"] for record in run.tool_calls] == ["tool_limit"]
     assert "Tool call limit reached (1)" in run.answer
-    assert "search_project_files" in run.answer
     assert ApprovalStore(agent.settings.database_path).list(status="pending") == []
     assert_no_unanswered_tool_calls(agent.messages)
 
@@ -2135,11 +2122,11 @@ def test_code_proposal_animation_prompt_creates_real_cleaned_approval(
     assert_no_unanswered_tool_calls(agent.messages)
 
 
-def test_proposal_involving_animated_character_creates_real_approval(
+def test_proposal_involving_animated_character_refuses_without_character_strategy(
     tmp_path,
 ):
-    """Prompt #3: 'create a proposal involving...' must create a real approval,
-    not an evidence-only response."""
+    """Prompt #3: an animated character request must refuse instead of saving
+    the generic CSS pulse patch, which cannot add any character/figure."""
     settings = make_settings(tmp_path)
     agent = make_agent_from_settings(settings)
     agent.client = FailIfCalledClient()
@@ -2151,35 +2138,21 @@ def test_proposal_involving_animated_character_creates_real_approval(
     run = agent.run(prompt)
 
     names = [record["name"] for record in run.tool_calls]
-    assert names[-1] == "propose_code_change"
+    assert "propose_code_change" not in names
     assert 1 <= names.count("search_project_files") <= 2
+    assert all(name == "search_project_files" for name in names)
 
-    proposal_result = run.tool_calls[-1]["result"]
-    assert proposal_result["ok"] is True
-    approval_id = proposal_result["approval_id"]
-    assert isinstance(approval_id, int)
-
-    approval = ApprovalStore(settings.database_path).get(approval_id)
-    assert approval is not None
-    assert approval.status == "pending"
-    assert approval.action_type == "propose_code_change"
+    assert ApprovalStore(settings.database_path).list(status="pending") == []
+    assert "No pending code proposal was saved." in run.answer
+    assert "person/avatar/character figure" in run.answer
     assert (
-        approval.payload.get("requested_goal", "")
-        == "Add an animated character thinking every time Lewis is thinking."
+        "No conservative strategy exists for ASCII/person/replacement "
+        "thinking-bubble content behavior" in run.answer
     )
-    assert approval.payload["relevant_files"]
-    assert "app/static/chat.js" in approval.payload["proposed_approach"]
-    assert "app/static/lewis.css" in approval.payload["proposed_approach"]
-    assert "thinking-bubble lifecycle" in approval.payload["proposed_approach"]
-
-    assert f"#{approval_id}" in run.answer
-    assert "Project search found" not in run.answer
-    assert "Project search did not find" not in run.answer
     assert "<function_calls>" not in run.answer
     assert "<invoke" not in run.answer
     assert "DSML" not in run.answer
     assert "read_file" not in run.answer
-    assert ".." not in run.answer
     assert_no_unanswered_tool_calls(agent.messages)
 
 
@@ -2219,3 +2192,127 @@ def test_function_calls_markup_is_never_displayed(tmp_path):
     assert "DSML" not in run.answer
     assert run.tool_calls == []
     assert_no_unanswered_tool_calls(agent.messages)
+
+
+# ---------------------------------------------------------------------------
+# clean_requested_goal conversational prefix cleanup tests
+# ---------------------------------------------------------------------------
+
+
+class TestCleanRequestedGoalConversationalCleanup:
+    def test_and_then_conversational_followup(self):
+        """Conversational follow-up prefix is stripped."""
+        goal = clean_requested_goal(
+            "and then I would like you to make a separate code proposal "
+            "to make the text blue instead of black for this chat"
+        )
+        assert goal == "Make the text blue instead of black for this chat."
+
+    def test_also_conversational_variant(self):
+        """'also' conversational lead-in is stripped."""
+        goal = clean_requested_goal(
+            "also can you make a code proposal to make the text blue "
+            "instead of black for this chat"
+        )
+        assert goal == "Make the text blue instead of black for this chat."
+
+    def test_then_leadin(self):
+        """'then' conversational lead-in is stripped."""
+        goal = clean_requested_goal(
+            "then I would like you to make a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_next_leadin(self):
+        """'next' conversational lead-in is stripped."""
+        goal = clean_requested_goal(
+            "next I want you to make a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_separately_leadin(self):
+        """'separately' conversational lead-in is stripped."""
+        goal = clean_requested_goal(
+            "separately I would like you to make a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_this_time_leadin(self):
+        """'this time' conversational lead-in is stripped."""
+        goal = clean_requested_goal(
+            "this time I want you to create a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_please_request_framing(self):
+        """'please' request framing is stripped."""
+        goal = clean_requested_goal(
+            "please create a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_could_you_request_framing(self):
+        """'could you' request framing is stripped."""
+        goal = clean_requested_goal(
+            "could you create a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_would_you_request_framing(self):
+        """'would you' request framing is stripped."""
+        goal = clean_requested_goal(
+            "would you create a code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_existing_animation_prompt_still_works(self):
+        """Existing supported animation prompt still cleans correctly."""
+        goal = clean_requested_goal(
+            "make a code proposal to make a new animation for when youre thinking"
+        )
+        assert goal == "Make a new animation for when Lewis is thinking."
+
+    def test_existing_color_prompt_still_works(self):
+        """Existing supported color prompt still cleans correctly."""
+        goal = clean_requested_goal(
+            "I want you to create a code proposal that makes the text blue "
+            "for this chat instead of black"
+        )
+        assert goal == "Make the text blue for this chat instead of black."
+
+    def test_existing_proposal_involving_prompt_still_works(self):
+        """Existing 'this time' animation prompt still cleans correctly."""
+        goal = clean_requested_goal(
+            "this time I want you to create a proposal involving adding an "
+            "animated character thinking, everytime that you are thinking"
+        )
+        assert (
+            goal == "Add an animated character thinking every time Lewis is thinking."
+        )
+
+    def test_make_code_proposal_to_prefix_still_works(self):
+        """Existing 'make a code proposal to' prefix still works."""
+        goal = clean_requested_goal(
+            "Make a code proposal to add a small label to the command center chat UI, "
+            "using project search first."
+        )
+        assert goal == "Add a small label to the command center chat UI."
+
+    def test_another_proposal_framing(self):
+        """'another code proposal' framing is stripped."""
+        goal = clean_requested_goal(
+            "also can you create another code proposal to make the text blue"
+        )
+        assert goal == "Make the text blue."
+
+    def test_preserves_plain_goal(self):
+        """Plain goal without framing is preserved."""
+        goal = clean_requested_goal("Make the chat text blue instead of black.")
+        assert goal == "Make the chat text blue instead of black."
+
+    def test_empty_after_cleaning_returns_default(self):
+        """Empty goal after cleaning returns a default."""
+        goal = clean_requested_goal(
+            "and then I would like you to make a separate code proposal"
+        )
+        assert goal == "Create the requested code change."

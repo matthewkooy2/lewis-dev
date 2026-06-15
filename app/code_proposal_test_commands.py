@@ -4,7 +4,6 @@ from pathlib import Path
 
 
 PROJECT_TEST_MODULES = (
-    "ruff format .",
     "ruff check .",
     "pytest",
 )

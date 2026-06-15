@@ -6,38 +6,29 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from openai import BadRequestError, OpenAI
+from openai import BadRequestError
 
 from app.budget import BudgetManager
-from app.code_proposal_text_tool_fallback import (
-    code_proposal_args_from_search_results,
-    extract_project_search_queries,
-)
-from app.code_proposal_tool_strategy import code_proposal_tool_strategy
-from app.code_proposal_patch_preview import (
-    PATCH_PREVIEW_REVIEW_ONLY_NOTE,
-    PATCH_PREVIEW_UNAVAILABLE_NOTE,
-    generate_grounded_patch_preview,
-)
+from app.code_proposal_engine import create_code_proposal_if_supported
 from app.config import MISSING_API_KEY_MESSAGE, Settings
+from app.deepseek_client import create_deepseek_client
 from app.deepseek_messages import assistant_tool_call_api_message
 from app.logging_db import RunLogger
 from app.dashboard import format_dashboard_count_lines
 from app.memory_retrieval import build_active_memory_context
 from app.model_profiles import profile_after_tool_call, profile_for_user_input
 from app.project_search_discipline import (
+    MAX_PROJECT_SEARCHES_PER_TURN,
     has_useful_project_search_results,
-    is_direct_code_change_request,
+    is_code_proposal_request,
     project_search_answer,
     project_search_query,
+    project_search_records,
     project_search_synthesized_answer,
     should_finish_project_search_turn,
     should_suppress_project_search,
 )
-from app.search_first_code_proposal import (
-    create_search_first_code_proposal,
-    is_search_first_code_proposal_request,
-)
+from app.search_first_code_proposal import create_search_first_code_proposal
 from app.tool_call_limits import effective_tool_call_limit
 from app.text_tool_calls import extract_text_tool_calls, strip_tool_call_markup
 from app.tools import ToolRegistry
@@ -207,39 +198,6 @@ def _usage_int(source: object | None, key: str) -> int:
     return _usage_optional_int(source, key) or 0
 
 
-_EXPLICIT_CODE_PROPOSAL_PATTERN = re.compile(
-    r"\b(?:make|create|plan|propose|give me|i want)\b.{0,50}\bcode proposal\b",
-    re.IGNORECASE,
-)
-
-_PROPOSAL_FRAMING_PATTERN = re.compile(
-    r"\b(?:make|create)\b.{0,40}\b(?:a\s+)?proposal\b",
-    re.IGNORECASE,
-)
-
-_BEHAVIOR_CHANGE_SIGNAL = re.compile(
-    r"\b(?:add|build|change|create|fix|implement|modify|refactor|remove|"
-    r"replace|update|animate|adjust|convert|transform)\b"
-    r".{0,150}"
-    r"\b(?:app|backend|behavior|bug|chat|code|feature|frontend|lewis|ui|"
-    r"animation|animated|character|thinking|text|color|style|css|"
-    r"display|render|button|input|output|screen|page|html|component|widget)\b",
-    re.IGNORECASE,
-)
-
-
-def _has_explicit_code_proposal_phrase(user_input: str) -> bool:
-    normalized = " ".join(user_input.lower().split())
-    if "project search" in normalized:
-        return False
-    if bool(_EXPLICIT_CODE_PROPOSAL_PATTERN.search(normalized)):
-        return True
-    return bool(
-        _PROPOSAL_FRAMING_PATTERN.search(normalized)
-        and _BEHAVIOR_CHANGE_SIGNAL.search(normalized)
-    )
-
-
 class LewisAgent:
     def __init__(
         self,
@@ -261,7 +219,7 @@ class LewisAgent:
         self.latest_calendar_approval_id: int | None = None
         self.latest_memory_approval_id: int | None = None
         self.client = (
-            OpenAI(
+            create_deepseek_client(
                 api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url
             )
             if settings.has_api_key
@@ -272,11 +230,34 @@ class LewisAgent:
         if not self.settings.has_api_key or self.client is None:
             raise RuntimeError(MISSING_API_KEY_MESSAGE)
 
-        search_first_code_proposal = self._maybe_run_search_first_code_proposal(
-            user_input
+        replacement_code_proposal = create_code_proposal_if_supported(
+            user_input=user_input,
+            search=self.tools.project_file_search,
+            store=self.tools.approval_store,
+            max_tool_calls=effective_tool_call_limit(
+                self.settings,
+                profile_for_user_input(self.settings, user_input),
+            ),
         )
-        if search_first_code_proposal is not None:
-            return search_first_code_proposal
+        if replacement_code_proposal is not None:
+            if replacement_code_proposal.approval is not None:
+                proposal_result = replacement_code_proposal.tool_records[-1]["result"]
+                self._track_approval("propose_code_change", proposal_result)
+            answer = replacement_code_proposal.message
+            self._append_conversation_turn(user_input, answer)
+            self.logger.log_run(
+                user_input=user_input,
+                model=profile_for_user_input(self.settings, user_input).model,
+                tool_calls=replacement_code_proposal.tool_records,
+            )
+            return AssistantRun(
+                answer=answer,
+                tool_calls=replacement_code_proposal.tool_records,
+            )
+
+        legacy_code_proposal = self._maybe_run_legacy_code_proposal(user_input)
+        if legacy_code_proposal is not None:
+            return legacy_code_proposal
 
         local_tool_run = self._maybe_run_local_read_only_tool(user_input)
         if local_tool_run is not None:
@@ -320,8 +301,16 @@ class LewisAgent:
         tools_enabled = bool(self.tools.schemas())
 
         while True:
-            tool_strategy = code_proposal_tool_strategy(user_input, tool_records)
-            tool_schemas = self.tools.schemas(tool_strategy.allowed_tool_names)
+            searches = project_search_records(tool_records)
+            if searches and (
+                has_useful_project_search_results(tool_records)
+                or len(searches) >= MAX_PROJECT_SEARCHES_PER_TURN
+            ):
+                tool_schemas = []
+            elif searches:
+                tool_schemas = self.tools.schemas(frozenset({"search_project_files"}))
+            else:
+                tool_schemas = self.tools.schemas()
             if not self._may_expose_list_local_files(user_input):
                 tool_schemas = [
                     schema
@@ -329,7 +318,7 @@ class LewisAgent:
                     if schema["function"]["name"] != "list_local_files"
                 ]
             tool_choice: str | dict[str, Any] = "auto"
-            if tool_strategy.required_tool_name is not None:
+            if searches and tool_schemas:
                 tool_choice = "required"
             try:
                 if tools_enabled and tool_schemas:
@@ -390,49 +379,6 @@ class LewisAgent:
                 if text_tool_calls:
                     tool_calls = text_tool_calls
             if not tool_calls:
-                fallback = self._maybe_complete_text_search_first_code_proposal(
-                    user_input=user_input,
-                    content=message.content or "",
-                    tool_records=tool_records,
-                    tool_call_limit=tool_call_limit,
-                )
-                if fallback is not None:
-                    answer = fallback
-                    assistant_message = {"role": "assistant", "content": answer}
-                    messages.append(assistant_message)
-                    self.messages.append(assistant_message)
-                    estimated_cost = self.budget.estimate_cost(
-                        input_tokens, output_tokens
-                    )
-                    run = AssistantRun(
-                        answer=answer,
-                        tool_calls=tool_records,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        total_tokens=total_tokens,
-                        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
-                        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
-                        reasoning_tokens=reasoning_tokens,
-                        api_calls=api_calls,
-                        estimated_cost=estimated_cost,
-                        memory_context_count=memory_context_count,
-                    )
-                    self.logger.log_run(
-                        user_input=user_input,
-                        model=model_profile.model,
-                        tool_calls=tool_records,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        total_tokens=total_tokens,
-                        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
-                        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
-                        reasoning_tokens=reasoning_tokens,
-                        api_calls=api_calls,
-                        estimated_cost=estimated_cost,
-                    )
-                    self._print_debug_token_summary(run)
-                    return run
-
                 content = message.content or ""
                 if (
                     blocked_tool_call or extract_text_tool_calls(content)
@@ -659,19 +605,14 @@ class LewisAgent:
                 self._print_debug_token_summary(run)
                 return run
 
-    def _maybe_run_search_first_code_proposal(
-        self, user_input: str
-    ) -> AssistantRun | None:
-        if (
-            is_search_first_code_proposal_request(user_input)
-            or is_direct_code_change_request(user_input)
-            or _has_explicit_code_proposal_phrase(user_input)
-        ):
-            return self._run_deterministic_code_proposal_path(user_input)
+    def _maybe_run_legacy_code_proposal(self, user_input: str) -> AssistantRun | None:
+        normalized = " ".join(user_input.lower().split())
+        if "proposal" in normalized and is_code_proposal_request(user_input):
+            return self._run_legacy_code_proposal(user_input)
 
         return None
 
-    def _run_deterministic_code_proposal_path(self, user_input: str) -> AssistantRun:
+    def _run_legacy_code_proposal(self, user_input: str) -> AssistantRun:
         model_profile = profile_for_user_input(self.settings, user_input)
         tool_call_limit = effective_tool_call_limit(self.settings, model_profile)
         if tool_call_limit < 2:
@@ -700,99 +641,6 @@ class LewisAgent:
             tool_calls=tool_records,
         )
         return AssistantRun(answer=answer, tool_calls=tool_records)
-
-    def _maybe_complete_text_search_first_code_proposal(
-        self,
-        *,
-        user_input: str,
-        content: str,
-        tool_records: list[dict[str, Any]],
-        tool_call_limit: int,
-    ) -> str | None:
-        strategy = code_proposal_tool_strategy(user_input, tool_records)
-        if strategy.required_tool_name != "search_project_files":
-            return None
-        queries = extract_project_search_queries(content)
-        if not queries:
-            return None
-
-        search_records: list[dict[str, Any]] = []
-        for query in queries:
-            decision = self.budget.can_make_tool_call(
-                len(tool_records),
-                limit=tool_call_limit,
-            )
-            if not decision.allowed:
-                stop_text = self._tool_limit_stop_text(decision.reason, tool_records)
-                tool_records.append({"name": "tool_limit", "result": stop_text})
-                return stop_text
-            suppression_reason = should_suppress_project_search(query, tool_records)
-            if suppression_reason is not None:
-                result = {
-                    "ok": False,
-                    "suppressed": True,
-                    "error": suppression_reason,
-                    "results": [],
-                }
-            else:
-                result = self.tools.execute("search_project_files", {"query": query})
-            record = {
-                "name": "search_project_files",
-                "arguments": {"query": query},
-                "result": result,
-            }
-            tool_records.append(record)
-            search_records.append(record)
-            if isinstance(result, dict) and result.get("results"):
-                break
-
-        if not has_useful_project_search_results(tool_records):
-            return project_search_answer(tool_records)
-
-        decision = self.budget.can_make_tool_call(
-            len(tool_records),
-            limit=tool_call_limit,
-        )
-        if not decision.allowed:
-            stop_text = self._tool_limit_stop_text(decision.reason, tool_records)
-            tool_records.append({"name": "tool_limit", "result": stop_text})
-            return stop_text
-
-        proposal_args = code_proposal_args_from_search_results(
-            user_input,
-            search_records,
-        )
-        grounded_preview = generate_grounded_patch_preview(
-            requested_goal=user_input,
-            relevant_files=list(proposal_args["relevant_files"]),
-            search=self.tools.project_file_search,
-        )
-        preview_note = (
-            PATCH_PREVIEW_REVIEW_ONLY_NOTE
-            if grounded_preview is not None
-            else PATCH_PREVIEW_UNAVAILABLE_NOTE
-        )
-        proposal_args["proposed_approach"] = (
-            f"{proposal_args['proposed_approach']} {preview_note}"
-        )
-        proposal_args["safety_notes"] = [
-            *proposal_args["safety_notes"],
-            preview_note,
-        ]
-        if grounded_preview is not None:
-            proposal_args["patch_preview"] = grounded_preview.patch_preview
-        result = self.tools.execute("propose_code_change", proposal_args)
-        tool_records.append(
-            {
-                "name": "propose_code_change",
-                "arguments": proposal_args,
-                "result": result,
-            }
-        )
-        self._track_approval("propose_code_change", result)
-        if isinstance(result, dict) and result.get("ok") is True:
-            return str(result.get("message", "Saved pending code proposal."))
-        return "I could not save the code proposal."
 
     def _registered_structured_tool_calls(
         self,

@@ -7,7 +7,6 @@ from typing import Any
 from app.approvals import ApprovalItem, ApprovalStore
 from app.code_proposal_patch_preview import (
     PATCH_PREVIEW_REVIEW_ONLY_NOTE,
-    PATCH_PREVIEW_UNAVAILABLE_NOTE,
     generate_grounded_patch_preview,
 )
 from app.code_proposals import propose_code_change
@@ -19,10 +18,6 @@ MAX_RELEVANT_FILES = 5
 MORE_GROUNDING_MESSAGE = (
     "Project search did not find enough relevant existing files to create a grounded "
     "code proposal. More grounding is needed before a proposal can be saved."
-)
-_INTENT_PATTERN = re.compile(r"\b(?:make|create)\b.{0,100}\bcode proposal\b")
-_SEARCH_FIRST_PATTERN = re.compile(
-    r"\b(?:use|using)\b.{0,50}\bproject search\b.{0,30}\bfirst\b"
 )
 _PROPOSAL_PREFIX_PATTERN = re.compile(
     r"^(?:make|create)\s+(?:a\s+)?code proposal(?:\s+(?:to|that))?\s+",
@@ -137,13 +132,6 @@ class SearchFirstCodeProposalResult:
     message: str
 
 
-def is_search_first_code_proposal_request(user_input: str) -> bool:
-    normalized = " ".join(user_input.lower().split())
-    return bool(
-        _INTENT_PATTERN.search(normalized) and _SEARCH_FIRST_PATTERN.search(normalized)
-    )
-
-
 def create_search_first_code_proposal(
     *,
     user_input: str,
@@ -166,15 +154,23 @@ def create_search_first_code_proposal(
                 },
             }
         )
+    requested_goal = extract_requested_goal(user_input)
     relevant_files = _relevant_files(search_results)
     if not relevant_files:
         return SearchFirstCodeProposalResult(
             approval=None,
             tool_records=search_records,
-            message=MORE_GROUNDING_MESSAGE,
+            message=_grounding_failure_message(
+                requested_goal=requested_goal,
+                search_records=search_records,
+                relevant_files=[],
+                reason=(
+                    "no editable source candidates remained after excluding "
+                    "README and code-proposal helper noise."
+                ),
+            ),
         )
 
-    requested_goal = extract_requested_goal(user_input)
     evidence = f"Project search found these relevant existing files: {', '.join(relevant_files)}."
     proposed_approach = grounded_proposed_approach(requested_goal, relevant_files)
     grounded_preview = generate_grounded_patch_preview(
@@ -182,20 +178,29 @@ def create_search_first_code_proposal(
         relevant_files=relevant_files,
         search=search,
     )
-    preview_note = (
-        PATCH_PREVIEW_REVIEW_ONLY_NOTE
-        if grounded_preview is not None
-        else PATCH_PREVIEW_UNAVAILABLE_NOTE
-    )
+    if grounded_preview is None:
+        return SearchFirstCodeProposalResult(
+            approval=None,
+            tool_records=search_records,
+            message=_grounding_failure_message(
+                requested_goal=requested_goal,
+                search_records=search_records,
+                relevant_files=relevant_files,
+                reason=(
+                    "candidate files were found, but no conservative grounded "
+                    "patch_preview could be generated. Saving an approval without "
+                    "a patch_preview is prohibited."
+                ),
+            ),
+        )
+    preview_note = PATCH_PREVIEW_REVIEW_ONLY_NOTE
     approval = propose_code_change(
         store=store,
         requested_goal=requested_goal,
         target_surface="command center web UI",
         relevant_files=relevant_files,
         proposed_approach=(f"{proposed_approach} {evidence} {preview_note}"),
-        patch_preview=(
-            grounded_preview.patch_preview if grounded_preview is not None else None
-        ),
+        patch_preview=grounded_preview.patch_preview,
         safety_notes=[
             "Pending code proposal only.",
             "Project search is read-only.",
@@ -412,3 +417,26 @@ def _serialize_search_result(result: ProjectSearchResult) -> dict[str, Any]:
         "line_number": result.line_number,
         "snippet": result.snippet,
     }
+
+
+def _grounding_failure_message(
+    *,
+    requested_goal: str,
+    search_records: list[dict[str, Any]],
+    relevant_files: list[str],
+    reason: str,
+) -> str:
+    queries = [
+        str(record.get("arguments", {}).get("query", "")).strip()
+        for record in search_records
+        if isinstance(record.get("arguments"), dict)
+    ]
+    candidates = ", ".join(relevant_files[:5]) if relevant_files else "none"
+    return (
+        f"{MORE_GROUNDING_MESSAGE}\n"
+        f"Cleaned goal: {requested_goal}\n"
+        f"Search terms tried: {'; '.join(query for query in queries if query) or 'none'}\n"
+        f"Candidate files found: {'yes' if relevant_files else 'no'} ({candidates}).\n"
+        f"Reason no grounded diff could be created: {reason}\n"
+        "No pending code proposal was saved."
+    )

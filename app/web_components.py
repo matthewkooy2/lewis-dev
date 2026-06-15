@@ -13,7 +13,14 @@ from app.web_rules import (
 from app.memory_store import Memory, MemoryEvent
 
 
-def page_html(title: str, active_path: str, content: str) -> str:
+def page_html(
+    title: str, active_path: str, content: str, *, show_dev_navigation: bool = False
+) -> str:
+    dev_navigation = (
+        nav_group(active_path, "Developer", (("/dev/freestyle", "Freestyle"),))
+        if show_dev_navigation
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -26,24 +33,37 @@ def page_html(title: str, active_path: str, content: str) -> str:
   <aside>
     <div class="brand"><span class="brand-mark">L</span><span>Lewis</span></div>
     <nav>
-      {nav_link(active_path, "/dashboard", "Dashboard")}
-      {nav_link(active_path, "/approvals", "Approvals")}
-      {nav_link(active_path, "/tasks", "Tasks")}
-      {nav_link(active_path, "/calendar", "Calendar")}
-      {nav_link(active_path, "/memories", "Memories")}
-      {nav_link(active_path, "/history", "History")}
-      {nav_link(active_path, "/usage", "Usage")}
-      {nav_link(active_path, "/documents", "Document Search")}
-      {nav_link(active_path, "/chat", "Chat")}
+      {nav_group(active_path, "Overview", (("/dashboard", "Dashboard"), ("/usage", "Usage")))}
+      {nav_group(active_path, "Review", (("/approvals", "Approvals"), ("/tasks", "Tasks"), ("/calendar", "Calendar"), ("/history", "History")))}
+      {nav_group(active_path, "Knowledge", (("/memories", "Memories"), ("/documents", "Document Search")))}
+      {nav_group(active_path, "Assistant", (("/chat", "Chat"),))}
+      {dev_navigation}
     </nav>
+    <div class="aside-foot"><span class="dot"></span>Local-only &middot; 127.0.0.1</div>
   </aside>
   <main>{content}</main>
 </body>
 </html>"""
 
 
+def nav_group(
+    active_path: str, label: str, links: tuple[tuple[str, str], ...]
+) -> str:
+    items = "".join(nav_link(active_path, path, text) for path, text in links)
+    return (
+        "<div class='nav-group'>"
+        f"<span class='nav-label'>{escape(label)}</span>"
+        f"{items}"
+        "</div>"
+    )
+
+
 def nav_link(active_path: str, path: str, label: str) -> str:
-    active = " class='active'" if active_path == path else ""
+    active = (
+        " class='active'"
+        if active_path == path or active_path.startswith(f"{path}/")
+        else ""
+    )
     return f"<a{active} href='{path}'>{escape(label)}</a>"
 
 
@@ -103,11 +123,11 @@ def usage_runs_html(runs: list[Any]) -> str:
             "</tr>"
         )
     return (
-        "<section class='band'><h2>Recent Runs</h2><table>"
+        "<section class='band'><h2>Recent Runs</h2><div class='table-scroll'><table>"
         "<thead><tr><th>Time</th><th>Input</th><th>Prompt/Input</th>"
         "<th>Output</th><th>Cache Hit</th><th>Cache Miss</th>"
         "<th>Reasoning</th><th>Estimated Cost</th><th>API Calls</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table></section>"
+        f"<tbody>{''.join(rows)}</tbody></table></div></section>"
     )
 
 
@@ -120,12 +140,18 @@ def approval_cards_html(items: list[dict[str, Any]], context: str) -> str:
         timestamp = timestamp_display(item, context)
         cards.append(
             "<article class='card'>"
+            "<div class='card-head'>"
             f"<h3>#{escape(item['approval_id'])} {escape(item['title'])}</h3>"
             "<div class='meta'>"
             f"{status_badge(item['status'])}"
             f"{type_badge(item['action_type'])}"
-            f"<span>{escape(timestamp.meta_label)} {escape(timestamp.value)}</span>"
+            f"<span class='meta-time'>{escape(timestamp.meta_label)} {escape(timestamp.value)}</span>"
             "</div>"
+            "</div>"
+            f"{payload_html(item['action_type'], item['payload'])}"
+            f"{note}"
+            "<details class='card-details'>"
+            "<summary>Record details</summary>"
             "<div class='fields'>"
             f"{field('id', item['approval_id'])}"
             f"{field('status', item['status'])}"
@@ -133,8 +159,7 @@ def approval_cards_html(items: list[dict[str, Any]], context: str) -> str:
             f"{field('summary', item['title'])}"
             f"{field(timestamp.field_label, timestamp.value)}"
             "</div>"
-            f"{payload_html(item['action_type'], item['payload'])}"
-            f"{note}"
+            "</details>"
             f"{item_actions_html(item, context)}"
             "</article>"
         )
@@ -240,9 +265,10 @@ def memory_cards_html(memories: list[Memory]) -> str:
             f"{compact_detail('Approval', f'#{memory.approval_id}')}"
             f"{compact_detail('Created', memory.created_at)}"
             "</div>"
+            "<details class='memory-update'>"
+            "<summary>Propose Replacement</summary>"
             "<form class='memory-update-form' method='post' "
             f"action='/memories/{escape(memory.id)}/propose-update'>"
-            "<h4>Propose Replacement</h4>"
             "<div class='form-grid'>"
             f"{labeled_control('Memory type', memory_type_select(memory.memory_type))}"
             f"{labeled_control('Tags', tags_input)}"
@@ -251,6 +277,7 @@ def memory_cards_html(memories: list[Memory]) -> str:
             f"{labeled_control('Reason', reason_input)}"
             "<div class='form-actions'><button type='submit'>propose replacement</button></div>"
             "</form>"
+            "</details>"
             "<form class='archive-form' method='post' "
             f"action='/memories/{escape(memory.id)}/archive'>"
             f"{labeled_control('Archive reason', archive_reason_input)}"
@@ -287,10 +314,10 @@ def memory_events_html(events: list[MemoryEvent]) -> str:
             "</tr>"
         )
     return (
-        "<table class='audit-table'>"
+        "<div class='table-scroll'><table class='audit-table'>"
         "<thead><tr><th>Time</th><th>Event</th><th>Memory</th>"
         "<th>Approval</th><th>Actor</th><th>Details</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
     )
 
 
@@ -392,10 +419,12 @@ def code_proposal_html(payload: dict[str, Any]) -> str:
     warning = patch_preview_display_warning(payload)
     warning_html = f"<p class='warning'>{escape(warning)}</p>" if warning else ""
     preview_html = (
-        "<h4>Patch Preview</h4>"
+        "<details class='payload-details' open>"
+        "<summary>Patch Preview</summary>"
         f"{warning_html}"
         f"{patch_preview_path_classifications_html(payload.get('patch_preview_path_classifications'))}"
         f"<pre class='patch-preview'>{escape(patch_preview)}</pre>"
+        "</details>"
         if patch_preview
         else ""
     )
@@ -549,12 +578,19 @@ def form_button(action: ActionButton) -> str:
 
 def chat_bubble(role: str, content: str, memory_context_count: int = 0) -> str:
     role_class = "user" if role == "user" else "assistant"
+    role_label = "You" if role_class == "user" else "Lewis"
     note = (
         chat_memory_context_note(memory_context_count)
         if role_class == "assistant"
         else ""
     )
-    return f"<div class='bubble {role_class}'>{note}{escape(content)}</div>"
+    return (
+        f"<div class='bubble {role_class}'>"
+        f"<span class='bubble-role'>{role_label}</span>"
+        f"{note}"
+        f"<span class='bubble-text'>{escape(content)}</span>"
+        "</div>"
+    )
 
 
 def chat_memory_context_note(memory_context_count: int) -> str:
@@ -583,7 +619,7 @@ def type_badge(action_type: object) -> str:
 
 
 def flash(message: str) -> str:
-    return f"<div class='flash'>{escape(message)}</div>" if message else ""
+    return f"<div class='flash' role='status'>{escape(message)}</div>" if message else ""
 
 
 def payload_value(payload: dict[str, object], *keys: str) -> object | None:

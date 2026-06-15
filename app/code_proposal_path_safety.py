@@ -59,7 +59,14 @@ def validate_relative_project_path(
         raise ValueError(f"{field_label} include a blocked file type.")
     if any(SECRET_NAME_PATTERN.search(part) for part in posix_path.parts):
         raise ValueError(f"{field_label} include a sensitive path name.")
-    resolved = (project_root / posix_path).resolve(strict=False)
+    try:
+        # Path.resolve() raises OSError (not ValueError) on Windows for
+        # reserved device names (CONIN$, CONOUT$) and wildcard characters.
+        resolved = (project_root / posix_path).resolve(strict=False)
+    except OSError as exc:
+        raise ValueError(
+            f"{field_label} include an invalid or reserved file system name."
+        ) from exc
     try:
         resolved.relative_to(project_root)
     except ValueError as exc:

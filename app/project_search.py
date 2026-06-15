@@ -115,6 +115,16 @@ class ProjectFileSearch:
             is not None
         )
 
+    def read_text(self, raw_path: str) -> str | None:
+        """Return the complete content of a verified safe project text file."""
+        safe_path = self._safe_relative_path(raw_path)
+        if safe_path is None:
+            return None
+        path = self._validated_text_file(self.project_root / PurePosixPath(safe_path))
+        if path is None:
+            return None
+        return self._read_text(path)
+
     def read_excerpt(
         self,
         raw_path: str,

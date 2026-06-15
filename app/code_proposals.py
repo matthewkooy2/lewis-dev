@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from app.approvals import ApprovalItem, ApprovalStore
 from app.config import ROOT_DIR
@@ -48,6 +48,7 @@ def propose_code_change(
     target_surface: object | None = None,
     safety_notes: Iterable[object] | None = None,
     suggested_test_commands: Iterable[object] | None = None,
+    extra_payload: dict[str, Any] | None = None,
     project_root: Path = ROOT_DIR,
     align_relevant_files: bool = True,
 ) -> ApprovalItem:
@@ -80,6 +81,8 @@ def propose_code_change(
         )
         if proposal.patch_preview_warning:
             payload["patch_preview_warning"] = proposal.patch_preview_warning
+    if extra_payload:
+        payload.update(extra_payload)
     return store.create(
         action_type=CODE_PROPOSAL_ACTION_TYPE,
         title=_proposal_title(proposal.requested_goal),
@@ -212,7 +215,7 @@ def _infer_target_surface(goal: str, approach: str, files: list[str]) -> str:
     text = _searchable_text(goal, approach, *files)
     if _mentions_database_or_migration(text):
         return "database/migrations"
-    if _mentions_cli_terminal(text):
+    if _mentions_cli_terminal(text) and not _only_web_ui_files(files):
         return "CLI/terminal UI"
     if _mentions_command_center_ui(text):
         return "command center web UI"
@@ -327,6 +330,23 @@ def _mentions_ui(text: str) -> bool:
             "component",
             "visual",
         )
+    )
+
+
+_WEB_UI_FILE_SUFFIXES = (".css", ".html", ".js")
+
+
+def _only_web_ui_files(files: list[str]) -> bool:
+    """True when every relevant file is a web UI asset, so a goal that merely
+    mentions ASCII/terminal wording must not be reported as CLI/terminal UI."""
+    if not files:
+        return False
+    normalized_paths = [path.lower() for path in files]
+    return all(
+        path.startswith("app/static/")
+        or path.endswith(_WEB_UI_FILE_SUFFIXES)
+        or path.rsplit("/", 1)[-1].startswith("web_")
+        for path in normalized_paths
     )
 
 
