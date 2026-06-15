@@ -34,13 +34,22 @@ _MULTI_ANCHOR_TEXT = "ALPHA = 1\nBETA = 2\nGAMMA = 3\n"
 # test file itself never contains the literal class text.
 _APPROVAL_REFERENCING_ROUTES = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
 from app.approval_service import approve_approval
-from app.web_pages import approvals_page, chat_page
+from app.web_pages import approvals_page, calendar_page, chat_page
 
 
 def register_web_routes(app):
     @app.get("/chat")
     def chat(request):
         return _page("Chat", request, chat_page())
+
+    @app.get("/approvals")
+    def approvals(request, message=""):
+        items = list_pending_approvals(_approval_store(request))
+        return _page("Approvals", request, approvals_page(items, message))
+
+    @app.get("/calendar")
+    def calendar(request, message=""):
+        return _page("Calendar", request, calendar_page(list_calendar_proposals(_approval_store(request)), message))
 
     @app.post("/approvals/{{approval_id}}/approve")
     def approve_item(request, approval_id):
@@ -62,6 +71,37 @@ _WIRED_ROUTE_TEXT = (
     '    @app.get("/shenanigans")\n'
     "    def shenanigans(request):\n"
     '        return _page("Shenanigans", request, shenanigans_page())'
+)
+
+# The unedited /calendar route body: a non-approval feature route that merely
+# *calls* the route-level _approval_store(request) helper to obtain the store.
+_CALENDAR_ANCHOR = (
+    '        return _page("Calendar", request, '
+    "calendar_page(list_calendar_proposals(_approval_store(request)), message))"
+)
+# A safe refinement that parses month/day query params and passes extra page
+# parameters while preserving list_calendar_proposals(_approval_store(request)).
+_CALENDAR_WITH_QUERY = (
+    '        month = request.query_params.get("month")\n'
+    '        day = request.query_params.get("day")\n'
+    "        proposals = list_calendar_proposals(_approval_store(request))\n"
+    '        return _page("Calendar", request, '
+    "calendar_page(proposals, message, month=month, day=day))"
+)
+# The unedited /approvals GET route body, whose only approval marker is the
+# preserved _approval_store(request) call; editing it is still an approval
+# route change because the route path itself appears in the edited region.
+_APPROVALS_ROUTE_ANCHOR = (
+    '    @app.get("/approvals")\n'
+    '    def approvals(request, message=""):\n'
+    "        items = list_pending_approvals(_approval_store(request))\n"
+    '        return _page("Approvals", request, approvals_page(items, message))'
+)
+# The route-level _approval_store helper *definition* region.
+_APPROVAL_HELPER_DEFINITION = (
+    "def _approval_store(request):\n"
+    f"    return {APPROVAL_STORE_CLASS_NAME}"
+    "(request.app.state.settings.database_path)"
 )
 
 
@@ -451,22 +491,24 @@ def test_route_wiring_replace_text_is_allowed_in_approval_referencing_file(
 
 
 @pytest.mark.parametrize(
-    ("old_text", "new_text"),
+    ("old_text", "new_text", "expected_fragment"),
     [
         pytest.param(
             "        return approve_approval(_approval_store(request), approval_id)",
             "        return None",
-            id="old_text_targets_approval_region",
+            "approval-sensitive region touched (approval mutation call)",
+            id="old_text_targets_approval_mutation",
         ),
         pytest.param(
             _SAFE_ROUTE_ANCHOR,
             '        return _page("Chat", request, chat_page(_approval_store(request)))',
+            "approval-store helper reference changed",
             id="new_text_introduces_approval_reference",
         ),
     ],
 )
 def test_replace_text_touching_approval_sensitive_region_is_refused(
-    tmp_path, old_text, new_text
+    tmp_path, old_text, new_text, expected_fragment
 ):
     root = _init_repo(tmp_path)
     job, routes = _routes_job(root)
@@ -488,8 +530,167 @@ def test_replace_text_touching_approval_sensitive_region_is_refused(
 
     failed = _refused_apply(root, job.job_id, bundle_path)
 
-    assert "approval-sensitive region" in failed.edit_errors[0]
+    assert expected_fragment in failed.edit_errors[0]
     assert routes.read_text(encoding="utf-8") == before
+
+
+def _routes_replace_bundle(
+    tmp_path: Path, job_id: str, old_text: str, new_text: str, name: str
+) -> Path:
+    return _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job_id,
+            [
+                {
+                    "op": "replace_text",
+                    "path": "app/web_routes.py",
+                    "old_text": old_text,
+                    "new_text": new_text,
+                }
+            ],
+        ),
+        name=name,
+    )
+
+
+def test_calendar_route_edit_preserving_approval_store_helper_is_allowed(tmp_path):
+    """Regression for the Calendar refinement false positive: a non-approval
+    feature route may parse query params and pass extra page parameters while
+    preserving list_calendar_proposals(_approval_store(request)) unchanged."""
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, _CALENDAR_ANCHOR, _CALENDAR_WITH_QUERY, "calendar-ok.json"
+    )
+
+    updated = apply_freestyle_edit_bundle(
+        job.job_id, str(bundle_path), project_root=root
+    )
+
+    assert updated.edit_apply_status == "applied"
+    wired = routes.read_text(encoding="utf-8")
+    assert 'request.query_params.get("month")' in wired
+    assert "list_calendar_proposals(_approval_store(request))" in wired
+    # The /approvals routes and the helper definition are untouched.
+    assert "def _approval_store(request):" in wired
+    assert "approve_approval(_approval_store(request), approval_id)" in wired
+
+
+def test_calendar_route_edit_changing_approval_store_helper_is_refused(tmp_path):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    altered = _CALENDAR_ANCHOR.replace(
+        "_approval_store(request)", "_approval_store(req)"
+    )
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, _CALENDAR_ANCHOR, altered, "calendar-changed.json"
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-store helper reference changed" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+def test_calendar_route_edit_removing_approval_store_helper_is_refused(tmp_path):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    removed = _CALENDAR_ANCHOR.replace(
+        "list_calendar_proposals(_approval_store(request))",
+        "list_calendar_proposals(None)",
+    )
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, _CALENDAR_ANCHOR, removed, "calendar-removed.json"
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-store helper reference changed" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+def test_calendar_route_edit_adding_approval_store_helper_is_refused(tmp_path):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    old_text = '    def calendar(request, message=""):'
+    new_text = (
+        '    def calendar(request, message=""):\n'
+        "        store = _approval_store(request)"
+    )
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, old_text, new_text, "calendar-added.json"
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-store helper reference changed" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+def test_approvals_route_edit_is_refused_even_when_helper_preserved(tmp_path):
+    """An /approvals route edit is blocked by the route path itself, even when
+    every _approval_store(request) call is preserved byte-for-byte."""
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    new_text = _APPROVALS_ROUTE_ANCHOR.replace(
+        'def approvals(request, message=""):',
+        'def approvals(request, message="", page=1):',
+    ).replace(
+        "approvals_page(items, message)",
+        "approvals_page(items, message, page)",
+    )
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, _APPROVALS_ROUTE_ANCHOR, new_text, "approvals-edit.json"
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval route edit blocked" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+def test_approval_store_helper_definition_edit_is_refused(tmp_path):
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    new_text = _APPROVAL_HELPER_DEFINITION.replace(
+        "database_path", "db_path"
+    )
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, _APPROVAL_HELPER_DEFINITION, new_text, "helper-def.json"
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval helper definition edit blocked" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("blocked_path", ["app/approvals.py", "app/approval_service.py"])
+def test_replace_text_on_approval_files_is_refused_by_path(tmp_path, blocked_path):
+    """Approval-record implementation files stay blocked at the path layer for
+    every operation kind, including replace_text."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree_before = _worktree_snapshot(Path(job.worktree_path))
+    bundle_path = _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job.job_id,
+            [_replace_text_op(blocked_path, "old", "new")],
+        ),
+        name=f"approval-file-{blocked_path.replace('/', '-')}.json",
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-record code" in failed.edit_errors[0]
+    assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
 
 
 def test_whole_file_operations_never_touch_approval_referencing_files(tmp_path):
@@ -531,6 +732,225 @@ def test_whole_file_operations_never_touch_approval_referencing_files(tmp_path):
         assert "approval-sensitive region" in failed.edit_errors[0], operation
     assert routes.read_text(encoding="utf-8") == before
     assert not (Path(job.worktree_path) / "app" / "approval_glue.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# Approval-policy precision: a non-approval test file may seed local proposal
+# fixtures (importing and constructing the approval store) without that being
+# read as an approval *behavior* change, while every approval behavior signal
+# and every approval implementation path stays refused. Built with the
+# concatenated class name so this test file never holds the literal class text.
+# ---------------------------------------------------------------------------
+
+_CALENDAR_FIXTURE_TEST = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+from app.web_pages import calendar_page
+
+
+def test_calendar_page_lists_seeded_proposals(tmp_path):
+    store = {APPROVAL_STORE_CLASS_NAME}(tmp_path / "db.sqlite3")
+    store.add_proposal(kind="calendar", payload={{"day": 1}})
+    assert "calendar" in calendar_page(store.list_proposals())
+'''
+
+
+def _create_file_bundle(
+    tmp_path: Path, job_id: str, path: str, content: str, name: str
+) -> Path:
+    return _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job_id, [{"op": "create_file", "path": path, "content": content}]
+        ),
+        name=name,
+    )
+
+
+def test_new_non_approval_test_may_seed_local_proposal_fixture(tmp_path):
+    """A new Calendar test importing and constructing the approval store to
+    seed local proposal records is allowed: it changes no approval behavior."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree = Path(job.worktree_path)
+    bundle_path = _create_file_bundle(
+        tmp_path,
+        job.job_id,
+        "tests/test_calendar_page.py",
+        _CALENDAR_FIXTURE_TEST,
+        "calendar-fixture-ok.json",
+    )
+
+    updated = apply_freestyle_edit_bundle(
+        job.job_id, str(bundle_path), project_root=root
+    )
+
+    assert updated.edit_apply_status == "applied"
+    assert (worktree / "tests" / "test_calendar_page.py").read_text(
+        encoding="utf-8"
+    ) == _CALENDAR_FIXTURE_TEST
+
+
+def test_modifying_existing_non_approval_test_fixture_is_allowed(tmp_path):
+    """The allowance also covers a *modified* non-approval test file: a
+    replace_file whose old and new content are both fixture-only is applied."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    target = Path(job.worktree_path) / "tests" / "test_calendar_page.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_CALENDAR_FIXTURE_TEST, encoding="utf-8")
+    updated_content = _CALENDAR_FIXTURE_TEST + (
+        "\n\ndef test_calendar_page_handles_two_days(tmp_path):\n"
+        f'    store = {APPROVAL_STORE_CLASS_NAME}(tmp_path / "db.sqlite3")\n'
+        '    store.add_proposal(kind="calendar", payload={"day": 2})\n'
+        "    assert store.list_proposals()\n"
+    )
+    bundle_path = _write_bundle(
+        tmp_path,
+        _bundle_payload(
+            job.job_id,
+            [
+                {
+                    "op": "replace_file",
+                    "path": "tests/test_calendar_page.py",
+                    "content": updated_content,
+                    "expected_sha256": _sha(_CALENDAR_FIXTURE_TEST.encode("utf-8")),
+                }
+            ],
+        ),
+        name="calendar-fixture-modify.json",
+    )
+
+    updated = apply_freestyle_edit_bundle(
+        job.job_id, str(bundle_path), project_root=root
+    )
+
+    assert updated.edit_apply_status == "applied"
+    assert target.read_text(encoding="utf-8") == updated_content
+
+
+def test_seed_fixture_test_with_approval_route_literal_is_refused(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree_before = _worktree_snapshot(Path(job.worktree_path))
+    content = _CALENDAR_FIXTURE_TEST + (
+        "\n\ndef test_calendar_redirects_from_approvals(client):\n"
+        '    assert client.get("/approvals").status_code == 200\n'
+    )
+    bundle_path = _create_file_bundle(
+        tmp_path,
+        job.job_id,
+        "tests/test_calendar_page.py",
+        content,
+        "calendar-route-literal.json",
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval route literal" in failed.edit_errors[0]
+    assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
+    assert not (Path(job.worktree_path) / "tests" / "test_calendar_page.py").exists()
+
+
+@pytest.mark.parametrize(
+    ("approval_call", "marker"),
+    [
+        ("approve_approval(store, 1)", "approval mutation call"),
+        ("reject_approval(store, 1)", "approval mutation call"),
+        ("execute_approved(store, 1)", "approved-execution call"),
+        ("store = _approval_store(request)", "approval-store helper reference"),
+        (
+            "from app.approval_service import approve_approval",
+            "approval service reference",
+        ),
+    ],
+)
+def test_seed_fixture_test_invoking_approval_behavior_is_refused(
+    tmp_path, approval_call, marker
+):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree_before = _worktree_snapshot(Path(job.worktree_path))
+    content = _CALENDAR_FIXTURE_TEST + (
+        "\n\ndef test_calendar_touches_approval_behavior(request):\n"
+        f"    {approval_call}\n"
+    )
+    bundle_path = _create_file_bundle(
+        tmp_path,
+        job.job_id,
+        "tests/test_calendar_page.py",
+        content,
+        f"calendar-behavior-{marker.replace(' ', '-')}.json",
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    error = failed.edit_errors[0]
+    assert "approval behavior reference" in error
+    assert marker in error
+    assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_approval_focused_test_file_is_not_exempt_from_region_rules(tmp_path):
+    """The fixture allowance is limited to non-approval test files: an
+    approval-named test is held to the full approval-sensitive-region scan, so
+    it cannot import the approval store via a whole-file create."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree_before = _worktree_snapshot(Path(job.worktree_path))
+    bundle_path = _create_file_bundle(
+        tmp_path,
+        job.job_id,
+        "tests/test_approval_widget.py",
+        _CALENDAR_FIXTURE_TEST,
+        "approval-named-test.json",
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-sensitive region" in failed.edit_errors[0]
+    assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_create_file_on_approval_implementation_path_is_refused(tmp_path):
+    """Approval-record implementation files stay blocked at the path layer even
+    with innocuous content and even though tests may now seed fixtures."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree_before = _worktree_snapshot(Path(job.worktree_path))
+    bundle_path = _create_file_bundle(
+        tmp_path,
+        job.job_id,
+        "app/approvals.py",
+        "VALUE = 1\n",
+        "approval-impl-path.json",
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval-record code" in failed.edit_errors[0]
+    assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_replace_text_introducing_approval_route_handler_is_refused(tmp_path):
+    """The allowance never reaches approval route handlers: adding a new
+    /approvals route via replace_text is blocked by the route path itself."""
+    root = _init_repo(tmp_path)
+    job, routes = _routes_job(root)
+    before = routes.read_text(encoding="utf-8")
+    new_text = (
+        '        return _page("Chat", request, chat_page())\n'
+        "\n"
+        '    @app.post("/approvals/{approval_id}/reject")\n'
+        "    def reject_item(request, approval_id):\n"
+        "        return reject_approval(_approval_store(request), approval_id)"
+    )
+    bundle_path = _routes_replace_bundle(
+        tmp_path, job.job_id, _SAFE_ROUTE_ANCHOR, new_text, "new-approval-route.json"
+    )
+
+    failed = _refused_apply(root, job.job_id, bundle_path)
+
+    assert "approval route edit blocked" in failed.edit_errors[0]
+    assert routes.read_text(encoding="utf-8") == before
 
 
 def test_rejects_binary_and_oversized_content_and_files(tmp_path):

@@ -16,9 +16,12 @@ from app.dev.freestyle_coding import FreestyleJob, FreestyleJobRefusedError
 from app.dev.freestyle_policy import (
     APPROVAL_STORE_CLASS_NAME,
     GENERATED_OR_CACHE_PARTS,
+    approval_fixture_allowed_for_path,
     approval_sensitive_region_labels,
+    approval_test_fixture_refusal,
     defines_approval_store,
     is_job_id,
+    is_test_file_path,
     recovery_message,
 )
 from app.dev.freestyle_state import (
@@ -162,6 +165,77 @@ def test_approval_sensitive_region_labels_match_markers_without_page_helpers():
         "app.approvals_page\n",
     ):
         assert approval_sensitive_region_labels(safe_text) == ()
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/test_calendar_page.py", True),
+        ("conftest.py", True),
+        ("pkg/tests/test_thing.py", True),
+        ("app/dev/freestyle_proposal.py", False),
+        ("app/web_routes.py", False),
+        ("src/contests/runner.py", False),
+    ],
+)
+def test_is_test_file_path_only_matches_test_locations(path, expected):
+    assert is_test_file_path(path) is expected
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # Non-approval feature test files qualify for the fixture allowance.
+        ("tests/test_calendar_page.py", True),
+        ("tests/calendar/test_view.py", True),
+        ("conftest.py", True),
+        # Approval-focused test files are held to the full region rules.
+        ("tests/test_approvals.py", False),
+        ("tests/test_approval_flow.py", False),
+        ("tests/test_approval_service.py", False),
+        # Non-test files never qualify, approval-named or not.
+        ("app/approvals.py", False),
+        ("app/web_routes.py", False),
+    ],
+)
+def test_approval_fixture_allowance_is_limited_to_non_approval_tests(path, expected):
+    assert approval_fixture_allowed_for_path(path) is expected
+
+
+def test_approval_test_fixture_refusal_allows_only_proposal_seeding():
+    class_name = APPROVAL_STORE_CLASS_NAME
+    # Fixture seeding for an unrelated feature: import + construct the store and
+    # add a local proposal record. None of this changes approval behavior.
+    safe_fixture = (
+        f"from app.approvals import {class_name}\n"
+        "\n"
+        "def test_calendar_page_lists_proposals(tmp_path):\n"
+        f"    store = {class_name}(tmp_path / 'db.sqlite3')\n"
+        "    store.add_proposal(kind='calendar', payload={'day': 1})\n"
+        "    assert store.list_proposals()\n"
+    )
+    assert approval_test_fixture_refusal(safe_fixture) is None
+
+    # Each forbidden signal is reported, never silently allowed.
+    assert "approval route literal" in approval_test_fixture_refusal(
+        '    response = client.get("/approvals")\n'
+    )
+    assert "approval helper definition" in approval_test_fixture_refusal(
+        "def _approval_store(request):\n    return None\n"
+    )
+    assert "approval-store class definition" in approval_test_fixture_refusal(
+        f"class {class_name}:\n    pass\n"
+    )
+    for behavior in (
+        "    approve_approval(store, 1)\n",
+        "    reject_approval(store, 1)\n",
+        "    execute_approved(store, 1)\n",
+        "    store = _approval_store(request)\n",
+        "from app.approval_service import approve_approval\n",
+    ):
+        reason = approval_test_fixture_refusal(behavior)
+        assert reason is not None
+        assert "approval behavior reference" in reason
 
 
 def test_recovery_message_matches_slice_texts():

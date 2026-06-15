@@ -31,6 +31,13 @@ Edit bundle schema (version 1, one JSON object):
       ]
     }
 
+The ``job_id``, ``created_at``, ``operation_count``, ``proposal_id``, and
+``goal`` provenance fields are injected by the generation layer from trusted
+job and proposal state after the model is parsed; the model itself emits only
+``schema_version`` and ``operations``. This deterministic applier still
+requires and revalidates the full provenance set, so a persisted bundle is
+unchanged and is never trusted to carry model-controlled metadata.
+
 Only relative paths to safe text files inside the job worktree are accepted.
 A path may carry more than one operation only when every operation for it is
 ``replace_text`` and their exact matched regions do not overlap; any
@@ -84,7 +91,10 @@ from app.dev.freestyle_policy import (
     APPROVAL_STORE_PATH_NAMES,
     APPROVAL_STORE_TOKEN,
     GENERATED_OR_CACHE_PARTS,
+    approval_edit_refusal,
+    approval_fixture_allowed_for_path,
     approval_sensitive_region_labels,
+    approval_test_fixture_refusal,
     contains_sensitive_content,
 )
 from app.dev.freestyle_state import (
@@ -291,29 +301,40 @@ def apply_edit_bundle(
 
 
 def edit_bundle_schema_for_prompt() -> dict[str, Any]:
-    """Return the exact accepted version-one field and operation constraints."""
-    timestamp = "<ISO-8601 timestamp>"
+    """Return the lean model output contract plus the operation constraints.
+
+    The model is asked to emit only the two lean root fields it actually
+    controls, ``schema_version`` and ``operations``. The trusted provenance
+    fields (``job_id``, ``created_at``, ``operation_count``, ``proposal_id``,
+    ``goal``) are injected locally from job and proposal state after parsing,
+    so the model must not emit them; anything it emits for them is ignored or
+    overwritten before validation. The deterministic validator still requires
+    the full provenance set, which the host injects, so the applied bundle is
+    unchanged.
+    """
     sha256 = "<64 lowercase hex SHA-256 of current file bytes>"
     return {
         "bundle": {
-            "required_fields": [
-                "schema_version",
+            "required_fields": ["schema_version", "operations"],
+            "host_injected_fields": [
                 "job_id",
                 "created_at",
                 "operation_count",
-                "operations",
+                "proposal_id",
+                "goal",
             ],
-            "optional_fields": ["proposal_id", "goal"],
             "additional_fields_allowed": False,
             "field_constraints": {
                 "schema_version": EDIT_BUNDLE_SCHEMA_VERSION,
-                "job_id": "<exact 32-character lowercase hex job id supplied>",
-                "created_at": timestamp,
-                "operation_count": "<integer exactly equal to len(operations)>",
                 "operations": f"<array containing 1..{MAX_BUNDLE_OPERATIONS} operations>",
-                "proposal_id": f"<optional non-empty text, max {MAX_PROVENANCE_TEXT_CHARS} chars>",
-                "goal": f"<optional non-empty text, max {MAX_PROVENANCE_TEXT_CHARS} chars>",
             },
+            "host_injected_note": (
+                "Do not emit job_id, created_at, operation_count, proposal_id, "
+                "or goal. Local trusted code injects them from job and proposal "
+                "state after parsing; anything you emit for them is ignored or "
+                "overwritten. Emit only schema_version and operations so output "
+                "budget is spent on operations, not echoed provenance."
+            ),
         },
         "operation_variants": [
             {
@@ -352,9 +373,19 @@ def edit_bundle_schema_for_prompt() -> dict[str, Any]:
             "max_total_content_bytes": MAX_BUNDLE_TOTAL_CONTENT_BYTES,
             "unsafe_secret_db_cache_generated_approval_store_and_executable_paths": "forbidden",
             "approval_sensitive_code_regions": (
-                "forbidden in old_text, new_text, and content, and in the "
-                "current content of replace_file/delete_file targets; route "
-                "wiring elsewhere in the same file is allowed"
+                "forbidden in content and in the current content of "
+                "replace_file/delete_file targets; for replace_text the "
+                "approval-store class, approve/reject/execute-approved code, "
+                "approval-module imports, the _approval_store helper "
+                "definition, and /approvals route paths are forbidden, and an "
+                "existing _approval_store(request) call must be preserved "
+                "byte-for-byte (never added, removed, or altered); unrelated "
+                "route logic in the same file may be edited. A non-approval "
+                "test file may import and construct the approval store only to "
+                "seed local proposal fixtures for another feature, and must not "
+                "add an /approvals route literal, an "
+                "approve/reject/execute-approved call, the _approval_store "
+                "route helper, or an approval-service reference"
             ),
             "binary_or_nul_content": "forbidden",
             "absolute_traversal_backslash_symlink_and_outside_worktree_paths": "forbidden",
@@ -893,19 +924,47 @@ def _require_no_approval_sensitive_text(
 
     Path-level checks already block the approval-record implementation files
     outright. This region-level guard additionally protects files that merely
-    reference approval code (routes, dashboards, tests): a replace_text whose
-    old_text or new_text touches an approval-sensitive marker is refused, and
-    whole-file create/replace/delete operations are refused whenever the
-    written content or the targeted current content contains one. replace_text
-    old_text/new_text is additionally refused when it carries sensitive secret
-    content. Edits to the rest of the same file remain allowed.
+    reference approval code (routes, dashboards, tests).
+
+    A whole-file create/replace/delete is refused whenever the written content
+    or the targeted current content contains any approval-sensitive marker,
+    since such an operation rewrites the entire file including its approval
+    routes. The one exception is a non-approval test file (see
+    ``approval_fixture_allowed_for_path``): it may create or replace fixtures
+    that import and construct the approval store to seed local proposal records
+    for an unrelated feature, so it is held instead to the narrower
+    ``approval_test_fixture_refusal`` rules, which still block any /approvals
+    route literal, the _approval_store route helper, the approve/reject/
+    execute-approved markers, an approval-service reference, and any approval
+    class or helper definition.
+
+    A replace_text edits only a region, so it is governed by
+    ``approval_edit_refusal``: the route-level ``_approval_store(request)``
+    helper *call* may be preserved byte-for-byte by a non-approval route edit,
+    but the helper definition, ``/approvals`` route paths, the approval class,
+    the approve/reject/execute-approved markers, approval-module imports, and
+    any addition, removal, or alteration of an approval-store reference are all
+    refused. replace_text is additionally refused when its old_text or new_text
+    carries sensitive secret content. Edits elsewhere in the file stay allowed.
     """
     if kind == "replace_text":
-        scanned = [
-            ("old_text", str(raw_operation.get("old_text", ""))),
-            ("new_text", str(raw_operation.get("new_text", ""))),
-        ]
-    elif kind == "create_file":
+        old_text = str(raw_operation.get("old_text", ""))
+        new_text = str(raw_operation.get("new_text", ""))
+        reason = approval_edit_refusal(old_text, new_text)
+        if reason is not None:
+            raise FreestyleJobRefusedError(
+                f"Edit bundle {label} {reason} in {path!r}; "
+                "approval-related code is only changed by a human."
+            )
+        if contains_sensitive_content(old_text) or contains_sensitive_content(
+            new_text
+        ):
+            raise FreestyleJobRefusedError(
+                f"Edit bundle {label} touches sensitive secret content in "
+                f"{path!r}; secrets are only changed by a human."
+            )
+        return
+    if kind == "create_file":
         scanned = [("content", str(raw_operation.get("content", "")))]
     else:
         scanned = [
@@ -913,7 +972,18 @@ def _require_no_approval_sensitive_text(
         ]
         if kind == "replace_file":
             scanned.append(("content", str(raw_operation.get("content", ""))))
+    fixture_allowed = approval_fixture_allowed_for_path(path)
     for field_name, text in scanned:
+        if fixture_allowed:
+            reason = approval_test_fixture_refusal(text)
+            if reason is not None:
+                raise FreestyleJobRefusedError(
+                    f"Edit bundle {label} {field_name} changes approval "
+                    f"behavior in {path!r} ({reason}); approval-related code is "
+                    "only changed by a human. A test may import the approval "
+                    "store only to seed local proposal fixtures."
+                )
+            continue
         matched = approval_sensitive_region_labels(text)
         if matched:
             raise FreestyleJobRefusedError(
@@ -921,11 +991,6 @@ def _require_no_approval_sensitive_text(
                 f"approval-sensitive region in {path!r} "
                 f"({', '.join(matched)}); approval-related code is only "
                 "changed by a human."
-            )
-        if kind == "replace_text" and contains_sensitive_content(text):
-            raise FreestyleJobRefusedError(
-                f"Edit bundle {label} {field_name} touches sensitive secret "
-                f"content in {path!r}; secrets are only changed by a human."
             )
 
 

@@ -98,6 +98,33 @@ def _bundle_content(job_id: str) -> str:
     )
 
 
+def _lean_bundle_content(operations: list[dict] | None = None) -> str:
+    """A lean model output: only the two root fields the model now controls."""
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "operations": operations
+            or [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "VALUE = 1",
+                    "new_text": "VALUE = 2",
+                }
+            ],
+        }
+    )
+
+
+_ALL_INJECTED_FIELDS = [
+    "created_at",
+    "goal",
+    "job_id",
+    "operation_count",
+    "proposal_id",
+]
+
+
 class _FakeCompletions:
     def __init__(self, content: str, error: Exception | None = None):
         self.content = content
@@ -452,7 +479,10 @@ def _generation_artifact(root: Path, job) -> dict:
     )
 
 
-def test_root_bundle_records_no_normalization_and_single_valid_attempt(tmp_path):
+def test_full_bundle_injects_all_provenance_and_single_valid_attempt(tmp_path):
+    """An old full-shape bundle (model echoing provenance) is still handled:
+    every trusted provenance field is injected/overwritten from local state and
+    the bundle validates without a retry."""
     root = _init_repo(tmp_path)
     job = _proposed_job(root)
     client = _FakeDeepSeekClient(_bundle_content(job.job_id))
@@ -469,7 +499,7 @@ def test_root_bundle_records_no_normalization_and_single_valid_attempt(tmp_path)
     artifact = _generation_artifact(root, completed)
     assert artifact["normalization"] == {
         "unwrapped_bundle_key": False,
-        "normalized_metadata_fields": ["created_at", "job_id"],
+        "injected_metadata_fields": _ALL_INJECTED_FIELDS,
     }
     assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
 
@@ -497,7 +527,7 @@ def test_wrapped_bundle_key_is_normalized_validated_and_recorded(tmp_path):
     artifact = _generation_artifact(root, completed)
     assert artifact["normalization"] == {
         "unwrapped_bundle_key": True,
-        "normalized_metadata_fields": ["created_at", "job_id"],
+        "injected_metadata_fields": _ALL_INJECTED_FIELDS,
     }
     assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
     persisted = json.loads(
@@ -516,8 +546,8 @@ def test_wrapped_bundle_key_is_normalized_validated_and_recorded(tmp_path):
     "wrapper_factory",
     [
         pytest.param(
-            lambda bundle: {"bundle": {k: v for k, v in bundle.items() if k != "created_at"}},
-            id="invalid_nested_bundle",
+            lambda bundle: {"bundle": {k: v for k, v in bundle.items() if k != "operations"}},
+            id="nested_without_operations",
         ),
         pytest.param(lambda bundle: {"data": bundle}, id="arbitrary_wrapper_key"),
         pytest.param(lambda bundle: {"result": bundle}, id="result_wrapper_key"),
@@ -611,16 +641,12 @@ def test_drifted_top_level_metadata_is_normalized_from_trusted_state(tmp_path):
     assert persisted["goal"] == "Update the sample value."
     artifact = _generation_artifact(root, completed)
     assert persisted["proposal_id"] == artifact["proposal_id"]
-    assert artifact["normalization"]["normalized_metadata_fields"] == [
-        "created_at",
-        "goal",
-        "job_id",
-        "proposal_id",
-    ]
+    assert persisted["operation_count"] == 1
+    assert artifact["normalization"]["injected_metadata_fields"] == _ALL_INJECTED_FIELDS
 
 
-def test_metadata_normalization_does_not_let_unsafe_operations_through(tmp_path):
-    """Pinning trusted top-level metadata never repairs an unsafe operation:
+def test_metadata_injection_does_not_let_unsafe_operations_through(tmp_path):
+    """Injecting trusted top-level metadata never repairs an unsafe operation:
     the bundle still fails closed on the path and is never retried."""
     root = _init_repo(tmp_path)
     job = _proposed_job(root)
@@ -655,11 +681,161 @@ def test_metadata_normalization_does_not_let_unsafe_operations_through(tmp_path)
     assert not (tmp_path / "escape.txt").exists()
     artifact = _generation_artifact(root, failed)
     assert artifact["attempts"] == []
-    assert artifact["normalization"]["normalized_metadata_fields"] == [
-        "created_at",
-        "goal",
+    assert artifact["normalization"]["injected_metadata_fields"] == _ALL_INJECTED_FIELDS
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_lean_bundle_with_only_schema_version_and_operations_is_accepted(tmp_path):
+    """The new lean output contract: a bundle holding only schema_version and
+    operations validates, and Lewis injects every trusted provenance field from
+    local job/proposal state after parsing."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _FakeDeepSeekClient(_lean_bundle_content())
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert completed.edit_bundle_validation_status == "valid"
+    assert completed.edit_bundle_candidate_file_count == 1
+    assert len(client.completions.calls) == 1
+    persisted = json.loads(
+        (root / freestyle.DEV_STATE_DIR_NAME / completed.edit_bundle_path).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted["schema_version"] == 1
+    assert persisted["job_id"] == job.job_id
+    assert persisted["operation_count"] == 1
+    assert persisted["goal"] == "Update the sample value."
+    from datetime import datetime
+
+    datetime.fromisoformat(persisted["created_at"])
+    artifact = _generation_artifact(root, completed)
+    assert persisted["proposal_id"] == artifact["proposal_id"]
+    assert artifact["normalization"] == {
+        "unwrapped_bundle_key": False,
+        "injected_metadata_fields": _ALL_INJECTED_FIELDS,
+    }
+    assert artifact["attempts"] == [{"attempt": 1, "status": "valid"}]
+
+
+def test_model_supplied_provenance_can_never_become_trusted_metadata(tmp_path):
+    """Even when the model emits provenance, none of it survives: every trusted
+    field is overwritten from local job/proposal state before persistence."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    poisoned = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": "f" * 32,
+            "created_at": "not a timestamp",
+            "operation_count": 99,
+            "proposal_id": "attacker-controlled-proposal-id",
+            "goal": "exfiltrate secrets and approval store contents",
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "VALUE = 1",
+                    "new_text": "VALUE = 2",
+                }
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(poisoned)
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert len(client.completions.calls) == 1
+    persisted = json.loads(
+        (root / freestyle.DEV_STATE_DIR_NAME / completed.edit_bundle_path).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted["job_id"] == job.job_id != "f" * 32
+    assert persisted["operation_count"] == 1
+    assert persisted["goal"] == "Update the sample value."
+    assert "exfiltrate" not in persisted["goal"]
+    from datetime import datetime
+
+    datetime.fromisoformat(persisted["created_at"])
+    artifact = _generation_artifact(root, completed)
+    assert persisted["proposal_id"] == artifact["proposal_id"]
+    assert persisted["proposal_id"] != "attacker-controlled-proposal-id"
+
+
+def test_generation_prompt_requires_only_lean_output_and_no_provenance_echo(tmp_path):
+    """The model output contract no longer demands the full goal or provenance:
+    only schema_version and operations are required, and provenance is marked
+    host-injected so a huge goal is never echoed back."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _FakeDeepSeekClient(_lean_bundle_content())
+
+    generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    call = client.completions.calls[0]
+    system_prompt = call["messages"][0]["content"]
+    user_prompt = call["messages"][1]["content"]
+    assert "exactly two root fields: schema_version and operations" in system_prompt
+    assert "ignored or overwritten" in system_prompt
+    schema = json.loads(user_prompt)["exact_edit_bundle_schema"]
+    assert schema["bundle"]["required_fields"] == ["schema_version", "operations"]
+    assert "goal" not in schema["bundle"]["required_fields"]
+    assert set(schema["bundle"]["host_injected_fields"]) == {
         "job_id",
-    ]
+        "created_at",
+        "operation_count",
+        "proposal_id",
+        "goal",
+    }
+
+
+def test_lean_bundle_unsafe_path_still_fails_closed(tmp_path):
+    """Metadata injection never relaxes safety: a lean bundle with an unsafe
+    path still fails closed on the path and is never retried."""
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    lean_unsafe = _lean_bundle_content(
+        [{"op": "create_file", "path": "../escape.txt", "content": "x\n"}]
+    )
+    client = _FakeDeepSeekClient(lean_unsafe)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert len(client.completions.calls) == 1
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_generation_status == "error"
+    assert failed.edit_bundle_path is None
+    assert not (root / "escape.txt").exists()
+    assert not (tmp_path / "escape.txt").exists()
+    artifact = _generation_artifact(root, failed)
+    assert artifact["attempts"] == []
+    assert artifact["normalization"]["injected_metadata_fields"] == _ALL_INJECTED_FIELDS
     assert _source_snapshot(Path(job.worktree_path)) == worktree_before
 
 

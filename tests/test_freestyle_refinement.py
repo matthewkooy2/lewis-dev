@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.dev.freestyle_coding as freestyle
+import app.dev.freestyle_edit_bundle as edit_bundle
 import app.dev.freestyle_maintenance as maintenance
 from app.dev.freestyle_coding import (
     FreestyleJobRefusedError,
@@ -108,6 +109,11 @@ def _bundle(job_id: str, operations: list[dict]) -> str:
             "operations": operations,
         }
     )
+
+
+def _lean_bundle(operations: list[dict]) -> str:
+    """A lean model output: only schema_version and operations, no provenance."""
+    return json.dumps({"schema_version": 1, "operations": operations})
 
 
 def _set_metadata(root: Path, job_id: str, **values) -> None:
@@ -209,6 +215,67 @@ def test_refine_sees_prior_applied_page_and_stops_before_apply(tmp_path):
     assert handoff["refinement"]["latest_goal"].startswith("Wire /shenanigans")
     assert handoff["refinement"]["original_artifacts"]["proposal"] == original_proposal
     assert handoff["artifacts"]["latest_refinement"]
+
+
+def test_refinement_huge_goal_is_not_echoed_into_model_output_contract(tmp_path):
+    """Regression for the Calendar refinement that hit finish_reason="length":
+    a refinement carries a very large goal as input context, but the model
+    output contract demands only schema_version and operations. The model
+    returns a lean bundle without echoing the goal, and Lewis injects bounded
+    trusted provenance after parsing so output budget is spent on operations."""
+    root = _init_repo(tmp_path)
+    job = _applied_page_job(root)
+    huge_goal = "Wire /shenanigans into the routes. " + ("scope detail line. " * 400)
+    client = _Client(
+        [
+            _proposal("app/web_routes.py", "app/shenanigans.py"),
+            _lean_bundle(
+                [
+                    {
+                        "op": "replace_text",
+                        "path": "app/web_routes.py",
+                        "old_text": "ROUTES = {}",
+                        "new_text": 'ROUTES = {"/shenanigans": shenanigans_page}',
+                    }
+                ]
+            ),
+        ]
+    )
+
+    refined = refine_freestyle_job(
+        job.job_id,
+        huge_goal,
+        developer_approved=True,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert refined.latest_refinement_status == "generated"
+    assert refined.edit_bundle_validation_status == "valid"
+    # The model only needed one call: it never had to echo the huge goal.
+    assert len(client.completions.calls) == 2
+
+    generation_call = client.completions.calls[1]
+    system_prompt = generation_call["messages"][0]["content"]
+    assert "exactly two root fields: schema_version and operations" in system_prompt
+    user_payload = json.loads(generation_call["messages"][1]["content"])
+    # The huge goal is supplied as input context but is not a required output.
+    assert len(user_payload["goal"]) > edit_bundle.MAX_PROVENANCE_TEXT_CHARS
+    schema = user_payload["exact_edit_bundle_schema"]
+    assert schema["bundle"]["required_fields"] == ["schema_version", "operations"]
+    assert "goal" in schema["bundle"]["host_injected_fields"]
+
+    # The persisted bundle carries Lewis-injected, bounded provenance only.
+    persisted = json.loads(
+        (
+            root / freestyle.DEV_STATE_DIR_NAME / refined.edit_bundle_path
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["job_id"] == job.job_id
+    assert persisted["operation_count"] == 1
+    assert len(persisted["goal"]) <= edit_bundle.MAX_PROVENANCE_TEXT_CHARS
+    assert "\n" not in persisted["goal"]
 
 
 def test_refine_apply_requires_both_flags_and_uses_safe_applier(tmp_path):
