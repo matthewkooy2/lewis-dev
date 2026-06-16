@@ -171,21 +171,26 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
         request: Request, job_id: str
     ) -> RedirectResponse:
         fields = await _request_fields(request)
-        if set(fields) - {"goal", "developer_approved"}:
+        if set(fields) - {"goal", "ui_feedback", "developer_approved"}:
             return _redirect(
                 job_id,
-                error="Refine only accepts a refinement goal and explicit approval.",
+                error=(
+                    "Refine only accepts a refinement goal, optional observed UI "
+                    "feedback, and explicit approval."
+                ),
             )
         if fields.get("developer_approved") != "approved":
             return _redirect(
                 job_id,
                 error="Explicit developer approval is required to refine this job.",
             )
+        ui_feedback = str(fields.get("ui_feedback", "")).strip() or None
         try:
             refine_freestyle_job(
                 job_id,
                 str(fields.get("goal", "")),
                 developer_approved=True,
+                observed_ui_feedback=ui_feedback,
                 project_root=_project_root(request),
                 deepseek_config=_deepseek_config(request),
             )
@@ -629,6 +634,7 @@ def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
             "".join(setup_actions),
             "</div><p class='muted'>Run stops at the generated bundle boundary. "
             "Every later action below is separate and manual.</p>",
+            _ui_review_warning_block(handoff),
             _refine_form(job, running),
             "<section class='action-zone primary-zone'><h3>Primary Action</h3>",
             "<p>Apply only the latest generated bundle through the deterministic "
@@ -675,6 +681,10 @@ def _refine_form(job: FreestyleJob, running: bool) -> str:
         "<label class='control'><span>Refinement goal</span>"
         "<textarea name='goal' rows='4' maxlength='10000' required "
         "placeholder='Describe the minimal targeted refinement'></textarea></label>"
+        "<label class='control'><span>Observed runtime/UI feedback (optional)</span>"
+        "<textarea name='ui_feedback' rows='3' maxlength='4000' "
+        "placeholder='Describe any broken rendered layout or UI behavior you saw'>"
+        "</textarea></label>"
         f"{_confirmation('developer_approved', 'approved', 'I explicitly approve refining this job in its current isolated worktree.')}"
         "<button type='submit'>Generate Refinement Bundle</button></form></section>"
     )
@@ -734,6 +744,26 @@ def _goal_fit_warning_block(handoff: dict[str, Any]) -> str:
         f"<ul>{items}</ul>"
         "<p>Advisory only: the bundle passed structural and safety validation, "
         "but it may not actually implement the goal. Review it before applying.</p>"
+        "</div>"
+    )
+
+
+def _ui_review_warning_block(handoff: dict[str, Any]) -> str:
+    warnings = [
+        warning
+        for warning in handoff.get("ui_review_warnings", [])
+        if isinstance(warning, str) and warning
+    ]
+    if not warnings:
+        return ""
+    items = "".join(f"<li>{escape(warning)}</li>" for warning in warnings)
+    return (
+        "<div class='goal-fit-warnings' role='alert'>"
+        "<strong>Rendered UI review warnings</strong>"
+        f"<ul>{items}</ul>"
+        "<p>Advisory only: the deterministic review flagged likely rendered-layout "
+        "or selector problems in the changed web files. Refine with observed UI "
+        "feedback to repair them.</p>"
         "</div>"
     )
 

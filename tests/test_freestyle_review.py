@@ -377,6 +377,128 @@ def test_forbidden_review_git_operations_remain_forbidden(tmp_path, command):
         review._run_review_git(command, Path(job.worktree_path))
 
 
+_BROKEN_CALENDAR_PAGE = """from __future__ import annotations
+
+
+def calendar_page() -> str:
+    return (
+        "<section class='calendar'>"
+        "<div class='weekday-row'>"
+        "<span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span>"
+        "<span>Fri</span><span>Sat</span><span>Sun</span>"
+        "</div>"
+        "<ul class='calendar-days'>"
+        + "".join(f"<li>{day}</li>" for day in range(1, 15))
+        + "</ul>"
+        "</section>"
+        "<script src='/static/calendar.js'></script>"
+    )
+"""
+
+_BROKEN_CALENDAR_CSS = (
+    ".calandar { color: #222; }\n"  # typo: never matches .calendar
+    ".weekday-row { font-weight: 600; }\n"
+    ".calendar-days { list-style: none; }\n"
+)
+
+_BROKEN_CALENDAR_JS = (
+    "const grid = document.getElementById('calendar-grid');\n"
+    "grid.classList.add('ready');\n"
+)
+
+_HEALTHY_CALENDAR_PAGE = """from __future__ import annotations
+
+
+def calendar_page() -> str:
+    return (
+        "<section class='calendar-grid'>"
+        "<div class='weekday-row'>"
+        "<span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span>"
+        "<span>Fri</span><span>Sat</span><span>Sun</span>"
+        "</div>"
+        "<div class='calendar-day'>1</div>"
+        "<div class='calendar-day'>2</div>"
+        "</section>"
+        "<script src='/static/calendar.js'></script>"
+    )
+"""
+
+_HEALTHY_CALENDAR_CSS = (
+    ".calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); }\n"
+    ".weekday-row { display: flex; }\n"
+    ".calendar-day { padding: 8px; }\n"
+)
+
+_HEALTHY_CALENDAR_JS = "const grid = document.querySelector('.calendar-grid');\n"
+
+
+def _write_web_files(worktree: Path, page: str, css: str, js: str) -> None:
+    (worktree / "app").mkdir(exist_ok=True)
+    (worktree / "app" / "static").mkdir(parents=True, exist_ok=True)
+    (worktree / "app" / "calendar_page.py").write_text(page, encoding="utf-8")
+    (worktree / "app" / "static" / "lewis.css").write_text(css, encoding="utf-8")
+    (worktree / "app" / "static" / "calendar.js").write_text(js, encoding="utf-8")
+
+
+def test_broken_calendar_web_files_produce_advisory_ui_warnings(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    _write_web_files(
+        Path(job.worktree_path),
+        _BROKEN_CALENDAR_PAGE,
+        _BROKEN_CALENDAR_CSS,
+        _BROKEN_CALENDAR_JS,
+    )
+
+    completed = review_freestyle_job(job.job_id, project_root=root)
+    artifact = _artifact(root, completed)
+    ui_review = artifact["ui_review"]
+    codes = {warning.split(":", 1)[0] for warning in ui_review["warnings"]}
+
+    # Advisory only: the review still succeeds.
+    assert completed.review_status == "reviewed"
+    assert ui_review["advisory"] is True
+    assert "UI_REVIEW_BROKEN_CALENDAR_LAYOUT" in codes
+    assert "UI_REVIEW_ORPHAN_CSS_SELECTORS" in codes
+    assert "UI_REVIEW_JS_MISSING_TARGETS" in codes
+    assert "UI_REVIEW_GRID_CONTAINER_WITHOUT_LAYOUT" in codes
+    # Warnings are mirrored onto the job so the next refinement can see them.
+    assert completed.review_ui_warnings
+    assert set(completed.review_ui_warnings) == set(ui_review["warnings"])
+    assert all(len(warning) <= 500 for warning in completed.review_ui_warnings)
+
+
+def test_healthy_calendar_web_files_produce_no_ui_warnings(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    _write_web_files(
+        Path(job.worktree_path),
+        _HEALTHY_CALENDAR_PAGE,
+        _HEALTHY_CALENDAR_CSS,
+        _HEALTHY_CALENDAR_JS,
+    )
+
+    completed = review_freestyle_job(job.job_id, project_root=root)
+    artifact = _artifact(root, completed)
+
+    assert completed.review_status == "reviewed"
+    assert artifact["ui_review"]["warnings"] == []
+    assert completed.review_ui_warnings == ()
+
+
+def test_non_web_changes_carry_an_empty_ui_review(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    (Path(job.worktree_path) / "tracked.txt").write_text("plain edit\n", encoding="utf-8")
+
+    completed = review_freestyle_job(job.job_id, project_root=root)
+    artifact = _artifact(root, completed)
+
+    assert artifact["ui_review"]["warnings"] == []
+    assert artifact["ui_review"]["summary"] == {"web_source_count": 0}
+    assert completed.review_ui_warnings == ()
+
+
 def test_review_cli_dispatches_only_the_requested_job_id(tmp_path, monkeypatch, capsys):
     root = _init_repo(tmp_path)
     job = _materialized_job(root)

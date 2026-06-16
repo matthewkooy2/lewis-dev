@@ -363,6 +363,25 @@ def test_status_only_reads_dev_state_and_constrained_isolated_git_status(
     assert _git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
 
+def test_handoff_surfaces_rendered_ui_review_warnings(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _created_job(root)
+    warning = (
+        "UI_REVIEW_BROKEN_CALENDAR_LAYOUT: weekday labels are rendered without "
+        "any grid/flex container."
+    )
+    _set_metadata(root, job.job_id, review_ui_warnings=[warning])
+
+    result = get_freestyle_handoff(job.job_id, project_root=root)
+
+    assert warning in result["ui_review_warnings"]
+    assert warning in result["risks"]
+
+    markdown = handoff.render_freestyle_handoff_markdown(result)
+    assert "Rendered UI Review (Advisory)" in markdown
+    assert warning in markdown
+
+
 def test_handoff_module_adds_no_model_env_runtime_or_mutating_dependencies():
     source = Path(handoff.__file__).read_text(encoding="utf-8")
     for forbidden in (

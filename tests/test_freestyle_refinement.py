@@ -25,6 +25,10 @@ from app.dev.freestyle_coding import (
 )
 from app.dev.freestyle_policy import APPROVAL_STORE_CLASS_NAME
 from app.dev.freestyle_proposal import DEEPSEEK_API_BASE_URL, DeepSeekProposalConfig
+from app.dev.freestyle_refinement import (
+    _effective_refinement_goal,
+    _validate_observed_ui_feedback,
+)
 
 
 def _git(root: Path, *args: str) -> str:
@@ -899,6 +903,97 @@ def test_recovery_and_cleanup_remain_safe_for_refined_jobs(tmp_path):
     assert not artifact_dir.exists()
 
 
+def _refine_client(job_id: str) -> "_Client":
+    return _Client(
+        [
+            _proposal("app/web_routes.py", "app/shenanigans.py"),
+            _bundle(
+                job_id,
+                [
+                    {
+                        "op": "replace_text",
+                        "path": "app/web_routes.py",
+                        "old_text": "ROUTES = {}",
+                        "new_text": 'ROUTES = {"/x": shenanigans_page}',
+                    }
+                ],
+            ),
+        ]
+    )
+
+
+def test_observed_ui_feedback_reaches_the_refinement_prompt_and_record(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _applied_page_job(root)
+    client = _refine_client(job.job_id)
+    feedback = "The weekday labels render inline and the days stack vertically."
+
+    refined = refine_freestyle_job(
+        job.job_id,
+        "Lay the calendar out as a real grid.",
+        developer_approved=True,
+        observed_ui_feedback=feedback,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    prompt_text = json.dumps(client.completions.calls)
+    assert feedback in prompt_text
+    assert "Observed runtime/UI feedback" in prompt_text
+    # Preserved as first-class structured metadata, not only in the goal text.
+    record = refined.refinement_history[-1]
+    assert record["observed_ui_feedback"] == feedback
+
+
+def test_prior_ui_review_warnings_reach_the_next_refinement_prompt(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _applied_page_job(root)
+    warning = (
+        "UI_REVIEW_BROKEN_CALENDAR_LAYOUT: weekday labels are rendered without "
+        "any grid/flex container."
+    )
+    _set_metadata(root, job.job_id, review_ui_warnings=[warning])
+
+    client = _refine_client(job.job_id)
+    refine_freestyle_job(
+        job.job_id,
+        "Repair the calendar grid.",
+        developer_approved=True,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    prompt_text = json.dumps(client.completions.calls)
+    assert "UI_REVIEW_BROKEN_CALENDAR_LAYOUT" in prompt_text
+    assert "rendered UI review flagged" in prompt_text
+
+
+def test_effective_refinement_goal_keeps_observed_feedback_separate():
+    job = SimpleNamespace(title="Calendar", goal="Build a calendar.")
+    goal = _effective_refinement_goal(
+        job,
+        "Make it a grid.",
+        memory=None,
+        observed_ui_feedback="Days render as a vertical list.",
+    )
+    assert "Observed runtime/UI feedback" in goal
+    assert "Days render as a vertical list." in goal
+    # The human refinement instruction stays a distinct, later section.
+    assert goal.index("Observed runtime/UI feedback") < goal.index("New refinement goal:")
+
+
+def test_validate_observed_ui_feedback_bounds_and_normalizes():
+    assert _validate_observed_ui_feedback(None) is None
+    assert _validate_observed_ui_feedback("   ") is None
+    assert _validate_observed_ui_feedback("  broken grid  ") == "broken grid"
+    with pytest.raises(FreestyleJobRefusedError, match="NUL"):
+        _validate_observed_ui_feedback("bad\x00feedback")
+    with pytest.raises(FreestyleJobRefusedError, match="maximum length"):
+        _validate_observed_ui_feedback("x" * 4_001)
+
+
 def test_refine_cli_requires_approval_and_dispatches_safe_defaults(
     tmp_path, monkeypatch, capsys
 ):
@@ -920,6 +1015,7 @@ def test_refine_cli_requires_approval_and_dispatches_safe_defaults(
             "job_id": job.job_id,
             "goal": "Wire route.",
             "developer_approved": True,
+            "observed_ui_feedback": None,
             "apply_latest_generated": False,
             "confirm_apply": False,
             "run_checks": False,

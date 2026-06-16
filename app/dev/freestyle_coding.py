@@ -221,6 +221,7 @@ class FreestyleJob:
     review_completed_at: str | None = None
     review_artifact_path: str | None = None
     review_changed_file_count: int = 0
+    review_ui_warnings: tuple[str, ...] = ()
     review_errors: tuple[str, ...] = ()
     checks_status: str = "not_run"
     checks_started_at: str | None = None
@@ -553,6 +554,7 @@ def refine_freestyle_job(
     goal: str,
     *,
     developer_approved: bool = False,
+    observed_ui_feedback: str | None = None,
     apply_latest_generated: bool = False,
     confirm_apply: bool = False,
     run_checks: bool = False,
@@ -569,6 +571,7 @@ def refine_freestyle_job(
         job_id,
         goal,
         developer_approved=developer_approved,
+        observed_ui_feedback=observed_ui_feedback,
         apply_latest_generated=apply_latest_generated,
         confirm_apply=confirm_apply,
         run_checks=run_checks,
@@ -1519,6 +1522,7 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("review_completed_at", None)
         payload.setdefault("review_artifact_path", None)
         payload.setdefault("review_changed_file_count", 0)
+        payload["review_ui_warnings"] = tuple(payload.get("review_ui_warnings", ()))
         payload["review_errors"] = tuple(payload.get("review_errors", ()))
         payload.setdefault("checks_status", "not_run")
         payload.setdefault("checks_started_at", None)
@@ -1867,6 +1871,15 @@ def main(argv: list[str] | None = None) -> int:
     refine_parser.add_argument("job_id")
     refine_parser.add_argument("--goal", required=True)
     refine_parser.add_argument(
+        "--ui-feedback",
+        dest="ui_feedback",
+        default=None,
+        help=(
+            "Human-observed runtime/UI problem to repair, carried into the "
+            "refinement as first-class observed feedback."
+        ),
+    )
+    refine_parser.add_argument(
         "--approve",
         action="store_true",
         help="Explicitly approve this refinement of the isolated worktree.",
@@ -1992,6 +2005,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.job_id,
                     args.goal,
                     developer_approved=args.approve,
+                    observed_ui_feedback=args.ui_feedback,
                     apply_latest_generated=args.apply_latest_generated,
                     confirm_apply=args.confirm_apply,
                     run_checks=args.run_checks,

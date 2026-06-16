@@ -256,6 +256,23 @@ def test_default_run_uses_only_non_mutating_orchestration_flags(tmp_path, monkey
     ]
 
 
+def test_detail_page_renders_rendered_ui_review_warnings(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _job(root)
+    warning = (
+        "UI_REVIEW_JS_MISSING_TARGETS: the changed JavaScript references "
+        "#calendar-grid but no rendered element provides it."
+    )
+    _set_metadata(root, job.job_id, review_ui_warnings=[warning])
+
+    response = _client(tmp_path, root).get(f"/dev/freestyle/{job.job_id}")
+
+    assert response.status_code == 200
+    assert "Rendered UI review warnings" in response.text
+    assert "UI_REVIEW_JS_MISSING_TARGETS" in response.text
+    assert "#calendar-grid" in response.text
+
+
 def test_materialize_route_uses_existing_isolated_operation_only(tmp_path):
     root = _init_repo(tmp_path)
     job = _job(root)
@@ -360,6 +377,7 @@ def test_refine_web_requires_goal_and_approval_and_uses_safe_defaults(
             "job_id": job.job_id,
             "goal": "Wire route.",
             "developer_approved": True,
+            "observed_ui_feedback": None,
             "project_root": root,
             "deepseek_config": calls[0]["deepseek_config"],
         }

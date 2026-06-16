@@ -46,6 +46,7 @@ def refine_freestyle_job(
     goal: str,
     *,
     developer_approved: bool = False,
+    observed_ui_feedback: str | None = None,
     apply_latest_generated: bool = False,
     confirm_apply: bool = False,
     run_checks: bool = False,
@@ -61,6 +62,7 @@ def refine_freestyle_job(
             "Explicit developer approval is required to refine a freestyle job."
         )
     refinement_goal = validate_goal(goal)
+    ui_feedback = _validate_observed_ui_feedback(observed_ui_feedback)
     _validate_requested_flags(
         apply_latest_generated=apply_latest_generated,
         confirm_apply=confirm_apply,
@@ -77,13 +79,16 @@ def refine_freestyle_job(
     _preflight_refinement(job, root, state)
     refinement_id = uuid.uuid4().hex[:16]
     memory = _previous_attempt_memory(job, state)
-    effective_goal = _effective_refinement_goal(job, refinement_goal, memory)
+    effective_goal = _effective_refinement_goal(
+        job, refinement_goal, memory, ui_feedback
+    )
     metadata = {
         "refinement_id": refinement_id,
         "iteration": job.refinement_count + 1,
         "original_title": job.title,
         "original_goal": job.goal,
         "refinement_goal": refinement_goal,
+        "observed_ui_feedback": ui_feedback,
         "current_isolated_worktree": True,
         "previous_attempt_memory": memory,
     }
@@ -144,6 +149,7 @@ def refine_freestyle_job(
         review_completed_at=None,
         review_artifact_path=None,
         review_changed_file_count=0,
+        review_ui_warnings=(),
         review_errors=(),
         checks_status="not_run",
         checks_started_at=None,
@@ -378,10 +384,33 @@ MAX_MEMORY_ARTIFACT_BYTES = 300_000
 MAX_MEMORY_FILES = 20
 
 
+MAX_OBSERVED_UI_FEEDBACK_CHARS = 4_000
+
+
+def _validate_observed_ui_feedback(value: str | None) -> str | None:
+    """Bound optional human-reported runtime/UI feedback; ``None`` when absent."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise FreestyleJobRefusedError("Observed UI feedback must be text.")
+    clean = value.strip()
+    if not clean:
+        return None
+    if "\x00" in clean:
+        raise FreestyleJobRefusedError("Observed UI feedback must not contain NUL bytes.")
+    if len(clean) > MAX_OBSERVED_UI_FEEDBACK_CHARS:
+        raise FreestyleJobRefusedError(
+            "Observed UI feedback exceeds the maximum length of "
+            f"{MAX_OBSERVED_UI_FEEDBACK_CHARS} characters."
+        )
+    return clean
+
+
 def _effective_refinement_goal(
     job: FreestyleJob,
     refinement_goal: str,
     memory: dict[str, Any] | None = None,
+    observed_ui_feedback: str | None = None,
 ) -> str:
     base = (
         "This is a refinement of the current isolated worktree, not a fresh job. "
@@ -390,8 +419,26 @@ def _effective_refinement_goal(
         f"Original job title: {job.title}\n"
         f"Original job goal: {job.goal}\n\n"
     )
+    base += _observed_ui_feedback_section(observed_ui_feedback)
     base += _memory_prompt_section(memory)
     return base + f"New refinement goal: {refinement_goal}"
+
+
+def _observed_ui_feedback_section(observed_ui_feedback: str | None) -> str:
+    """Render human-reported runtime/UI problems as first-class refinement input.
+
+    Kept separate from the refinement goal text so the next attempt treats an
+    observed rendered-UI failure as concrete evidence to fix, not as optional
+    prose buried in the goal.
+    """
+    if not observed_ui_feedback:
+        return ""
+    return (
+        "Observed runtime/UI feedback (reported by a human reviewer after seeing "
+        "the rendered result; treat this as a concrete defect to repair, not as "
+        "optional context):\n"
+        f"{observed_ui_feedback}\n\n"
+    )
 
 
 def _memory_prompt_section(memory: dict[str, Any] | None) -> str:
@@ -416,6 +463,13 @@ def _memory_prompt_section(memory: dict[str, Any] | None) -> str:
             + " ".join(warnings)
             + " Do not repeat those rejected patterns; satisfy the refinement "
             "goal with a real, wired implementation change."
+        )
+    ui_warnings = memory.get("previous_ui_review_warnings") or []
+    if ui_warnings:
+        lines.append(
+            "The previous attempt's rendered UI review flagged: "
+            + " ".join(ui_warnings)
+            + " Fix these rendered-layout/selector problems in this refinement."
         )
     if not lines:
         return ""
@@ -445,10 +499,16 @@ def _previous_attempt_memory(job: FreestyleJob, state: Path) -> dict[str, Any]:
         )
         if isinstance(warning, str) and warning
     ]
+    ui_warnings = [
+        str(warning)[:500]
+        for warning in job.review_ui_warnings
+        if isinstance(warning, str) and warning
+    ]
     return {
         "previous_bundle_touched_files": touched,
         "previous_proposal_likely_files": likely,
         "previous_warnings": warnings,
+        "previous_ui_review_warnings": ui_warnings[:MAX_MEMORY_FILES],
     }
 
 

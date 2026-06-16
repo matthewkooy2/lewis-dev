@@ -50,6 +50,12 @@ from app.dev.freestyle_state import (
     require_no_active_edit_application,
     resolved_roots,
 )
+from app.dev.freestyle_ui_review import (
+    UiSource,
+    classify_web_source,
+    is_static_asset_path,
+    review_ui,
+)
 
 REVIEW_SCHEMA_VERSION = 1
 MAX_REVIEW_CHANGED_FILES = 500
@@ -59,6 +65,16 @@ MAX_REVIEW_DIFF_SNIPPET_BYTES = 12 * 1024
 MAX_REVIEW_TOTAL_DIFF_BYTES = 96 * 1024
 MAX_REVIEW_ARTIFACT_BYTES = 500 * 1024
 _GIT_TIMEOUT_SECONDS = 30
+
+# Bounds for the advisory web-UI review pass.
+MAX_UI_REVIEW_SOURCES = 40
+MAX_UI_STATIC_ASSETS = 300
+MAX_UI_STATIC_SCAN_ENTRIES = 4000
+_UI_ASSET_SUFFIXES = frozenset({".js", ".mjs", ".css"})
+_UI_REVIEW_STATEMENT = (
+    "Web-UI findings are advisory: they never block edit-bundle validation, edit "
+    "application, review, or approval, and no source file was modified."
+)
 
 _REVIEW_GIT_PREFIX = (
     "git",
@@ -173,6 +189,7 @@ def generate_freestyle_review(
         review_completed_at=None,
         review_artifact_path=None,
         review_changed_file_count=0,
+        review_ui_warnings=(),
         review_errors=(),
         updated_at=started_at,
     )
@@ -183,7 +200,13 @@ def generate_freestyle_review(
         current_head = _read_current_head(worktree)
         changed = _read_changed_paths(worktree)
         changed_count = len(changed)
-        artifact = _build_review_artifact(started, worktree, current_head, changed)
+        artifact = _build_review_artifact(
+            started,
+            worktree,
+            current_head,
+            changed,
+            render_local=_is_host_repo(root),
+        )
         artifact_path = _write_review_artifact(artifact, state, started.job_id)
     except Exception as exc:
         failed = replace(
@@ -191,6 +214,7 @@ def generate_freestyle_review(
             review_status="error",
             review_completed_at=_utc_now(),
             review_changed_file_count=changed_count,
+            review_ui_warnings=(),
             review_errors=(_bounded_error(str(exc), "Review generation failed."),),
             updated_at=_utc_now(),
         )
@@ -207,6 +231,7 @@ def generate_freestyle_review(
         review_completed_at=completed_at,
         review_artifact_path=artifact_path,
         review_changed_file_count=changed_count,
+        review_ui_warnings=_artifact_ui_warnings(artifact),
         review_errors=(),
         updated_at=completed_at,
     )
@@ -231,6 +256,7 @@ def _persist_review_failure(
         review_completed_at=completed_at,
         review_artifact_path=None,
         review_changed_file_count=0,
+        review_ui_warnings=(),
         review_errors=(_bounded_error(str(exc), "Review generation failed."),),
         updated_at=completed_at,
     )
@@ -347,6 +373,8 @@ def _build_review_artifact(
     worktree: Path,
     current_head: dict[str, str],
     changed: tuple[_ChangedPath, ...],
+    *,
+    render_local: bool = False,
 ) -> dict[str, Any]:
     if current_head["commit"] != job.base_commit or current_head["branch"] != job.branch:
         raise FreestyleJobRefusedError(
@@ -408,6 +436,9 @@ def _build_review_artifact(
         },
         "diff_snippets": snippets,
         "files_omitted_from_diff_snippets": omissions,
+        "ui_review": _web_ui_review(
+            worktree, current_head["commit"], changed, render_local=render_local
+        ),
         "artifact_references": _artifact_references(job),
         "human_review_checklist": [
             "Confirm every changed file and omission aligns with the approved goal.",
@@ -628,6 +659,214 @@ def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
         "generated_edit_bundle_path": safe_artifact_reference(job.edit_bundle_path),
         "applied_edit_artifact_path": safe_artifact_reference(job.edit_artifact_path),
     }
+
+
+def _is_host_repo(root: Path) -> bool:
+    """Whether ``root`` is the live application checkout.
+
+    Only then does rendering the in-process app correspond to the repository
+    under review, so route rendering is enabled there and skipped for isolated
+    test repositories.
+    """
+    try:
+        return root.resolve() == ROOT_DIR.resolve()
+    except (OSError, ValueError):
+        return False
+
+
+def _artifact_ui_warnings(artifact: dict[str, Any]) -> tuple[str, ...]:
+    ui_review = artifact.get("ui_review")
+    if not isinstance(ui_review, dict):
+        return ()
+    warnings = ui_review.get("warnings")
+    if not isinstance(warnings, list):
+        return ()
+    return tuple(
+        str(warning)[:500] for warning in warnings if isinstance(warning, str) and warning
+    )
+
+
+def _web_ui_review(
+    worktree: Path,
+    head: str,
+    changed: tuple[_ChangedPath, ...],
+    *,
+    render_local: bool,
+) -> dict[str, Any]:
+    """Build the advisory web-UI review section for the artifact.
+
+    Reads only the changed web files (HTML, page-builder Python, CSS, static
+    JS) plus a bounded listing of static assets, optionally enriched with HTML
+    from locally rendered routes. Never mutates the worktree, never blocks the
+    review, and degrades to empty findings on any rendering failure.
+    """
+    sources = _collect_ui_sources(worktree, head, changed)
+    if not sources:
+        return {"warnings": [], "summary": {"web_source_count": 0}, "advisory": True}
+    present_assets = _scan_static_asset_paths(worktree, changed)
+    rendered_pages = _safe_render_local_pages() if render_local else ()
+    result = review_ui(
+        sources,
+        rendered_pages=rendered_pages,
+        present_static_assets=frozenset(present_assets),
+    )
+    return {
+        "warnings": list(result.warnings),
+        "summary": result.summary,
+        "rendered_routes": [page.route for page in rendered_pages],
+        "advisory": True,
+        "statement": _UI_REVIEW_STATEMENT,
+    }
+
+
+def _collect_ui_sources(
+    worktree: Path, head: str, changed: tuple[_ChangedPath, ...]
+) -> list[UiSource]:
+    sources: list[UiSource] = []
+    for item in changed:
+        if len(sources) >= MAX_UI_REVIEW_SOURCES:
+            break
+        if item.status == "deleted" or _path_omission_reason(item.path) is not None:
+            continue
+        current, reason = _read_current_file(worktree, item.path)
+        if current is None or reason is not None:
+            continue
+        try:
+            text = current.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if contains_sensitive_content(text):
+            continue
+        kind = classify_web_source(item.path, text)
+        if kind is None:
+            continue
+        sources.append(
+            UiSource(
+                path=item.path,
+                kind=kind,
+                text=text,
+                status=item.status,
+                added_text=_introduced_text(worktree, head, item, text),
+            )
+        )
+    return sources
+
+
+def _introduced_text(
+    worktree: Path, head: str, item: _ChangedPath, text: str
+) -> str | None:
+    """The lines a modification added, so warnings focus on this change.
+
+    Returns ``None`` (treat the whole file as introduced) for additions or when
+    the base blob is unavailable.
+    """
+    if item.status == "added":
+        return None
+    base, reason = _read_head_blob(worktree, head, item.path)
+    if reason is not None or base is None:
+        return None
+    try:
+        return _added_lines(base.decode("utf-8"), text)
+    except UnicodeDecodeError:
+        return None
+
+
+def _added_lines(before: str, after: str) -> str:
+    after_lines = after.splitlines()
+    matcher = difflib.SequenceMatcher(
+        a=before.splitlines(), b=after_lines, autojunk=False
+    )
+    added: list[str] = []
+    for tag, _before_start, _before_end, after_start, after_end in matcher.get_opcodes():
+        if tag in {"insert", "replace"}:
+            added.extend(after_lines[after_start:after_end])
+    return "\n".join(added)
+
+
+def _scan_static_asset_paths(
+    worktree: Path, changed: tuple[_ChangedPath, ...]
+) -> set[str]:
+    """Bounded, symlink-safe listing of static JS/CSS assets in the worktree."""
+    assets: set[str] = {
+        item.path
+        for item in changed
+        if item.status != "deleted"
+        and _is_ui_asset_path(item.path)
+        and is_static_asset_path(item.path)
+    }
+    try:
+        worktree_resolved = worktree.resolve(strict=True)
+    except (OSError, ValueError):
+        return assets
+    visited = 0
+    for root_dir in _candidate_static_roots(worktree, worktree_resolved, changed):
+        for dirpath, dirnames, filenames in os.walk(root_dir, followlinks=False):
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not (Path(dirpath) / name).is_symlink()
+            ]
+            for name in filenames:
+                visited += 1
+                if (
+                    visited > MAX_UI_STATIC_SCAN_ENTRIES
+                    or len(assets) >= MAX_UI_STATIC_ASSETS
+                ):
+                    return assets
+                file_path = Path(dirpath) / name
+                if file_path.is_symlink() or not _is_ui_asset_path(name):
+                    continue
+                try:
+                    relative = (
+                        file_path.resolve(strict=True)
+                        .relative_to(worktree_resolved)
+                        .as_posix()
+                    )
+                except (OSError, ValueError):
+                    continue
+                assets.add(relative)
+    return assets
+
+
+def _candidate_static_roots(
+    worktree: Path, worktree_resolved: Path, changed: tuple[_ChangedPath, ...]
+) -> list[Path]:
+    candidates = [worktree / "app" / "static", worktree / "static"]
+    for item in changed:
+        parts = PurePosixPath(item.path).parts
+        if "static" in parts:
+            index = parts.index("static")
+            candidates.append(worktree.joinpath(*parts[: index + 1]))
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, ValueError):
+            continue
+        if candidate.is_symlink() or not candidate.is_dir() or resolved in seen:
+            continue
+        try:
+            resolved.relative_to(worktree_resolved)
+        except ValueError:
+            continue
+        seen.add(resolved)
+        roots.append(candidate)
+    return roots
+
+
+def _is_ui_asset_path(path: str) -> bool:
+    return PurePosixPath(path).suffix.casefold() in _UI_ASSET_SUFFIXES
+
+
+def _safe_render_local_pages() -> tuple[Any, ...]:
+    """Render the allowlisted local routes, fail-open to no pages."""
+    try:
+        from app.dev.freestyle_route_render import render_local_pages
+
+        return render_local_pages()
+    except Exception:
+        return ()
 
 
 def _write_review_artifact(
