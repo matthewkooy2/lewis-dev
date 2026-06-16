@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.dev.freestyle_ui_review import (
+    ReferencedJsAsset,
     RenderedPage,
     UI_WARNING_BROKEN_CALENDAR_LAYOUT,
     UI_WARNING_GRID_CONTAINER_WITHOUT_LAYOUT,
@@ -16,6 +17,7 @@ from app.dev.freestyle_ui_review import (
     UiSource,
     classify_web_source,
     review_ui,
+    static_js_reference_candidates,
 )
 
 
@@ -180,13 +182,18 @@ def test_css_selector_typo_not_matching_markup_is_an_orphan():
 
 
 def test_js_referencing_missing_ids_and_classes_is_flagged():
-    html = "<div id='present' class='shown'></div>"
+    html = (
+        "<div id='present' class='shown'></div>"
+        "<script src='/static/s.js'></script>"
+    )
     js = (
         "document.getElementById('missing-panel');"
         "document.querySelector('.absent-row');"
         "document.getElementById('present');"
     )
-    review = review_ui([UiSource("p.html", "html", html), UiSource("s.js", "js", js)])
+    review = review_ui(
+        [UiSource("p.html", "html", html), UiSource("app/static/s.js", "js", js)]
+    )
     missing = [w for w in review.warnings if w.startswith(UI_WARNING_JS_MISSING_TARGETS)]
     assert missing
     assert "#missing-panel" in missing[0]
@@ -245,6 +252,226 @@ def test_external_script_reference_is_not_treated_as_missing_asset():
         ]
     )
     assert not any(w.startswith(UI_WARNING_MISSING_JS_ASSET) for w in review.warnings)
+
+
+def test_referenced_js_emitted_classes_satisfy_css_selectors():
+    html = "<script src='/static/calendar.js'></script>"
+    css = ".cal-day { } .day-number { } .event-chip { }"
+    js = """
+const dayClass = "cal-day";
+day.className = dayClass;
+number.classList.add("day-number");
+chip.setAttribute("class", "event-chip");
+"""
+
+    review = review_ui(
+        [UiSource("p.html", "html", html), UiSource("app/static/lewis.css", "css", css)],
+        present_static_assets=frozenset({"app/static/calendar.js"}),
+        referenced_js_assets=(
+            ReferencedJsAsset("app/static/calendar.js", "/static/calendar.js", js),
+        ),
+    )
+
+    assert not any(w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS) for w in review.warnings)
+    runtime = set(review.summary["runtime_emitted_css_selectors"])
+    assert {".cal-day", ".day-number", ".event-chip"} <= runtime
+    emitted = set(
+        review.summary["js_emitted_selectors_by_asset"]["app/static/calendar.js"]
+    )
+    assert {".cal-day", ".day-number", ".event-chip"} <= emitted
+
+
+def test_unreferenced_js_does_not_suppress_orphan_css_warning():
+    review = review_ui(
+        [
+            UiSource("p.html", "html", "<div></div>"),
+            UiSource("app/static/lewis.css", "css", ".chat-message { color: red; }"),
+            UiSource(
+                "app/static/chat.js",
+                "js",
+                'message.classList.add("chat-message");',
+            ),
+        ]
+    )
+
+    orphan = [w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)]
+    assert orphan
+    assert ".chat-message" in orphan[0]
+
+
+def test_referenced_js_missing_target_warns():
+    review = review_ui(
+        [
+            UiSource("p.html", "html", "<script src='/static/calendar.js'></script>"),
+            UiSource(
+                "app/static/calendar.js",
+                "js",
+                'document.getElementById("cal-grid");',
+            ),
+        ],
+        present_static_assets=frozenset({"app/static/calendar.js"}),
+    )
+
+    missing = [w for w in review.warnings if w.startswith(UI_WARNING_JS_MISSING_TARGETS)]
+    assert missing
+    assert "#cal-grid" in missing[0]
+    assert review.summary["missing_js_targets"] == ["#cal-grid"]
+
+
+def test_referenced_js_existing_target_does_not_warn():
+    review = review_ui(
+        [
+            UiSource(
+                "p.html",
+                "html",
+                "<div id='cal-grid'></div><script src='/static/calendar.js'></script>",
+            ),
+            UiSource(
+                "app/static/calendar.js",
+                "js",
+                'document.getElementById("cal-grid");',
+            ),
+        ],
+        present_static_assets=frozenset({"app/static/calendar.js"}),
+    )
+
+    assert not any(w.startswith(UI_WARNING_JS_MISSING_TARGETS) for w in review.warnings)
+
+
+def test_data_container_is_ignored_for_unstyled_selector_warning():
+    html = (
+        '<script type="application/json" id="calendar-data">{"events":[]}</script>'
+        "<div id='styled'></div>"
+    )
+    review = review_ui(
+        [
+            UiSource("p.html", "html", html),
+            UiSource("app/static/lewis.css", "css", "#styled { display: block; }"),
+        ]
+    )
+
+    assert not any(w.startswith(UI_WARNING_UNSTYLED_SELECTORS) for w in review.warnings)
+    assert "#calendar-data" in review.summary["ignored_data_containers"]
+
+
+def test_visible_unstyled_container_still_warns():
+    review = review_ui(
+        [
+            UiSource("p.html", "html", "<div id='cal-grid'></div>"),
+            UiSource("app/static/lewis.css", "css", ".other { color: red; }"),
+        ]
+    )
+
+    unstyled = [w for w in review.warnings if w.startswith(UI_WARNING_UNSTYLED_SELECTORS)]
+    assert unstyled
+    assert "#cal-grid" in unstyled[0]
+
+
+def test_truly_orphan_css_still_warns():
+    review = review_ui(
+        [
+            UiSource("p.html", "html", "<div></div>"),
+            UiSource("app/static/lewis.css", "css", ".never-emitted { color: red; }"),
+            UiSource(
+                "app/static/calendar.js",
+                "js",
+                'cell.className = "something-else";',
+            ),
+        ]
+    )
+
+    orphan = [w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)]
+    assert orphan
+    assert ".never-emitted" in orphan[0]
+    assert review.summary["true_orphan_css_selectors"] == [".never-emitted"]
+
+
+def test_safe_static_reference_candidates_reject_unsafe_script_urls():
+    assert static_js_reference_candidates("/static/calendar.js?v=123#month") == (
+        "app/static/calendar.js",
+        "static/calendar.js",
+    )
+    assert static_js_reference_candidates("app/static/calendar.js") == (
+        "app/static/calendar.js",
+    )
+    assert static_js_reference_candidates("https://example.com/x.js") == ()
+    assert static_js_reference_candidates("//example.com/x.js") == ()
+    assert static_js_reference_candidates("/static/../secret.js") == ()
+    assert static_js_reference_candidates("/not-static/x.js") == ()
+    assert static_js_reference_candidates("/static/calendar.css") == ()
+
+    review = review_ui(
+        [
+            UiSource(
+                "p.html",
+                "html",
+                "<script src='/static/calendar.js?v=123#month'></script>",
+            )
+        ],
+        present_static_assets=frozenset({"app/static/calendar.js"}),
+    )
+    assert not any(w.startswith(UI_WARNING_MISSING_JS_ASSET) for w in review.warnings)
+
+
+def test_calendar_style_js_rendered_selectors_are_not_reported_as_orphans():
+    html = """
+<script type="application/json" id="calendar-data">{"events":[]}</script>
+<div id="calendar-root"></div>
+<script src="/static/calendar.js"></script>
+"""
+    css = """
+#calendar-root { display: block; }
+.cal-day { border: 1px solid #ddd; }
+.day-number { font-weight: 700; }
+.event-chip { border-radius: 4px; }
+.agenda-event { padding: 8px; }
+.agenda-event-title { font-weight: 700; }
+.agenda-event-time { color: #555; }
+.agenda-event-location { color: #555; }
+.agenda-event-description { color: #333; }
+"""
+    js = """
+JSON.parse(document.getElementById("calendar-data").textContent);
+document.getElementById("cal-grid");
+day.className = "cal-day";
+number.classList.add("day-number");
+chip.setAttribute("class", "event-chip");
+agenda.innerHTML = `
+  <article class="agenda-event">
+    <h3 class="agenda-event-title"></h3>
+    <time class="agenda-event-time"></time>
+    <p class="agenda-event-location"></p>
+    <p class="agenda-event-description"></p>
+  </article>
+`;
+"""
+
+    review = review_ui(
+        [
+            UiSource("p.html", "html", html),
+            UiSource("app/static/lewis.css", "css", css),
+            UiSource("app/static/calendar.js", "js", js),
+        ],
+        present_static_assets=frozenset({"app/static/calendar.js"}),
+    )
+
+    text = "\n".join(review.warnings)
+    assert UI_WARNING_ORPHAN_CSS_SELECTORS not in _codes(review.warnings)
+    assert "#calendar-data" not in text
+    assert "#calendar-data" in review.summary["ignored_data_containers"]
+    assert any(w.startswith(UI_WARNING_JS_MISSING_TARGETS) for w in review.warnings)
+    assert "#cal-grid" in text
+    runtime = set(review.summary["runtime_emitted_css_selectors"])
+    assert {
+        ".cal-day",
+        ".day-number",
+        ".event-chip",
+        ".agenda-event",
+        ".agenda-event-title",
+        ".agenda-event-time",
+        ".agenda-event-location",
+        ".agenda-event-description",
+    } <= runtime
 
 
 # --------------------------------------------------------------------------- #

@@ -285,7 +285,9 @@ def build_implementation_plan(
     )
     primary_feature = _primary_feature(surfaces, goal, title)
     primary_routes = _bounded_paths(surfaces.get("primary_routes"))
-    expected = _expected_files(task_type, intake, surfaces, mem, forbidden)
+    expected = _expected_files(
+        task_type, intake, surfaces, mem, forbidden, context_plan
+    )
     inspection = _inspection_requirements(task_type, failed, surfaces, forbidden, mem)
     recommended, steps = _strategy(task_type, failed, surfaces, intake)
     context_recommendations = _context_recommendations(
@@ -316,7 +318,7 @@ def build_implementation_plan(
         recommended_strategy=recommended,
         strategy_steps=steps,
         inspection_requirements=inspection,
-        validation_plan=_validation_plan(intake, surfaces),
+        validation_plan=_validation_plan(intake, surfaces, expected),
         context_recommendations=context_recommendations,
         warnings=warnings,
     )
@@ -684,6 +686,7 @@ def _expected_files(
     surfaces: Mapping[str, object],
     memory: Mapping[str, object],
     forbidden: Sequence[str],
+    context_plan: ContextPlan | None,
 ) -> tuple[str, ...]:
     ordered: list[str] = list(_bounded_paths(intake.get("named_implementation_files")))
     if task_type in {TASK_WEB_UI_FEATURE, TASK_WEB_UI_REPAIR}:
@@ -695,6 +698,9 @@ def _expected_files(
     elif task_type == TASK_TEST_UPDATE:
         ordered.extend(_bounded_paths(intake.get("named_test_files")))
         ordered.extend(_bounded_paths(surfaces.get("tests")))
+    elif task_type == TASK_REPO_MAP_OR_FREESTYLE_MACHINERY:
+        ordered.extend(_exact_freestyle_priority_paths(context_plan))
+        ordered.extend(_bounded_paths(surfaces.get("connected_files")))
     else:
         ordered.extend(_bounded_paths(surfaces.get("connected_files")))
     ordered.extend(_bounded_paths(memory.get("previous_proposal_likely_files")))
@@ -854,12 +860,15 @@ def _plan_warnings(
 
 
 def _validation_plan(
-    intake: Mapping[str, object], surfaces: Mapping[str, object]
+    intake: Mapping[str, object],
+    surfaces: Mapping[str, object],
+    expected: Sequence[str],
 ) -> dict[str, object]:
     tests = _dedupe_paths(
         [
             *_bounded_paths(surfaces.get("tests")),
             *_bounded_paths(intake.get("named_test_files")),
+            *(path for path in expected if is_test_path(path)),
         ]
     )
     return {
@@ -952,6 +961,18 @@ def _strategy_mentions_wiring(strategy: object) -> bool:
         return False
     lowered = strategy.casefold()
     return "wiring" in lowered or ("dom" in lowered and "css" in lowered)
+
+
+def _exact_freestyle_priority_paths(context_plan: ContextPlan | None) -> tuple[str, ...]:
+    if context_plan is None:
+        return ()
+    paths = [
+        pattern
+        for pattern in context_plan.priority_patterns
+        if "*" not in pattern
+        and pattern.startswith(("app/dev/freestyle_", "app/dev/repo_map", "tests/"))
+    ]
+    return _dedupe_paths(paths)
 
 
 def _intents(intake: Mapping[str, object]) -> frozenset[str]:

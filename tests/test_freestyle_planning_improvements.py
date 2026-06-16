@@ -177,6 +177,40 @@ def test_named_target_budget_omission_still_refuses_before_deepseek():
         _require_goal_grounded_context(context)
 
 
+def test_plan_recommended_paths_stay_advisory_not_named_budget_blockers():
+    from app.dev.freestyle_proposal import (
+        ProposalContext,
+        _plan_recommendation_section,
+        _require_goal_grounded_context,
+    )
+
+    section = _plan_recommendation_section(
+        ["app/dev/freestyle_ui_review.py"],
+        included_paths=[],
+        candidate_paths=["app/dev/freestyle_ui_review.py"],
+    )
+    context = ProposalContext(
+        files=(),
+        omitted_files=(
+            {"path": "app/dev/freestyle_ui_review.py", "reason": "file_count_limit"},
+        ),
+        omission_counts={},
+        included_char_count=0,
+        scanned_file_count=1,
+        context_plan={
+            "detected_goal_categories": ["freestyle_internal"],
+            "named_target_files": {"omitted_due_to_budget": []},
+            "implementation_plan": section,
+        },
+    )
+
+    assert section["advisory_only"] is True
+    assert section["omitted_recommended_files_in_budget"] == [
+        "app/dev/freestyle_ui_review.py"
+    ]
+    _require_goal_grounded_context(context)
+
+
 # --------------------------------------------------------------------------- #
 # Intent classification and intake.
 # --------------------------------------------------------------------------- #

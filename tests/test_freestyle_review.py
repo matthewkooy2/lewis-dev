@@ -486,6 +486,38 @@ def test_healthy_calendar_web_files_produce_no_ui_warnings(tmp_path):
     assert completed.review_ui_warnings == ()
 
 
+def test_ui_review_reads_referenced_unchanged_static_js_for_selector_reconciliation(
+    tmp_path,
+):
+    root = _init_repo(tmp_path)
+    (root / "app" / "static").mkdir(parents=True, exist_ok=True)
+    (root / "app" / "static" / "calendar.js").write_text(
+        'day.className = "cal-day";\n', encoding="utf-8"
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "add calendar js")
+    job = _materialized_job(root)
+    worktree = Path(job.worktree_path)
+    (worktree / "app" / "calendar_page.py").write_text(
+        "HTML = \"<script src='/static/calendar.js?v=123'></script>\"\n",
+        encoding="utf-8",
+    )
+    (worktree / "app" / "static" / "lewis.css").write_text(
+        ".cal-day { color: red; }\n", encoding="utf-8"
+    )
+
+    completed = review_freestyle_job(job.job_id, project_root=root)
+    artifact = _artifact(root, completed)
+    ui_review = artifact["ui_review"]
+
+    assert not any(
+        warning.startswith("UI_REVIEW_ORPHAN_CSS_SELECTORS")
+        for warning in ui_review["warnings"]
+    )
+    assert ui_review["summary"]["referenced_js_assets"] == ["app/static/calendar.js"]
+    assert ui_review["summary"]["runtime_emitted_css_selectors"] == [".cal-day"]
+
+
 def test_non_web_changes_carry_an_empty_ui_review(tmp_path):
     root = _init_repo(tmp_path)
     job = _materialized_job(root)

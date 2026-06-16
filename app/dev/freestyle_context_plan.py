@@ -192,6 +192,7 @@ _FREESTYLE_ACTION_TERMS = frozenset(
         "fix",
         "harden",
         "implement",
+        "improve",
         "modify",
         "repair",
         "refactor",
@@ -231,6 +232,65 @@ _CLAUSE_SPLIT_PATTERN = re.compile(
     r"[;\n]+|\.\s+|\.$|\s+(?:but|while|however|yet|though|although)\s+",
     re.IGNORECASE,
 )
+_DYNAMIC_FEATURE_TERM_STOPWORDS = frozenset(
+    {
+        "absent",
+        "actually",
+        "also",
+        "advisory",
+        "after",
+        "again",
+        "because",
+        "before",
+        "called",
+        "class",
+        "classes",
+        "could",
+        "every",
+        "false",
+        "falsely",
+        "from",
+        "generated",
+        "have",
+        "instead",
+        "into",
+        "like",
+        "only",
+        "orphan",
+        "play",
+        "please",
+        "render",
+        "rendered",
+        "rendering",
+        "selector",
+        "selectors",
+        "server",
+        "should",
+        "static",
+        "test",
+        "tests",
+        "than",
+        "that",
+        "their",
+        "there",
+        "these",
+        "this",
+        "those",
+        "treating",
+        "understand",
+        "understands",
+        "warning",
+        "warnings",
+        "when",
+        "where",
+        "with",
+        "without",
+        "work",
+        "works",
+        "would",
+    }
+)
+MAX_DYNAMIC_FEATURE_TERMS = 4
 
 # Per-category high-priority include patterns, most relevant first. Matching
 # uses casefolded fnmatch on full relative POSIX paths, so "*" may cross "/".
@@ -268,6 +328,69 @@ _PRIORITY_PATTERNS: dict[str, tuple[str, ...]] = {
     "config": ("pyproject.toml", "setup.cfg", "app/config.py", "*.toml", "*.cfg"),
     "freestyle_internal": ("app/dev/freestyle_*.py", "tests/test_freestyle_*.py"),
     DEFAULT_GOAL_CATEGORY: (),
+}
+_FREESTYLE_SUBSYSTEM_PRIORITY_PATTERNS: dict[str, tuple[str, ...]] = {
+    "ui_review": (
+        "app/dev/freestyle_ui_review.py",
+        "tests/test_freestyle_ui_review.py",
+        "app/dev/freestyle_route_render.py",
+        "tests/test_freestyle_route_render.py",
+        "app/dev/repo_map_extract.py",
+    ),
+    "route_render": (
+        "app/dev/freestyle_route_render.py",
+        "tests/test_freestyle_route_render.py",
+    ),
+    "implementation_planner": (
+        "app/dev/freestyle_implementation_plan.py",
+        "tests/test_freestyle_implementation_plan.py",
+        "tests/test_freestyle_planning_improvements.py",
+    ),
+    "repo_map": (
+        "app/dev/repo_map.py",
+        "app/dev/repo_map_context.py",
+        "app/dev/repo_map_extract.py",
+        "tests/test_repo_map.py",
+        "tests/test_freestyle_repo_map_context.py",
+    ),
+    "edit_bundle": (
+        "app/dev/freestyle_edit_bundle.py",
+        "tests/test_freestyle_edit_bundle.py",
+        "app/dev/freestyle_edit_generation.py",
+        "tests/test_freestyle_edit_generation.py",
+    ),
+}
+_FREESTYLE_SUBSYSTEM_PATHS = {
+    "freestyle_ui_review.py": "ui_review",
+    "app/dev/freestyle_ui_review.py": "ui_review",
+    "test_freestyle_ui_review.py": "ui_review",
+    "tests/test_freestyle_ui_review.py": "ui_review",
+    "freestyle_route_render.py": "route_render",
+    "app/dev/freestyle_route_render.py": "route_render",
+    "test_freestyle_route_render.py": "route_render",
+    "tests/test_freestyle_route_render.py": "route_render",
+    "freestyle_implementation_plan.py": "implementation_planner",
+    "app/dev/freestyle_implementation_plan.py": "implementation_planner",
+    "test_freestyle_implementation_plan.py": "implementation_planner",
+    "tests/test_freestyle_implementation_plan.py": "implementation_planner",
+    "repo_map.py": "repo_map",
+    "app/dev/repo_map.py": "repo_map",
+    "repo_map_context.py": "repo_map",
+    "app/dev/repo_map_context.py": "repo_map",
+    "repo_map_extract.py": "repo_map",
+    "app/dev/repo_map_extract.py": "repo_map",
+    "test_repo_map.py": "repo_map",
+    "tests/test_repo_map.py": "repo_map",
+    "test_freestyle_repo_map_context.py": "repo_map",
+    "tests/test_freestyle_repo_map_context.py": "repo_map",
+    "freestyle_edit_bundle.py": "edit_bundle",
+    "app/dev/freestyle_edit_bundle.py": "edit_bundle",
+    "test_freestyle_edit_bundle.py": "edit_bundle",
+    "tests/test_freestyle_edit_bundle.py": "edit_bundle",
+    "freestyle_edit_generation.py": "edit_bundle",
+    "app/dev/freestyle_edit_generation.py": "edit_bundle",
+    "test_freestyle_edit_generation.py": "edit_bundle",
+    "tests/test_freestyle_edit_generation.py": "edit_bundle",
 }
 
 # Patterns naming test files: ranked after every implementation pattern for
@@ -351,11 +474,14 @@ def plan_context(
     text = _classification_text(goal, title)
     terms = _classification_terms_from_text(text)
     subject_terms = _task_subject_terms(terms)
-    freestyle_internal = _freestyle_internal_requested(text)
+    subsystem_patterns = _freestyle_subsystem_priority_patterns(text)
+    subsystem_requested = bool(subsystem_patterns)
+    freestyle_internal = _freestyle_internal_requested(text) or subsystem_requested
     detected = tuple(
         category
         for category in _CATEGORY_ORDER
         if category != DEFAULT_GOAL_CATEGORY
+        and not (subsystem_requested and category in {"web_ui", "tests"})
         and (
             (
                 category != "freestyle_internal"
@@ -367,6 +493,7 @@ def plan_context(
     if not detected:
         detected = (DEFAULT_GOAL_CATEGORY,)
     patterns: list[str] = []
+    patterns.extend(subsystem_patterns)
     for category in detected:
         for pattern in _priority_patterns_for_category(category, subject_terms):
             if pattern not in patterns:
@@ -666,14 +793,16 @@ def _task_subject_terms(terms: frozenset[str]) -> frozenset[str]:
     category_terms = frozenset().union(
         *(keywords for key, keywords in _CATEGORY_KEYWORDS.items() if key != "tests")
     )
-    return frozenset(
+    filtered = (
         term
         for term in terms
         if len(term) >= 4
         and term not in category_terms
         and term not in _PROCESS_META_TERMS
         and term not in _GENERIC_TASK_TERMS
+        and term not in _DYNAMIC_FEATURE_TERM_STOPWORDS
     )
+    return frozenset(sorted(filtered)[:MAX_DYNAMIC_FEATURE_TERMS])
 
 
 def _priority_patterns_for_category(
@@ -727,6 +856,91 @@ def _feature_test_patterns(subject_terms: frozenset[str]) -> tuple[str, ...]:
             )
         )
     return tuple(patterns)
+
+
+def _freestyle_subsystem_priority_patterns(text: str) -> tuple[str, ...]:
+    keys = _freestyle_subsystem_keys(text)
+    patterns: list[str] = []
+    for key in keys:
+        patterns.extend(_FREESTYLE_SUBSYSTEM_PRIORITY_PATTERNS[key])
+    return tuple(dict.fromkeys(patterns))
+
+
+def _freestyle_subsystem_keys(text: str) -> tuple[str, ...]:
+    keys: list[str] = []
+    for path in (*extract_named_paths(text), *extract_named_basenames(text)):
+        key = _FREESTYLE_SUBSYSTEM_PATHS.get(path.casefold())
+        if key is not None:
+            keys.append(key)
+    for clause in _actionable_freestyle_subsystem_clauses(text):
+        keys.extend(_freestyle_subsystem_keys_from_clause(clause))
+    return tuple(dict.fromkeys(keys))
+
+
+def _actionable_freestyle_subsystem_clauses(text: str) -> tuple[str, ...]:
+    clauses: list[str] = []
+    for clause in _CLAUSE_SPLIT_PATTERN.split(text):
+        lowered = clause.casefold()
+        if not lowered.strip():
+            continue
+        if any(marker in lowered for marker in _NEGATED_PROCESS_MARKERS):
+            continue
+        if any(marker in lowered for marker in _META_PROCESS_CLAUSE_MARKERS):
+            continue
+        terms = _classification_terms_from_text(lowered)
+        has_action = not _FREESTYLE_ACTION_TERMS.isdisjoint(terms)
+        has_explicit_ui_review_code = "ui_review_" in lowered
+        has_rendered_ui_review = {"rendered", "ui", "review"} <= terms
+        has_ui_review = {"ui", "review"} <= terms and (
+            "freestyle" in terms or "rendered" in terms
+        )
+        has_route_render = {"route", "render"} <= terms or {
+            "route",
+            "renderer",
+        } <= terms
+        has_implementation_planner = "implementation" in terms and (
+            "planner" in terms or "planning" in terms or "plan" in terms
+        )
+        has_repo_map = {"repo", "map"} <= terms and (
+            has_action or "context" not in terms
+        )
+        has_edit_bundle = {"edit", "bundle"} <= terms
+        if (
+            has_action
+            or has_explicit_ui_review_code
+            or has_rendered_ui_review
+            or has_ui_review
+            or has_route_render
+            or has_implementation_planner
+            or has_repo_map
+            or has_edit_bundle
+        ):
+            clauses.append(lowered)
+    return tuple(clauses)
+
+
+def _freestyle_subsystem_keys_from_clause(clause: str) -> tuple[str, ...]:
+    terms = _classification_terms_from_text(clause)
+    keys: list[str] = []
+    if (
+        "ui_review_" in clause
+        or (
+            {"ui", "review"} <= terms
+            and ("freestyle" in terms or "rendered" in terms)
+        )
+    ):
+        keys.append("ui_review")
+    if {"route", "render"} <= terms or {"route", "renderer"} <= terms:
+        keys.append("route_render")
+    if "implementation" in terms and (
+        "planner" in terms or "planning" in terms or "plan" in terms
+    ):
+        keys.append("implementation_planner")
+    if {"repo", "map"} <= terms:
+        keys.append("repo_map")
+    if {"edit", "bundle"} <= terms:
+        keys.append("edit_bundle")
+    return tuple(keys)
 
 
 def _freestyle_internal_requested(text: str) -> bool:

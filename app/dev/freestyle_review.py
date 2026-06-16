@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
-from typing import Any
+from typing import Any, Sequence
 import uuid
 
 from app.code_proposal_path_safety import (
@@ -52,10 +52,16 @@ from app.dev.freestyle_state import (
     resolved_roots,
 )
 from app.dev.freestyle_ui_review import (
+    KIND_HTML,
+    KIND_JS,
+    KIND_PYTHON_MARKUP,
+    ReferencedJsAsset,
     UiSource,
     classify_web_source,
     is_static_asset_path,
+    referenced_static_js_srcs,
     review_ui,
+    static_js_reference_candidates,
 )
 
 REVIEW_SCHEMA_VERSION = 1
@@ -864,10 +870,14 @@ def _web_ui_review(
         return {"warnings": [], "summary": {"web_source_count": 0}, "advisory": True}
     present_assets = _scan_static_asset_paths(worktree, changed)
     rendered_pages = _safe_render_local_pages() if render_local else ()
+    referenced_js_assets = _collect_referenced_js_assets(
+        worktree, sources, rendered_pages
+    )
     result = review_ui(
         sources,
         rendered_pages=rendered_pages,
         present_static_assets=frozenset(present_assets),
+        referenced_js_assets=referenced_js_assets,
     )
     return {
         "warnings": list(result.warnings),
@@ -909,6 +919,50 @@ def _collect_ui_sources(
             )
         )
     return sources
+
+
+def _collect_referenced_js_assets(
+    worktree: Path,
+    sources: Sequence[UiSource],
+    rendered_pages: Sequence[Any],
+) -> tuple[ReferencedJsAsset, ...]:
+    """Read same-app static JS assets referenced by the rendered/markup HTML."""
+    markup_texts = [
+        source.text
+        for source in sources
+        if source.kind in (KIND_HTML, KIND_PYTHON_MARKUP)
+    ] + [str(getattr(page, "html", "")) for page in rendered_pages]
+    source_by_path = {
+        source.path: source
+        for source in sources
+        if source.kind == KIND_JS and source.status != "deleted"
+    }
+    assets: list[ReferencedJsAsset] = []
+    seen: set[str] = set()
+    for src in referenced_static_js_srcs(markup_texts):
+        for candidate in static_js_reference_candidates(src):
+            if candidate in seen:
+                continue
+            source = source_by_path.get(candidate)
+            if source is not None:
+                assets.append(
+                    ReferencedJsAsset(path=source.path, src=src, text=source.text)
+                )
+                seen.add(candidate)
+                break
+            current, reason = _read_current_file(worktree, candidate)
+            if current is None or reason is not None:
+                continue
+            try:
+                text = current.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if contains_sensitive_content(text):
+                continue
+            assets.append(ReferencedJsAsset(path=candidate, src=src, text=text))
+            seen.add(candidate)
+            break
+    return tuple(assets)
 
 
 def _introduced_text(

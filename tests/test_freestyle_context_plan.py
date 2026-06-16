@@ -14,6 +14,7 @@ from app.dev.freestyle_context_plan import (
     PLAN_WARNING_NO_UI_FILES,
     UI_CONTEXT_GAP_MESSAGE,
     goal_fit_warnings,
+    is_named_target,
     is_test_pattern,
     plan_context,
     priority_rank,
@@ -24,6 +25,11 @@ from app.dev.freestyle_context_plan import (
 _TETRIS_GOAL = (
     "I would like you to add a new Tab under 'overview' called "
     '"Shennanigans" where I can play tetris'
+)
+_FREESTYLE_RENDERED_UI_REVIEW_GOAL = (
+    "Improve Freestyle rendered UI review so it understands JS-generated "
+    "DOM/classes instead of falsely treating every CSS selector absent from "
+    "server-rendered HTML as an orphan."
 )
 
 
@@ -68,6 +74,86 @@ def test_classification_is_deterministic_and_canonically_ordered():
 def test_freestyle_goals_keep_freestyle_internals_undemoted():
     assert plan_context("Refactor the freestyle proposal slice.").demote_freestyle_internals is False
     assert plan_context("Add a settings page tab.").demote_freestyle_internals is True
+
+
+def test_freestyle_ui_review_goal_uses_subsystem_surface_not_web_ui_globs():
+    plan = plan_context(_FREESTYLE_RENDERED_UI_REVIEW_GOAL)
+
+    assert plan.goal_categories == ("freestyle_internal",)
+    assert priority_rank("app/dev/freestyle_ui_review.py", plan) == 0
+    assert priority_rank("tests/test_freestyle_ui_review.py", plan) == 1
+    assert priority_rank("app/web_pages.py", plan) is None
+    assert priority_rank("app/static/lewis.css", plan) is None
+
+
+def test_freestyle_ui_review_goal_does_not_expand_ordinary_prose_words():
+    plan = plan_context(_FREESTYLE_RENDERED_UI_REVIEW_GOAL)
+    patterns = set(plan.priority_patterns)
+
+    for word in (
+        "absent",
+        "actually",
+        "advisory",
+        "orphan",
+        "rendered",
+        "class",
+        "selector",
+        "static",
+    ):
+        assert f"app/static/*{word}*.js" not in patterns
+        assert f"app/static/*{word}*.css" not in patterns
+        assert f"templates/*{word}*.html" not in patterns
+        assert f"tests/test_*{word}*.py" not in patterns
+
+
+def test_freestyle_implementation_planner_goal_uses_planner_surface():
+    plan = plan_context(
+        "Improve Freestyle implementation planner context recommendations.",
+        title="Implementation planner",
+    )
+
+    assert plan.goal_categories == ("freestyle_internal",)
+    assert priority_rank("app/dev/freestyle_implementation_plan.py", plan) == 0
+    assert priority_rank("tests/test_freestyle_implementation_plan.py", plan) == 1
+    assert priority_rank("tests/test_freestyle_planning_improvements.py", plan) == 2
+
+
+@pytest.mark.parametrize(
+    ("goal", "module", "test_file"),
+    [
+        (
+            "route render",
+            "app/dev/freestyle_route_render.py",
+            "tests/test_freestyle_route_render.py",
+        ),
+        (
+            "repo map",
+            "app/dev/repo_map.py",
+            "tests/test_repo_map.py",
+        ),
+        (
+            "edit bundle",
+            "app/dev/freestyle_edit_bundle.py",
+            "tests/test_freestyle_edit_bundle.py",
+        ),
+    ],
+)
+def test_freestyle_subsystem_phrases_use_focused_surfaces(goal, module, test_file):
+    plan = plan_context(goal)
+
+    assert plan.goal_categories == ("freestyle_internal",)
+    assert priority_rank(module, plan) == 0
+    assert priority_rank(test_file, plan) is not None
+    assert priority_rank("app/web_pages.py", plan) is None
+
+
+def test_literal_repo_paths_remain_named_targets_with_subsystem_recommendations():
+    plan = plan_context(
+        "Improve Freestyle rendered UI review and inspect app/static/orphan.js."
+    )
+
+    assert is_named_target("app/static/orphan.js", plan)
+    assert priority_rank("app/dev/freestyle_ui_review.py", plan) == 0
 
 
 @pytest.mark.parametrize(

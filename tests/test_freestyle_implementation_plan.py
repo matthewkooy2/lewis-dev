@@ -202,6 +202,42 @@ def test_actual_freestyle_goal_is_machinery():
     assert plan.task_type == TASK_REPO_MAP_OR_FREESTYLE_MACHINERY
 
 
+def test_freestyle_ui_review_plan_recommends_subsystem_module_and_test():
+    plan = _plan(
+        "Improve Freestyle rendered UI review so it understands JS-generated "
+        "DOM/classes instead of falsely treating every CSS selector absent from "
+        "server-rendered HTML as an orphan.",
+        title="Rendered UI review",
+    )
+    art = plan.to_artifact()
+
+    assert art["task_type"] == TASK_REPO_MAP_OR_FREESTYLE_MACHINERY
+    assert "app/dev/freestyle_ui_review.py" in art["expected_files"]
+    assert "tests/test_freestyle_ui_review.py" in art["expected_files"]
+    assert "app/dev/freestyle_ui_review.py" in plan.context_recommendation_paths
+    assert art["validation_plan"]["tests_to_run"] == [
+        "tests/test_freestyle_ui_review.py",
+        "tests/test_freestyle_route_render.py",
+    ]
+
+
+def test_freestyle_implementation_planner_plan_recommends_planner_test():
+    plan = _plan(
+        "Improve Freestyle implementation planner context recommendations.",
+        title="Implementation planner",
+    )
+    art = plan.to_artifact()
+
+    assert art["task_type"] == TASK_REPO_MAP_OR_FREESTYLE_MACHINERY
+    assert "app/dev/freestyle_implementation_plan.py" in art["expected_files"]
+    assert "tests/test_freestyle_implementation_plan.py" in art["expected_files"]
+    assert "tests/test_freestyle_planning_improvements.py" in art["expected_files"]
+    assert art["validation_plan"]["tests_to_run"] == [
+        "tests/test_freestyle_implementation_plan.py",
+        "tests/test_freestyle_planning_improvements.py",
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Refinement planning + failed-strategy detection.
 # --------------------------------------------------------------------------- #
