@@ -56,6 +56,10 @@ from app.dev.freestyle_edit_bundle import (
     edit_bundle_schema_for_prompt,
     validate_edit_bundle_bytes,
 )
+from app.dev.freestyle_implementation_plan import (
+    ImplementationPlan,
+    summarize_implementation_plan,
+)
 from app.dev.freestyle_intake import build_intake_summary
 from app.dev.freestyle_policy import (
     approval_edit_refusal,
@@ -80,6 +84,8 @@ from app.dev.freestyle_proposal import (
     _safe_suggested_path,
     _ui_goal_guidance,
     _validate_deepseek_config,
+    _write_implementation_plan_artifact,
+    build_job_implementation_plan,
     build_proposal_context,
     safe_response_envelope,
 )
@@ -132,7 +138,12 @@ _SYSTEM_PROMPT = (
     "their exact old_text regions do not overlap; each create_file, "
     "replace_file, or delete_file must be the only operation for its path. "
     "Prefer minimal targeted replace_text edits, and avoid whole-file "
-    "replace_file rewrites, especially for files that reference approval code."
+    "replace_file rewrites, especially for files that reference approval code. "
+    "Follow the supplied implementation_plan: target its expected_files, avoid "
+    "its forbidden_files and non_goals, apply its recommended_strategy and "
+    "inspection_requirements, and do not repeat any listed "
+    "failed_strategy_patterns (for example, do not produce another CSS-only "
+    "change when a prior css_only_patch already failed)."
 )
 
 
@@ -203,6 +214,8 @@ def generate_edit_bundle(
     )
     generation_id = uuid.uuid4().hex[:16]
     context: ProposalContext | None = None
+    implementation_plan: ImplementationPlan | None = None
+    implementation_plan_artifact_path: str | None = None
     response: Any | None = None
     validation_status = "not_validated"
     prompt_job = replace(started, goal=prompt_job.goal, title=prompt_job.title)
@@ -222,6 +235,14 @@ def generate_edit_bundle(
         _validate_deepseek_config(config)
         preferred_paths = tuple(proposal["likely_files_to_edit"])
         repo_map, repo_map_provenance = _resolve_repo_map(worktree, root, state)
+        implementation_plan = build_job_implementation_plan(
+            prompt_job,
+            plan=plan,
+            repo_map=repo_map,
+            repo_map_provenance=repo_map_provenance,
+            artifact_metadata=artifact_metadata,
+            created_at=_utc_now(),
+        )
         context = build_proposal_context(
             worktree,
             prompt_job.goal,
@@ -230,6 +251,7 @@ def generate_edit_bundle(
             plan=plan,
             repo_map=repo_map,
             repo_map_provenance=repo_map_provenance,
+            plan_recommended_paths=implementation_plan.context_recommendation_paths,
         )
         if not context.files:
             raise FreestyleJobRefusedError(
@@ -241,10 +263,16 @@ def generate_edit_bundle(
             prompt_job.goal,
         )
         context, user_prompt = _fit_prompt(
-            prompt_job, proposal, context, plan, anchor_snippets
+            prompt_job, proposal, context, plan, anchor_snippets, implementation_plan
         )
         prompt_char_count = len(user_prompt) + len(_system_prompt(plan))
         _require_goal_grounded_context(context)
+        implementation_plan_artifact_path = _write_implementation_plan_artifact(
+            implementation_plan,
+            state,
+            started.job_id,
+            f"{generation_id}-implementation-plan.json",
+        )
         client = deepseek_client or create_deepseek_client(
             api_key=config.api_key,
             base_url=config.base_url,
@@ -364,6 +392,7 @@ def generate_edit_bundle(
             attempts=attempts,
             normalization=capture.get("normalization"),
             anchor_metadata=anchor_metadata,
+            implementation_plan=implementation_plan,
         )
         artifact["response_diagnostics"] = _response_diagnostics(
             response,
@@ -407,6 +436,7 @@ def generate_edit_bundle(
                 attempts=attempts,
                 normalization=capture.get("normalization"),
                 anchor_metadata=anchor_metadata,
+                implementation_plan=implementation_plan,
             )
             artifact["response_diagnostics"] = _response_diagnostics(
                 response,
@@ -439,6 +469,7 @@ def generate_edit_bundle(
             edit_bundle_semantic_warnings=(),
             edit_generation_model=_safe_model_name(getattr(config, "model", None)),
             edit_generation_errors=tuple(errors[:MAX_GENERATION_ARTIFACT_ERRORS]),
+            implementation_plan_artifact_path=implementation_plan_artifact_path,
             updated_at=completed_at,
         )
         _write_job(failed, state)
@@ -459,6 +490,7 @@ def generate_edit_bundle(
         edit_bundle_semantic_warnings=semantic_warnings,
         edit_generation_model=config.model,
         edit_generation_errors=(),
+        implementation_plan_artifact_path=implementation_plan_artifact_path,
         updated_at=completed_at,
     )
     _write_job(completed, state)
@@ -595,12 +627,18 @@ def _fit_prompt(
     context: ProposalContext,
     plan: ContextPlan,
     anchor_snippets: list[dict[str, str]],
+    implementation_plan: ImplementationPlan | None = None,
 ) -> tuple[ProposalContext, str]:
     files = list(context.files)
     omitted = list(context.omitted_files)
     omission_counts = Counter(context.omission_counts)
     schema = edit_bundle_schema_for_prompt()
     system_prompt = _system_prompt(plan)
+    plan_section = (
+        implementation_plan.prompt_section()
+        if implementation_plan is not None
+        else None
+    )
     priority_candidate_count = (
         context.context_plan.get("priority_candidate_count", 0)
         if context.context_plan is not None
@@ -611,6 +649,7 @@ def _fit_prompt(
             "job_id": job.job_id,
             "goal": job.goal,
             "goal_categories": list(plan.goal_categories),
+            "implementation_plan": plan_section,
             "proposal_summary": proposal,
             "safe_isolated_worktree_files": files,
             "exact_anchor_snippets": anchor_snippets,
@@ -1068,6 +1107,7 @@ def _build_generation_artifact(
     attempts: list[dict[str, Any]],
     normalization: dict[str, Any] | None,
     anchor_metadata: dict[str, Any] | None,
+    implementation_plan: ImplementationPlan | None = None,
 ) -> dict[str, Any]:
     context_summary = {
         "scanned_file_count": context.scanned_file_count if context is not None else 0,
@@ -1122,6 +1162,11 @@ def _build_generation_artifact(
             }
         ),
         "context_plan": context.context_plan if context is not None else None,
+        "implementation_plan": (
+            summarize_implementation_plan(implementation_plan.to_artifact())
+            if implementation_plan is not None
+            else None
+        ),
         "context_summary": context_summary,
         "validation": validation_result,
         "goal_fit": {

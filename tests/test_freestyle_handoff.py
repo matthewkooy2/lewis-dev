@@ -196,6 +196,9 @@ def test_status_surfaces_every_latest_artifact_reference(tmp_path):
         "edit_generation_artifact_path": (
             f"edit-bundles/{job.job_id}/generation-abc.json"
         ),
+        "implementation_plan_artifact_path": (
+            f"implementation-plans/{job.job_id}/abc-implementation-plan.json"
+        ),
         "edit_artifact_path": f"edits/{job.job_id}/apply-abc.json",
         "review_artifact_path": f"reviews/{job.job_id}/review-abc.json",
         "checks_artifact_path": f"checks/{job.job_id}/checks-abc.json",
@@ -210,6 +213,7 @@ def test_status_surfaces_every_latest_artifact_reference(tmp_path):
         "proposal_failure": references["proposal_failure_artifact_path"],
         "generated_bundle": references["edit_bundle_path"],
         "edit_generation": references["edit_generation_artifact_path"],
+        "implementation_plan": references["implementation_plan_artifact_path"],
         "applied_edit": references["edit_artifact_path"],
         "review": references["review_artifact_path"],
         "checks": references["checks_artifact_path"],

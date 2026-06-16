@@ -358,6 +358,169 @@ def connected_files_for_paths(
 
 
 # --------------------------------------------------------------------------- #
+# Affected-surface map (plain facts for the pure implementation planner).
+# --------------------------------------------------------------------------- #
+_DATA_SURFACE_TOKENS = frozenset(
+    {
+        "db",
+        "database",
+        "migration",
+        "migrations",
+        "model",
+        "models",
+        "persistence",
+        "schema",
+        "schemas",
+        "sql",
+        "store",
+        "stores",
+    }
+)
+
+
+def affected_surface_map(
+    index: RepoIndex | None,
+    *,
+    goal: str,
+    named_targets: Sequence[str] = (),
+    seed_paths: Sequence[str] = (),
+    changed_paths: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Reduce one repo index into plain affected-surface facts for planning.
+
+    Buckets the goal's connected files by repo-map role (route/page/CSS/JS/test/
+    backend), names the primary feature and its routes, and renders the UI
+    pipeline, so the pure implementation planner can consume plain data without
+    importing the impure repo-map storage layer. Approval-sensitive files are
+    listed by path only (the connectivity graph already refuses to connect
+    them), and this fails open to an empty-shape map when no index is available.
+    """
+    if index is None:
+        return _empty_surface_map()
+    try:
+        selection = select_connected_files(
+            index, goal=goal, named_targets=named_targets, seed_paths=seed_paths
+        )
+    except Exception:
+        return _empty_surface_map()
+    connected = [str(path) for path in selection.get("connected_paths", [])]
+    role_of = {str(f["path"]): str(f.get("role", "")) for f in index.files}
+    changed = [_normalize(path) for path in changed_paths]
+    surface_paths = list(
+        dict.fromkeys([*connected, *[c for c in changed if c in role_of]])
+    )
+
+    def by_role(*roles: str) -> list[str]:
+        wanted = set(roles)
+        return [path for path in surface_paths if role_of.get(path) in wanted]
+
+    routes = by_role(_WEB_ROUTE)
+    pages = by_role(_WEB_PAGE)
+    css = by_role(_STATIC_CSS)
+    js = by_role(_STATIC_JS)
+    tests = by_role(_TEST)
+    approval = by_role(_APPROVAL)
+    structural_roles = {
+        _WEB_ROUTE,
+        _WEB_PAGE,
+        _STATIC_CSS,
+        _STATIC_JS,
+        _TEST,
+        _APPROVAL,
+    }
+    backend = [
+        path for path in surface_paths if role_of.get(path) not in structural_roles
+    ]
+    data_surfaces = [path for path in backend if _looks_like_data_surface(path)]
+    return {
+        "available": True,
+        "primary_feature": _primary_feature_token(goal, surface_paths),
+        "primary_routes": _primary_routes(index, set(routes)),
+        "routes": routes,
+        "pages": pages,
+        "css": css,
+        "js": js,
+        "tests": tests,
+        "backend_services": backend,
+        "data_surfaces": data_surfaces,
+        "static_assets": [*css, *js],
+        "approval_sensitive": approval,
+        "connected_files": connected,
+        "graph_file_count": int(selection.get("graph_file_count", 0) or 0),
+        "pipeline": _ui_pipeline(routes, pages, js, css, tests),
+    }
+
+
+def _empty_surface_map() -> dict[str, Any]:
+    return {
+        "available": False,
+        "primary_feature": None,
+        "primary_routes": [],
+        "routes": [],
+        "pages": [],
+        "css": [],
+        "js": [],
+        "tests": [],
+        "backend_services": [],
+        "data_surfaces": [],
+        "static_assets": [],
+        "approval_sensitive": [],
+        "connected_files": [],
+        "graph_file_count": 0,
+        "pipeline": [],
+    }
+
+
+def _primary_routes(index: RepoIndex, route_files: set[str]) -> list[str]:
+    out: list[str] = []
+    for record in index.routes:
+        path = str(record.get("path", ""))
+        route = str(record.get("route", ""))
+        if path in route_files and record.get("handler") and route and route not in out:
+            out.append(route)
+        if len(out) >= MAX_CONNECTED_FILES:
+            break
+    return out
+
+
+def _looks_like_data_surface(path: str) -> bool:
+    return not _DATA_SURFACE_TOKENS.isdisjoint(_TOKEN.findall(path.casefold()))
+
+
+def _primary_feature_token(goal: str, paths: Sequence[str]) -> str | None:
+    terms = _goal_feature_tokens(goal)
+    if not terms:
+        return None
+    best: str | None = None
+    best_count = 0
+    for term in sorted(terms):
+        count = sum(1 for path in paths if term in _path_feature_tokens(path))
+        if count > best_count:
+            best, best_count = term, count
+    return best or sorted(terms)[0]
+
+
+def _ui_pipeline(
+    routes: Sequence[str],
+    pages: Sequence[str],
+    js: Sequence[str],
+    css: Sequence[str],
+    tests: Sequence[str],
+) -> list[str]:
+    stages: list[str] = []
+    route_page = [*routes, *pages]
+    if route_page:
+        stages.append("route/page: " + ", ".join(route_page[:3]))
+    if js:
+        stages.append("static JS (DOM reads / emitted classes): " + ", ".join(js[:3]))
+    if css:
+        stages.append("CSS selectors/layout: " + ", ".join(css[:3]))
+    if tests:
+        stages.append("tests: " + ", ".join(tests[:3]))
+    return stages
+
+
+# --------------------------------------------------------------------------- #
 # Advisory review warnings.
 # --------------------------------------------------------------------------- #
 def repo_map_review_warnings(

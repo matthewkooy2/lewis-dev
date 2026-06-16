@@ -199,6 +199,7 @@ class FreestyleJob:
     proposal_inspected_file_count: int = 0
     proposal_model: str | None = None
     proposal_errors: tuple[str, ...] = ()
+    implementation_plan_artifact_path: str | None = None
     edit_generation_status: str = "not_generated"
     edit_generation_started_at: str | None = None
     edit_generation_completed_at: str | None = None
@@ -223,6 +224,7 @@ class FreestyleJob:
     review_changed_file_count: int = 0
     review_ui_warnings: tuple[str, ...] = ()
     review_repo_map_warnings: tuple[str, ...] = ()
+    review_plan_warnings: tuple[str, ...] = ()
     review_errors: tuple[str, ...] = ()
     checks_status: str = "not_run"
     checks_started_at: str | None = None
@@ -1526,6 +1528,9 @@ def _read_job(path: Path) -> FreestyleJob:
         payload["review_ui_warnings"] = tuple(payload.get("review_ui_warnings", ()))
         payload["review_repo_map_warnings"] = tuple(
             payload.get("review_repo_map_warnings", ())
+        )
+        payload["review_plan_warnings"] = tuple(
+            payload.get("review_plan_warnings", ())
         )
         payload["review_errors"] = tuple(payload.get("review_errors", ()))
         payload.setdefault("checks_status", "not_run")

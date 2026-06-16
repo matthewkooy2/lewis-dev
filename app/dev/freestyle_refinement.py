@@ -128,6 +128,7 @@ def refine_freestyle_job(
         proposal_inspected_file_count=0,
         proposal_model=None,
         proposal_errors=(),
+        implementation_plan_artifact_path=None,
         edit_generation_status="not_generated",
         edit_generation_started_at=None,
         edit_generation_completed_at=None,
@@ -150,6 +151,7 @@ def refine_freestyle_job(
         review_artifact_path=None,
         review_changed_file_count=0,
         review_ui_warnings=(),
+        review_plan_warnings=(),
         review_errors=(),
         checks_status="not_run",
         checks_started_at=None,
@@ -489,6 +491,22 @@ def _memory_prompt_section(memory: dict[str, Any] | None) -> str:
             "Repo map context used: the previously changed files connect to "
             f"these related implementation surfaces: {rendered}."
         )
+    prior_plan = memory.get("previous_implementation_plan") or {}
+    if isinstance(prior_plan, dict) and prior_plan.get("recommended_strategy"):
+        failed = prior_plan.get("failed_strategy_patterns") or []
+        suffix = (
+            f" If the same warnings remain, that approach did not work — do not "
+            f"repeat the failed strategy ({', '.join(failed)}); inspect the "
+            "evidence and change approach."
+            if failed
+            else " If the same warnings remain, that approach did not work; "
+            "change approach rather than repeating it."
+        )
+        lines.append(
+            "The previous attempt's implementation plan recommended: "
+            + str(prior_plan["recommended_strategy"])
+            + suffix
+        )
     if not lines:
         return ""
     return (
@@ -525,6 +543,7 @@ def _previous_attempt_memory(
         for warning in job.review_ui_warnings
         if isinstance(warning, str) and warning
     ]
+    prior_plan = _previous_implementation_plan(job, state)
     return {
         "previous_bundle_touched_files": touched,
         "previous_proposal_likely_files": likely,
@@ -535,9 +554,49 @@ def _previous_attempt_memory(
             for warning in job.review_repo_map_warnings
             if isinstance(warning, str) and warning
         ][:MAX_MEMORY_FILES],
+        "previous_implementation_plan": prior_plan,
+        "previous_task_type": prior_plan.get("task_type") if prior_plan else None,
+        "previous_review_plan_warnings": [
+            str(warning)[:500]
+            for warning in job.review_plan_warnings
+            if isinstance(warning, str) and warning
+        ][:MAX_MEMORY_FILES],
         "repo_map_connected_surfaces": _repo_map_connected_surfaces(
             job, state, root, touched + likely
         ),
+    }
+
+
+def _previous_implementation_plan(
+    job: FreestyleJob, state: Path
+) -> dict[str, Any]:
+    """Bounded summary of the previous attempt's implementation plan, if any.
+
+    Read from the previous generation artifact's embedded plan summary so the
+    next plan can detect "the prior plan recommended X but the bundle did Y" and
+    so the refinement prompt can say what strategy not to repeat. Fail-open: an
+    unreadable or malformed artifact yields an empty mapping.
+    """
+    artifact = _read_state_artifact(job.edit_generation_artifact_path, state)
+    if artifact is None:
+        return {}
+    summary = artifact.get("implementation_plan")
+    if not isinstance(summary, dict):
+        return {}
+    return {
+        "task_type": summary.get("task_type"),
+        "primary_feature": summary.get("primary_feature"),
+        "recommended_strategy": str(summary.get("recommended_strategy", ""))[:500],
+        "failed_strategy_patterns": [
+            str(pattern)[:100]
+            for pattern in (summary.get("failed_strategy_patterns") or [])
+            if isinstance(pattern, str)
+        ][:MAX_MEMORY_FILES],
+        "expected_files": [
+            str(path)[:200]
+            for path in (summary.get("expected_files") or [])
+            if isinstance(path, str)
+        ][:MAX_MEMORY_FILES],
     }
 
 

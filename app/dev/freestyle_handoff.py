@@ -75,6 +75,8 @@ def get_freestyle_handoff(
         "semantic_warnings": list(job.edit_bundle_semantic_warnings),
         "ui_review_warnings": list(job.review_ui_warnings),
         "repo_map_review_warnings": list(job.review_repo_map_warnings),
+        "implementation_plan": _implementation_plan_summary(generation),
+        "implementation_plan_warnings": list(job.review_plan_warnings),
         "refinement": _refinement_summary(job),
         "stages": {
             "materialize": job.materialization_status,
@@ -132,6 +134,34 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         lines.append(f"- **Latest ID:** `{refinement['latest_id']}`")
         lines.append(f"- **Latest goal:** {refinement['latest_goal']}")
         lines.append(f"- **Latest status:** {refinement['latest_status']}")
+
+    plan = handoff.get("implementation_plan") or {}
+    if plan:
+        lines.extend(["", "## Implementation Plan", ""])
+        lines.append(f"- **Task type:** {plan.get('task_type', 'unknown')}")
+        if plan.get("primary_feature"):
+            lines.append(f"- **Primary feature:** {plan['primary_feature']}")
+        if plan.get("recommended_strategy"):
+            lines.append(f"- **Strategy:** {plan['recommended_strategy']}")
+        if plan.get("expected_files"):
+            lines.append(
+                f"- **Expected files:** {', '.join(plan['expected_files'])}"
+            )
+        if plan.get("forbidden_files"):
+            lines.append(
+                f"- **Forbidden files:** {', '.join(plan['forbidden_files'])}"
+            )
+        if plan.get("failed_strategy_patterns"):
+            lines.append(
+                "- **Failed prior strategies:** "
+                + ", ".join(plan["failed_strategy_patterns"])
+            )
+        tests_to_run = (plan.get("validation_plan") or {}).get("tests_to_run") or []
+        if tests_to_run:
+            lines.append(f"- **Validation tests:** {', '.join(tests_to_run)}")
+        for warning in plan.get("warnings") or []:
+            lines.append(f"- **Plan warning:** {warning}")
+
     diagnostics = handoff.get("proposal_failure_diagnostics")
     if diagnostics:
         lines.extend(["", "## Proposal Failure Diagnostics", ""])
@@ -199,6 +229,11 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         lines.extend(["", "## Repo Map Review (Advisory)", ""])
         lines.extend(f"- {warning}" for warning in repo_map_warnings)
 
+    plan_warnings = handoff.get("implementation_plan_warnings", [])
+    if plan_warnings:
+        lines.extend(["", "## Implementation Plan Deviations (Advisory)", ""])
+        lines.extend(f"- {warning}" for warning in plan_warnings)
+
     lines.extend(["", "## Risks And Errors", ""])
     lines.extend(f"- {risk}" for risk in handoff["risks"])
     lines.extend(f"- Error: {error}" for error in handoff["bounded_errors"])
@@ -213,6 +248,16 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _implementation_plan_summary(
+    generation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Surface the plan summary embedded in the generation artifact, if any."""
+    if not isinstance(generation, dict):
+        return {}
+    summary = generation.get("implementation_plan")
+    return summary if isinstance(summary, dict) else {}
+
+
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
         "proposal": safe_artifact_reference(job.proposal_artifact_path),
@@ -221,6 +266,9 @@ def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
         ),
         "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
         "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
+        "implementation_plan": safe_artifact_reference(
+            job.implementation_plan_artifact_path
+        ),
         "applied_edit": safe_artifact_reference(job.edit_artifact_path),
         "review": safe_artifact_reference(job.review_artifact_path),
         "checks": safe_artifact_reference(job.checks_artifact_path),
@@ -506,6 +554,7 @@ def _risk_summary(
     )
     risks.extend(str(warning)[:500] for warning in job.review_ui_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_repo_map_warnings)
+    risks.extend(str(warning)[:500] for warning in job.review_plan_warnings)
     risks.extend(_context_plan_risks("proposal", proposal))
     risks.extend(_context_plan_risks("edit-generation", generation))
     risks.extend(_anchor_mismatch_risks(generation))

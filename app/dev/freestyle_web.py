@@ -636,6 +636,7 @@ def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
             "Every later action below is separate and manual.</p>",
             _ui_review_warning_block(handoff),
             _repo_map_warning_block(handoff),
+            _implementation_plan_block(handoff),
             _refine_form(job, running),
             "<section class='action-zone primary-zone'><h3>Primary Action</h3>",
             "<p>Apply only the latest generated bundle through the deterministic "
@@ -788,6 +789,65 @@ def _repo_map_warning_block(handoff: dict[str, Any]) -> str:
         "human merge authority.</p>"
         "</div>"
     )
+
+
+def _implementation_plan_block(handoff: dict[str, Any]) -> str:
+    plan = handoff.get("implementation_plan") or {}
+    deviations = [
+        warning
+        for warning in handoff.get("implementation_plan_warnings", [])
+        if isinstance(warning, str) and warning
+    ]
+    if not plan and not deviations:
+        return ""
+    parts: list[str] = ["<section class='action-zone'><h3>Implementation Plan</h3>"]
+    if plan:
+        rows: list[str] = []
+        for label, key in (
+            ("Task type", "task_type"),
+            ("Primary feature", "primary_feature"),
+            ("Strategy", "recommended_strategy"),
+        ):
+            value = plan.get(key)
+            if value:
+                rows.append(
+                    f"<li><strong>{label}:</strong> {escape(str(value))}</li>"
+                )
+        for label, key in (
+            ("Expected files", "expected_files"),
+            ("Forbidden files", "forbidden_files"),
+            ("Failed prior strategies", "failed_strategy_patterns"),
+        ):
+            values = plan.get(key) or []
+            if values:
+                joined = ", ".join(str(item) for item in values)
+                rows.append(f"<li><strong>{label}:</strong> {escape(joined)}</li>")
+        tests_to_run = (plan.get("validation_plan") or {}).get("tests_to_run") or []
+        if tests_to_run:
+            joined = ", ".join(str(item) for item in tests_to_run)
+            rows.append(f"<li><strong>Validation tests:</strong> {escape(joined)}</li>")
+        for warning in plan.get("warnings") or []:
+            if isinstance(warning, str) and warning:
+                rows.append(f"<li><strong>Plan warning:</strong> {escape(warning)}</li>")
+        if rows:
+            parts.append("<ul class='plan-summary'>" + "".join(rows) + "</ul>")
+        parts.append(
+            "<p class='muted'>Deterministic plan built before edit generation. "
+            "Advisory: it guides context and the model but never bypasses "
+            "validation, approval, or human merge authority.</p>"
+        )
+    if deviations:
+        items = "".join(f"<li>{escape(warning)}</li>" for warning in deviations)
+        parts.append(
+            "<div class='goal-fit-warnings' role='alert'>"
+            "<strong>Implementation plan deviations</strong>"
+            f"<ul>{items}</ul>"
+            "<p>Advisory only: the applied change appears to contradict the plan "
+            "(for example a CSS-only change where DOM/JS wiring was required).</p>"
+            "</div>"
+        )
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def _confirmation(

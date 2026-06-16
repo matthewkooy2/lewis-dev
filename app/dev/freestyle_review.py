@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import difflib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -197,6 +198,7 @@ def generate_freestyle_review(
         review_changed_file_count=0,
         review_ui_warnings=(),
         review_repo_map_warnings=(),
+        review_plan_warnings=(),
         review_errors=(),
         updated_at=started_at,
     )
@@ -225,6 +227,7 @@ def generate_freestyle_review(
             review_changed_file_count=changed_count,
             review_ui_warnings=(),
             review_repo_map_warnings=(),
+            review_plan_warnings=(),
             review_errors=(_bounded_error(str(exc), "Review generation failed."),),
             updated_at=_utc_now(),
         )
@@ -243,6 +246,7 @@ def generate_freestyle_review(
         review_changed_file_count=changed_count,
         review_ui_warnings=_artifact_ui_warnings(artifact),
         review_repo_map_warnings=_artifact_repo_map_warnings(artifact),
+        review_plan_warnings=_artifact_plan_warnings(artifact),
         review_errors=(),
         updated_at=completed_at,
     )
@@ -453,6 +457,9 @@ def _build_review_artifact(
             worktree, current_head["commit"], changed, render_local=render_local
         ),
         "repo_map_review": _repo_map_review(worktree, changed, root, state),
+        "implementation_plan_review": _implementation_plan_review(
+            job, changed, state
+        ),
         "artifact_references": _artifact_references(job),
         "human_review_checklist": [
             "Confirm every changed file and omission aligns with the approved goal.",
@@ -712,6 +719,88 @@ def _artifact_repo_map_warnings(artifact: dict[str, Any]) -> tuple[str, ...]:
         for warning in warnings
         if isinstance(warning, str) and warning
     )
+
+
+def _artifact_plan_warnings(artifact: dict[str, Any]) -> tuple[str, ...]:
+    section = artifact.get("implementation_plan_review")
+    if not isinstance(section, dict):
+        return ()
+    warnings = section.get("warnings")
+    if not isinstance(warnings, list):
+        return ()
+    return tuple(
+        str(warning)[:500]
+        for warning in warnings
+        if isinstance(warning, str) and warning
+    )
+
+
+_IMPLEMENTATION_PLAN_REVIEW_STATEMENT = (
+    "Implementation-plan findings are advisory: they compare the applied change "
+    "against the deterministic plan built before edit generation and never block "
+    "edit-bundle validation, edit application, review, or approval."
+)
+
+
+def _implementation_plan_review(
+    job: FreestyleJob,
+    changed: tuple[_ChangedPath, ...],
+    state: Path | None,
+) -> dict[str, Any]:
+    """Build the advisory implementation-plan review section, fail-open.
+
+    Loads the plan persisted before edit generation and flags whether the
+    applied change contradicts it: a CSS-only change where the plan called for
+    DOM/JS/CSS wiring, a file the plan said not to touch, or a plan whose
+    expected surfaces were all skipped. Advisory only; never blocks review.
+    """
+    base: dict[str, Any] = {
+        "warnings": [],
+        "advisory": True,
+        "statement": _IMPLEMENTATION_PLAN_REVIEW_STATEMENT,
+        "plan_available": False,
+        "plan_summary": {},
+    }
+    plan_artifact = _read_plan_artifact(job, state)
+    if plan_artifact is None:
+        return base
+    try:
+        from app.dev.freestyle_implementation_plan import (
+            plan_deviation_warnings,
+            summarize_implementation_plan,
+        )
+
+        changed_paths = [item.path for item in changed]
+        base["plan_available"] = True
+        base["plan_summary"] = summarize_implementation_plan(plan_artifact)
+        base["warnings"] = list(
+            plan_deviation_warnings(plan_artifact, changed_paths)
+        )
+    except Exception:
+        return base
+    return base
+
+
+def _read_plan_artifact(
+    job: FreestyleJob, state: Path | None
+) -> dict[str, Any] | None:
+    """Read the full first-class implementation-plan artifact, fail-open."""
+    if state is None:
+        return None
+    relative = safe_artifact_reference(job.implementation_plan_artifact_path)
+    if relative is None:
+        return None
+    path = state / relative
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        path.resolve(strict=True).relative_to(state.resolve())
+        if path.stat().st_size > MAX_REVIEW_ARTIFACT_BYTES:
+            return None
+        payload = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _repo_map_review(
