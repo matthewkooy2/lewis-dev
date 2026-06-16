@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -42,6 +43,8 @@ from app.dev.freestyle_policy import (
     defines_approval_store,
 )
 from app.dev.freestyle_state import require_materialized, resolved_roots
+from app.dev.repo_map import RepoIndex
+from app.dev.repo_map_context import resolve_freestyle_index, select_connected_files
 
 DEEPSEEK_API_BASE_URL = "https://api.deepseek.com"
 MAX_CONTEXT_SCAN_FILES = 5_000
@@ -88,17 +91,32 @@ _HIGH_SIGNAL_NAMES = {
 _GOAL_STOP_WORDS = {
     "add",
     "and",
+    "approval",
+    "artifact",
+    "bundle",
     "change",
     "code",
+    "context",
+    "deepseek",
+    "engine",
     "for",
+    "freestyle",
     "from",
+    "generation",
     "implement",
     "into",
+    "memory",
     "only",
     "proposal",
+    "refinement",
+    "repo",
+    "review",
     "the",
     "this",
+    "validation",
+    "warning",
     "with",
+    "worktree",
 }
 _ERROR_SECRET_PATTERN = re.compile(
     r"\b(api[_-]?key|authorization|bearer|credential|password|secret|token)"
@@ -181,20 +199,24 @@ class _ContextCandidate:
     preferred: bool
     priority_rank: int | None
     named_target: bool = False
+    repo_map_connected: bool = False
 
     @property
-    def selection_key(self) -> tuple[int, int, int, int, str]:
+    def selection_key(self) -> tuple[int, int, int, int, int, str]:
         """Deterministic selection order: files explicitly named in the goal or
         refinement first, then proposal-preferred paths, then priority-ranked
         files strictly by pattern rank (core implementation patterns precede
-        test patterns), then everything else by score. The named-target tier
-        sits above both preferred and rank so an implementation file a human
-        explicitly named can never be displaced by generic tests, broad glob
-        matches, or poisoned model-preferred paths."""
+        test patterns), then files the persistent repo map links into the same
+        connected implementation surface, then everything else by score. The
+        named-target tier sits above both preferred and rank so an
+        implementation file a human explicitly named can never be displaced by
+        generic tests, broad glob matches, poisoned model-preferred paths, or a
+        repo-map suggestion."""
         return (
             0 if self.named_target else 1,
             0 if self.preferred else 1,
             self.priority_rank if self.priority_rank is not None else _UNRANKED,
+            0 if self.repo_map_connected else 1,
             -self.score,
             self.relative_path.casefold(),
         )
@@ -271,8 +293,17 @@ def generate_freestyle_proposal(
             goal=prompt_job.goal,
             title=prompt_job.title,
         )
-        plan = plan_context(prompt_job.goal, prompt_job.title)
-        context = build_proposal_context(worktree, prompt_job.goal, plan=plan)
+        planning_goal = _context_planning_goal(prompt_job.goal, artifact_metadata)
+        plan = plan_context(planning_goal, prompt_job.title)
+        repo_map, repo_map_provenance = _resolve_repo_map(worktree, root, state)
+        context = build_proposal_context(
+            worktree,
+            prompt_job.goal,
+            retrieval_goal=planning_goal,
+            plan=plan,
+            repo_map=repo_map,
+            repo_map_provenance=repo_map_provenance,
+        )
         if not context.files:
             raise FreestyleJobRefusedError(
                 "No safe text files were available for proposal context."
@@ -367,9 +398,21 @@ def build_proposal_context(
     goal: str,
     *,
     preferred_paths: tuple[str, ...] = (),
+    retrieval_goal: str | None = None,
     plan: ContextPlan | None = None,
+    repo_map: RepoIndex | None = None,
+    repo_map_provenance: dict[str, Any] | None = None,
 ) -> ProposalContext:
-    """Build bounded source context from safe files inside one worktree only."""
+    """Build bounded source context from safe files inside one worktree only.
+
+    When a persistent ``repo_map`` is supplied it becomes a primary source of
+    codebase memory: files the map links into the goal's connected
+    implementation surface (route -> page -> CSS -> JS -> tests) are preferred
+    over generic score ties, and the selection reasons plus any connected files
+    omitted for budget are recorded in the context plan. The map can only
+    reorder files the safety layer already cleared; it never adds an unsafe
+    file and never outranks an explicitly named or proposal-preferred path.
+    """
     resolved_worktree = worktree.resolve(strict=True)
     if worktree.is_symlink() or not resolved_worktree.is_dir():
         raise FreestyleJobRefusedError("Job worktree is unsafe for proposal context.")
@@ -378,10 +421,17 @@ def build_proposal_context(
     omissions: list[dict[str, str]] = []
     omission_counts: Counter[str] = Counter()
     scanned_file_count = 0
-    goal_terms = _goal_terms(goal)
+    planning_goal = retrieval_goal if retrieval_goal is not None else goal
+    goal_terms = _goal_terms(planning_goal)
     preferred = tuple(path.casefold() for path in preferred_paths)
     if plan is None:
-        plan = plan_context(goal)
+        plan = plan_context(planning_goal)
+    repo_map_selection = _repo_map_selection(
+        repo_map, planning_goal, plan, preferred_paths
+    )
+    connected = frozenset(
+        path.casefold() for path in repo_map_selection["connected_paths"]
+    )
 
     for directory, directory_names, file_names in os.walk(
         resolved_worktree, topdown=True, followlinks=False
@@ -439,6 +489,7 @@ def build_proposal_context(
                     preferred=relative.casefold() in preferred,
                     priority_rank=priority_rank(relative, plan),
                     named_target=is_named_target(relative, plan),
+                    repo_map_connected=relative.casefold() in connected,
                 )
             )
 
@@ -505,20 +556,127 @@ def build_proposal_context(
     priority_candidate_count = sum(
         1 for candidate in candidates if candidate.priority_rank is not None
     )
+    included_paths = [str(item["path"]) for item in selected]
+    context_plan = summarize_context_plan(
+        plan,
+        included_paths,
+        omissions,
+        priority_candidate_count=priority_candidate_count,
+        candidate_paths=[candidate.relative_path for candidate in candidates],
+    )
+    context_plan["repo_map"] = _repo_map_plan_section(
+        repo_map_selection,
+        repo_map_provenance,
+        included_paths,
+        candidate_paths=[candidate.relative_path for candidate in candidates],
+    )
     return ProposalContext(
         files=tuple(selected),
         omitted_files=tuple(omissions),
         omission_counts=dict(sorted(omission_counts.items())),
         included_char_count=included_char_count,
         scanned_file_count=scanned_file_count,
-        context_plan=summarize_context_plan(
-            plan,
-            [str(item["path"]) for item in selected],
-            omissions,
-            priority_candidate_count=priority_candidate_count,
-            candidate_paths=[candidate.relative_path for candidate in candidates],
-        ),
+        context_plan=context_plan,
     )
+
+
+def _resolve_repo_map(
+    worktree: Path, root: Path, state: Path
+) -> tuple[RepoIndex | None, dict[str, Any]]:
+    """Resolve the repo map for one job, worktree-preferred and fail-open.
+
+    Never raises into the pipeline: any indexing problem yields ``(None,
+    provenance)`` so context selection degrades to the prior heuristics rather
+    than failing the job.
+    """
+    try:
+        return resolve_freestyle_index(worktree, root, state)
+    except Exception:
+        return None, {
+            "available": False,
+            "stale": True,
+            "fallback": True,
+            "reason": "repo_map_unavailable",
+        }
+
+
+def _repo_map_selection(
+    repo_map: RepoIndex | None,
+    goal: str,
+    plan: ContextPlan,
+    preferred_paths: tuple[str, ...],
+) -> dict[str, Any]:
+    """Compute the repo-map connected-file selection, fail-open to empty."""
+    empty = {
+        "connected_paths": [],
+        "selection_reasons": {},
+        "omitted_relevant": [],
+        "graph_file_count": 0,
+    }
+    if repo_map is None:
+        return empty
+    try:
+        return select_connected_files(
+            repo_map,
+            goal=goal,
+            named_targets=plan.named_target_paths,
+            seed_paths=preferred_paths,
+        )
+    except Exception:
+        return empty
+
+
+def _context_planning_goal(
+    prompt_goal: str, artifact_metadata: dict[str, Any] | None
+) -> str:
+    """Return the high-signal text used only for deterministic context planning.
+
+    Refinement prompts intentionally contain previous-attempt memory, advisory
+    review prose, and repo-map summaries. Those remain in the model prompt, but
+    they are not current-user instructions and must not create hard named
+    targets or Freestyle-internal category matches.
+    """
+    if not isinstance(artifact_metadata, dict):
+        return prompt_goal
+    refinement_goal = artifact_metadata.get("refinement_goal")
+    if not isinstance(refinement_goal, str) or not refinement_goal.strip():
+        return prompt_goal
+    parts = [refinement_goal.strip()]
+    observed = artifact_metadata.get("observed_ui_feedback")
+    if isinstance(observed, str) and observed.strip():
+        parts.append(observed.strip())
+    return "\n\n".join(parts)
+
+
+def _repo_map_plan_section(
+    selection: dict[str, Any],
+    provenance: dict[str, Any] | None,
+    included_paths: Sequence[str],
+    *,
+    candidate_paths: Sequence[str],
+) -> dict[str, Any]:
+    """Record what the repo map preferred and what budget left out, for artifacts."""
+    included_set = {path.casefold() for path in included_paths}
+    candidate_set = {path.casefold() for path in candidate_paths}
+    connected = list(selection.get("connected_paths", []))
+    included_connected = [p for p in connected if p.casefold() in included_set]
+    # A connected file that was a safe candidate but did not make the bounded
+    # context is an omission a developer may want to see.
+    omitted_connected = [
+        p
+        for p in connected
+        if p.casefold() not in included_set and p.casefold() in candidate_set
+    ]
+    return {
+        "provenance": provenance
+        or {"available": False, "stale": True, "fallback": True},
+        "connected_files": connected,
+        "selection_reasons": selection.get("selection_reasons", {}),
+        "included_connected_files": included_connected,
+        "omitted_connected_files_in_budget": omitted_connected,
+        "omitted_relevant_beyond_budget": list(selection.get("omitted_relevant", [])),
+        "graph_file_count": selection.get("graph_file_count", 0),
+    }
 
 
 def _require_goal_grounded_context(context: ProposalContext) -> None:

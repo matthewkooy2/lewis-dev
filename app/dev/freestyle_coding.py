@@ -222,6 +222,7 @@ class FreestyleJob:
     review_artifact_path: str | None = None
     review_changed_file_count: int = 0
     review_ui_warnings: tuple[str, ...] = ()
+    review_repo_map_warnings: tuple[str, ...] = ()
     review_errors: tuple[str, ...] = ()
     checks_status: str = "not_run"
     checks_started_at: str | None = None
@@ -1523,6 +1524,9 @@ def _read_job(path: Path) -> FreestyleJob:
         payload.setdefault("review_artifact_path", None)
         payload.setdefault("review_changed_file_count", 0)
         payload["review_ui_warnings"] = tuple(payload.get("review_ui_warnings", ()))
+        payload["review_repo_map_warnings"] = tuple(
+            payload.get("review_repo_map_warnings", ())
+        )
         payload["review_errors"] = tuple(payload.get("review_errors", ()))
         payload.setdefault("checks_status", "not_run")
         payload.setdefault("checks_started_at", None)

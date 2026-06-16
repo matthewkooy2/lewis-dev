@@ -69,10 +69,12 @@ from app.dev.freestyle_proposal import (
     ProposalContext,
     _attempt_record,
     _bounded_proposal_error,
+    _context_planning_goal,
     _context_path_omission_reason,
     _read_context_text,
     _redacted_preview,
     _require_goal_grounded_context,
+    _resolve_repo_map,
     _response_preview_text,
     _safe_model_name,
     _safe_suggested_path,
@@ -204,7 +206,8 @@ def generate_edit_bundle(
     response: Any | None = None
     validation_status = "not_validated"
     prompt_job = replace(started, goal=prompt_job.goal, title=prompt_job.title)
-    plan = plan_context(prompt_job.goal, prompt_job.title)
+    planning_goal = _context_planning_goal(prompt_job.goal, artifact_metadata)
+    plan = plan_context(planning_goal, prompt_job.title)
     fit_warnings: tuple[str, ...] = ()
     semantic_warnings: tuple[str, ...] = ()
     attempts: list[dict[str, Any]] = []
@@ -218,11 +221,15 @@ def generate_edit_bundle(
     try:
         _validate_deepseek_config(config)
         preferred_paths = tuple(proposal["likely_files_to_edit"])
+        repo_map, repo_map_provenance = _resolve_repo_map(worktree, root, state)
         context = build_proposal_context(
             worktree,
             prompt_job.goal,
             preferred_paths=preferred_paths,
+            retrieval_goal=planning_goal,
             plan=plan,
+            repo_map=repo_map,
+            repo_map_provenance=repo_map_provenance,
         )
         if not context.files:
             raise FreestyleJobRefusedError(

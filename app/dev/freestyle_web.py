@@ -635,6 +635,7 @@ def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
             "</div><p class='muted'>Run stops at the generated bundle boundary. "
             "Every later action below is separate and manual.</p>",
             _ui_review_warning_block(handoff),
+            _repo_map_warning_block(handoff),
             _refine_form(job, running),
             "<section class='action-zone primary-zone'><h3>Primary Action</h3>",
             "<p>Apply only the latest generated bundle through the deterministic "
@@ -764,6 +765,27 @@ def _ui_review_warning_block(handoff: dict[str, Any]) -> str:
         "<p>Advisory only: the deterministic review flagged likely rendered-layout "
         "or selector problems in the changed web files. Refine with observed UI "
         "feedback to repair them.</p>"
+        "</div>"
+    )
+
+
+def _repo_map_warning_block(handoff: dict[str, Any]) -> str:
+    warnings = [
+        warning
+        for warning in handoff.get("repo_map_review_warnings", [])
+        if isinstance(warning, str) and warning
+    ]
+    if not warnings:
+        return ""
+    items = "".join(f"<li>{escape(warning)}</li>" for warning in warnings)
+    return (
+        "<div class='goal-fit-warnings' role='alert'>"
+        "<strong>Repo map review warnings</strong>"
+        f"<ul>{items}</ul>"
+        "<p>Advisory only: the persistent repo map links the changed files to "
+        "related routes, pages, stylesheets, scripts, or tests that this change "
+        "did not consider. The repo map never bypasses validation, approval, or "
+        "human merge authority.</p>"
         "</div>"
     )
 

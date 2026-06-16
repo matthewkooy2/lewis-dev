@@ -38,6 +38,7 @@ from app.dev.freestyle_coding import (
 )
 from app.dev.freestyle_context_plan import (
     NAMED_TARGET_BUDGET_BLOCKER,
+    extract_named_basenames,
     extract_named_paths,
     is_named_target,
     named_target_availability,
@@ -83,6 +84,33 @@ def test_plan_context_records_named_targets_from_goal_and_title():
     assert not is_named_target("tests/test_other.py", plan)
 
 
+def test_process_terms_do_not_make_calendar_refinement_internal_or_named():
+    goal = (
+        "Repair the Calendar UI wiring and /calendar layout. Use repo-map "
+        "context from the previous Freestyle proposal failure artifact and "
+        "review warnings, but do not touch Freestyle internals. The prose also "
+        "mentions the code proposal engine as process background."
+    )
+
+    plan = plan_context(goal, title="Calendar refinement")
+
+    assert "web_ui" in plan.goal_categories
+    assert "freestyle_internal" not in plan.goal_categories
+    assert "app/code_proposal_engine.py" not in plan.named_target_paths
+    assert not is_named_target("app/code_proposal_engine.py", plan)
+
+
+def test_concrete_basenames_are_explicit_but_words_are_not():
+    vague = plan_context("The proposal engine wording appears in the review.")
+    explicit = plan_context("Inspect code_proposal_engine.py for this change.")
+
+    assert "code_proposal_engine.py" not in vague.named_target_basenames
+    assert "code_proposal_engine.py" in extract_named_basenames(
+        "Inspect code_proposal_engine.py."
+    )
+    assert is_named_target("app/code_proposal_engine.py", explicit)
+
+
 def test_plan_context_accepts_extra_named_paths_from_a_refinement():
     plan = plan_context(
         "Improve robustness.",
@@ -121,6 +149,32 @@ def test_summary_warns_when_named_target_omitted_for_budget():
     )
     assert NAMED_TARGET_BUDGET_BLOCKER in summary["warnings"]
     assert summary["named_target_files"]["has_budget_blocker"] is True
+
+
+def test_named_target_budget_omission_still_refuses_before_deepseek():
+    from app.dev.freestyle_proposal import (
+        ProposalContext,
+        _require_goal_grounded_context,
+    )
+
+    context = ProposalContext(
+        files=(),
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=0,
+        scanned_file_count=0,
+        context_plan={
+            "detected_goal_categories": ["core_app"],
+            "named_target_files": {
+                "omitted_due_to_budget": [
+                    {"path": "app/explicit.py", "reason": "total_context_limit"}
+                ]
+            },
+        },
+    )
+
+    with pytest.raises(FreestyleJobRefusedError, match=NAMED_TARGET_BUDGET_BLOCKER):
+        _require_goal_grounded_context(context)
 
 
 # --------------------------------------------------------------------------- #

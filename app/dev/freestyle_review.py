@@ -75,6 +75,12 @@ _UI_REVIEW_STATEMENT = (
     "Web-UI findings are advisory: they never block edit-bundle validation, edit "
     "application, review, or approval, and no source file was modified."
 )
+_REPO_MAP_REVIEW_STATEMENT = (
+    "Repo-map findings are advisory: they reflect the persistent local repo map "
+    "and never block edit-bundle validation, edit application, review, or "
+    "approval. The repo map never bypasses path safety, approval gates, the "
+    "static check allowlist, or human merge authority."
+)
 
 _REVIEW_GIT_PREFIX = (
     "git",
@@ -190,6 +196,7 @@ def generate_freestyle_review(
         review_artifact_path=None,
         review_changed_file_count=0,
         review_ui_warnings=(),
+        review_repo_map_warnings=(),
         review_errors=(),
         updated_at=started_at,
     )
@@ -206,6 +213,8 @@ def generate_freestyle_review(
             current_head,
             changed,
             render_local=_is_host_repo(root),
+            root=root,
+            state=state,
         )
         artifact_path = _write_review_artifact(artifact, state, started.job_id)
     except Exception as exc:
@@ -215,6 +224,7 @@ def generate_freestyle_review(
             review_completed_at=_utc_now(),
             review_changed_file_count=changed_count,
             review_ui_warnings=(),
+            review_repo_map_warnings=(),
             review_errors=(_bounded_error(str(exc), "Review generation failed."),),
             updated_at=_utc_now(),
         )
@@ -232,6 +242,7 @@ def generate_freestyle_review(
         review_artifact_path=artifact_path,
         review_changed_file_count=changed_count,
         review_ui_warnings=_artifact_ui_warnings(artifact),
+        review_repo_map_warnings=_artifact_repo_map_warnings(artifact),
         review_errors=(),
         updated_at=completed_at,
     )
@@ -375,6 +386,8 @@ def _build_review_artifact(
     changed: tuple[_ChangedPath, ...],
     *,
     render_local: bool = False,
+    root: Path | None = None,
+    state: Path | None = None,
 ) -> dict[str, Any]:
     if current_head["commit"] != job.base_commit or current_head["branch"] != job.branch:
         raise FreestyleJobRefusedError(
@@ -439,6 +452,7 @@ def _build_review_artifact(
         "ui_review": _web_ui_review(
             worktree, current_head["commit"], changed, render_local=render_local
         ),
+        "repo_map_review": _repo_map_review(worktree, changed, root, state),
         "artifact_references": _artifact_references(job),
         "human_review_checklist": [
             "Confirm every changed file and omission aligns with the approved goal.",
@@ -684,6 +698,62 @@ def _artifact_ui_warnings(artifact: dict[str, Any]) -> tuple[str, ...]:
     return tuple(
         str(warning)[:500] for warning in warnings if isinstance(warning, str) and warning
     )
+
+
+def _artifact_repo_map_warnings(artifact: dict[str, Any]) -> tuple[str, ...]:
+    section = artifact.get("repo_map_review")
+    if not isinstance(section, dict):
+        return ()
+    warnings = section.get("warnings")
+    if not isinstance(warnings, list):
+        return ()
+    return tuple(
+        str(warning)[:500]
+        for warning in warnings
+        if isinstance(warning, str) and warning
+    )
+
+
+def _repo_map_review(
+    worktree: Path,
+    changed: tuple[_ChangedPath, ...],
+    root: Path | None,
+    state: Path | None,
+) -> dict[str, Any]:
+    """Build the advisory repo-map review section, fail-open to empty findings.
+
+    Resolves the persistent repo map for this job (worktree-preferred, host
+    fallback marked stale), then reports advisory warnings about implementation
+    surfaces the changed files appear to ignore (related CSS/JS/tests, missing
+    assets) and the connected files the map links to each change. Never mutates
+    the worktree and never blocks the review.
+    """
+    base = {
+        "warnings": [],
+        "advisory": True,
+        "statement": _REPO_MAP_REVIEW_STATEMENT,
+        "provenance": {"available": False, "stale": True, "fallback": True},
+        "connected_files": {},
+    }
+    if root is None or state is None:
+        return base
+    try:
+        from app.dev.repo_map_context import (
+            connected_files_for_paths,
+            repo_map_review_warnings,
+            resolve_freestyle_index,
+        )
+
+        index, provenance = resolve_freestyle_index(worktree, root, state)
+        base["provenance"] = provenance
+        if index is None:
+            return base
+        changed_paths = [item.path for item in changed]
+        base["warnings"] = repo_map_review_warnings(index, changed_paths)
+        base["connected_files"] = connected_files_for_paths(index, changed_paths)
+    except Exception:
+        return base
+    return base
 
 
 def _web_ui_review(

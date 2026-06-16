@@ -60,6 +60,9 @@ _NAMED_PATH_EXTENSIONS = frozenset(
 _NAMED_PATH_PATTERN = re.compile(
     r"(?<![\w./-])((?:[A-Za-z0-9_.+-]+/)+[A-Za-z0-9_.+-]+\.[A-Za-z0-9]+)"
 )
+_NAMED_BASENAME_PATTERN = re.compile(
+    r"(?<![\w./-])([A-Za-z0-9][A-Za-z0-9_.+-]*\.[A-Za-z0-9]+)(?![\w/-])"
+)
 
 NAMED_TARGET_BUDGET_BLOCKER = (
     "An explicitly named target file from the goal was safe and present in the "
@@ -125,6 +128,109 @@ _CATEGORY_KEYWORDS: dict[str, frozenset[str]] = {
         {"bundle", "deepseek", "freestyle", "handoff", "materialize", "worktree"}
     ),
 }
+
+_PROCESS_META_TERMS = frozenset(
+    {
+        "approval",
+        "artifact",
+        "bundle",
+        "context",
+        "deepseek",
+        "freestyle",
+        "generation",
+        "memory",
+        "proposal",
+        "refinement",
+        "repo",
+        "review",
+        "validation",
+        "warning",
+        "worktree",
+    }
+)
+_GENERIC_TASK_TERMS = frozenset(
+    {
+        "add",
+        "build",
+        "change",
+        "edit",
+        "fix",
+        "harden",
+        "implement",
+        "improve",
+        "modify",
+        "repair",
+        "refactor",
+        "rewrite",
+        "update",
+    }
+)
+_FREESTYLE_MACHINERY_TERMS = frozenset(
+    {
+        "approval",
+        "bundle",
+        "coding",
+        "deepseek",
+        "edit",
+        "freestyle",
+        "generation",
+        "handoff",
+        "machinery",
+        "materialization",
+        "materialize",
+        "refinement",
+        "repo",
+        "validation",
+        "worktree",
+    }
+)
+_FREESTYLE_ACTION_TERMS = frozenset(
+    {
+        "add",
+        "change",
+        "edit",
+        "fix",
+        "harden",
+        "implement",
+        "modify",
+        "repair",
+        "refactor",
+        "rewrite",
+        "tighten",
+        "update",
+    }
+)
+_NEGATED_PROCESS_MARKERS = (
+    "do not",
+    "don't",
+    "dont",
+    "do n't",
+    "must not",
+    "never",
+    "without modifying",
+    "without changing",
+    "without touching",
+    "avoid",
+    "leave",
+    "keep",
+    "preserve",
+)
+_META_PROCESS_CLAUSE_MARKERS = (
+    "previous attempt",
+    "previous bundle",
+    "previous proposal",
+    "previously changed",
+    "repo map context used",
+    "repo map flagged",
+    "repo-map context used",
+    "repo-map warning",
+    "review warning",
+    "warning:",
+)
+_CLAUSE_SPLIT_PATTERN = re.compile(
+    r"[;\n]+|\.\s+|\.$|\s+(?:but|while|however|yet|though|although)\s+",
+    re.IGNORECASE,
+)
 
 # Per-category high-priority include patterns, most relevant first. Matching
 # uses casefolded fnmatch on full relative POSIX paths, so "*" may cross "/".
@@ -227,6 +333,7 @@ class ContextPlan:
     priority_patterns: tuple[str, ...]
     demote_freestyle_internals: bool
     named_target_paths: tuple[str, ...] = ()
+    named_target_basenames: tuple[str, ...] = ()
 
 
 def plan_context(
@@ -241,29 +348,43 @@ def plan_context(
     refinement instruction (or carried from a prior bundle/proposal) so they
     are protected alongside paths named in the goal text itself.
     """
-    terms = _classification_terms(goal, title)
+    text = _classification_text(goal, title)
+    terms = _classification_terms_from_text(text)
+    subject_terms = _task_subject_terms(terms)
+    freestyle_internal = _freestyle_internal_requested(text)
     detected = tuple(
         category
         for category in _CATEGORY_ORDER
         if category != DEFAULT_GOAL_CATEGORY
-        and not _CATEGORY_KEYWORDS[category].isdisjoint(terms)
+        and (
+            (
+                category != "freestyle_internal"
+                and not _CATEGORY_KEYWORDS[category].isdisjoint(terms)
+            )
+            or (category == "freestyle_internal" and freestyle_internal)
+        )
     )
     if not detected:
         detected = (DEFAULT_GOAL_CATEGORY,)
     patterns: list[str] = []
     for category in detected:
-        for pattern in _PRIORITY_PATTERNS[category]:
+        for pattern in _priority_patterns_for_category(category, subject_terms):
             if pattern not in patterns:
                 patterns.append(pattern)
     named = extract_named_paths(goal)
+    named_basenames = extract_named_basenames(goal)
     if isinstance(title, str):
         named = _merge_named_paths(named, extract_named_paths(title))
+        named_basenames = _merge_named_paths(
+            named_basenames, extract_named_basenames(title)
+        )
     named = _merge_named_paths(named, _clean_named_paths(extra_named_paths))
     return ContextPlan(
         goal_categories=detected,
         priority_patterns=tuple(patterns),
         demote_freestyle_internals="freestyle_internal" not in detected,
         named_target_paths=named,
+        named_target_basenames=named_basenames,
     )
 
 
@@ -282,6 +403,27 @@ def extract_named_paths(text: str) -> tuple[str, ...]:
         candidate = match.group(1)
         if _is_named_path_candidate(candidate):
             found.append(candidate)
+    return _clean_named_paths(found)
+
+
+def extract_named_basenames(text: str) -> tuple[str, ...]:
+    """Extract concrete file basenames like ``calendar.js`` from text.
+
+    Full repo-relative paths remain the strongest explicit target signal. A
+    basename is accepted only when it has a recognized source/text extension
+    and a reasonably specific stem, so ordinary prose such as "version 1.2" or
+    generic names like "app.py" do not become hard targets.
+    """
+    normalized = text.replace("\\", "/")
+    found: list[str] = []
+    for match in _NAMED_BASENAME_PATTERN.finditer(normalized):
+        candidate = match.group(1)
+        if "/" in candidate or not _is_named_path_candidate(candidate):
+            continue
+        stem = candidate.rsplit(".", 1)[0]
+        if len(stem) < 6 and "_" not in stem and "-" not in stem:
+            continue
+        found.append(candidate)
     return _clean_named_paths(found)
 
 
@@ -324,7 +466,10 @@ def _merge_named_paths(
 def is_named_target(relative_path: str, plan: ContextPlan) -> bool:
     """Report whether one path was explicitly named in the goal/refinement."""
     lowered = relative_path.casefold()
-    return any(named.casefold() == lowered for named in plan.named_target_paths)
+    name = relative_path.rsplit("/", 1)[-1].casefold()
+    return any(named.casefold() == lowered for named in plan.named_target_paths) or any(
+        named.casefold() == name for named in plan.named_target_basenames
+    )
 
 
 def named_target_availability(
@@ -351,7 +496,8 @@ def named_target_availability(
     budget: list[dict[str, str]] = []
     excluded: list[str] = []
     not_found: list[str] = []
-    for raw in plan.named_target_paths:
+    resolved_named_paths = _resolved_named_target_paths(plan, candidate_paths)
+    for raw in resolved_named_paths:
         key = raw.casefold()
         reason = first_omission.get(key)
         if key in included_set:
@@ -363,7 +509,9 @@ def named_target_availability(
         else:
             not_found.append(raw)
     return {
-        "named_target_paths": list(plan.named_target_paths),
+        "named_target_paths": list(resolved_named_paths),
+        "literal_named_target_paths": list(plan.named_target_paths),
+        "named_target_basenames": list(plan.named_target_basenames),
         "included": included,
         "omitted_due_to_budget": budget[:MAX_PLAN_OMISSION_RECORDS],
         "excluded_by_policy": excluded[:MAX_PLAN_OMISSION_RECORDS],
@@ -500,9 +648,127 @@ def is_test_pattern(pattern: str) -> bool:
 
 
 def _classification_terms(goal: str, title: str | None) -> frozenset[str]:
+    return _classification_terms_from_text(_classification_text(goal, title))
+
+
+def _classification_text(goal: str, title: str | None) -> str:
     text_parts = [goal]
     if isinstance(title, str):
         text_parts.append(title)
-    return frozenset(
-        re.findall(r"[a-z0-9]+", " ".join(text_parts).casefold())
+    return " ".join(text_parts)
+
+
+def _classification_terms_from_text(text: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[a-z0-9]+", text.casefold()))
+
+
+def _task_subject_terms(terms: frozenset[str]) -> frozenset[str]:
+    category_terms = frozenset().union(
+        *(keywords for key, keywords in _CATEGORY_KEYWORDS.items() if key != "tests")
     )
+    return frozenset(
+        term
+        for term in terms
+        if len(term) >= 4
+        and term not in category_terms
+        and term not in _PROCESS_META_TERMS
+        and term not in _GENERIC_TASK_TERMS
+    )
+
+
+def _priority_patterns_for_category(
+    category: str, subject_terms: frozenset[str]
+) -> tuple[str, ...]:
+    patterns = _PRIORITY_PATTERNS[category]
+    if category != "web_ui" or not subject_terms:
+        return patterns
+    dynamic_assets = _feature_asset_patterns(subject_terms)
+    dynamic_tests = _feature_test_patterns(subject_terms)
+    expanded: list[str] = []
+    inserted_assets = False
+    inserted_tests = False
+    for pattern in patterns:
+        if not inserted_assets and pattern == "app/static/chat.js":
+            expanded.extend(dynamic_assets)
+            inserted_assets = True
+        if not inserted_tests and is_test_pattern(pattern):
+            expanded.extend(dynamic_tests)
+            inserted_tests = True
+        expanded.append(pattern)
+    if not inserted_assets:
+        expanded.extend(dynamic_assets)
+    if not inserted_tests:
+        expanded.extend(dynamic_tests)
+    return tuple(dict.fromkeys(expanded))
+
+
+def _feature_asset_patterns(subject_terms: frozenset[str]) -> tuple[str, ...]:
+    patterns: list[str] = []
+    for term in sorted(subject_terms):
+        patterns.extend(
+            (
+                f"app/static/*{term}*.css",
+                f"app/static/*{term}*.js",
+                f"templates/*{term}*.html",
+                f"app/templates/*{term}*.html",
+            )
+        )
+    return tuple(patterns)
+
+
+def _feature_test_patterns(subject_terms: frozenset[str]) -> tuple[str, ...]:
+    patterns: list[str] = []
+    for term in sorted(subject_terms):
+        patterns.extend(
+            (
+                f"tests/test_*{term}*.py",
+                f"tests/*{term}*.py",
+                f"tests/**/*{term}*.py",
+            )
+        )
+    return tuple(patterns)
+
+
+def _freestyle_internal_requested(text: str) -> bool:
+    for path in extract_named_paths(text):
+        lowered = path.casefold()
+        if lowered.startswith("app/dev/freestyle_") or lowered.startswith(
+            "app/dev/repo_map"
+        ):
+            return True
+    for clause in _CLAUSE_SPLIT_PATTERN.split(text):
+        lowered = clause.casefold()
+        if not lowered.strip():
+            continue
+        if any(marker in lowered for marker in _NEGATED_PROCESS_MARKERS):
+            continue
+        if any(marker in lowered for marker in _META_PROCESS_CLAUSE_MARKERS):
+            continue
+        terms = _classification_terms_from_text(lowered)
+        if _FREESTYLE_ACTION_TERMS.isdisjoint(terms):
+            continue
+        if "repo" in terms and "map" in terms:
+            return True
+        if not _FREESTYLE_MACHINERY_TERMS.isdisjoint(terms):
+            return True
+    return False
+
+
+def _resolved_named_target_paths(
+    plan: ContextPlan, candidate_paths: Sequence[str]
+) -> tuple[str, ...]:
+    ordered: list[str] = list(plan.named_target_paths)
+    seen = {path.casefold() for path in ordered}
+    by_basename: dict[str, list[str]] = {}
+    for path in candidate_paths:
+        by_basename.setdefault(path.rsplit("/", 1)[-1].casefold(), []).append(path)
+    for basename in plan.named_target_basenames:
+        matches = by_basename.get(basename.casefold(), [])
+        if len(matches) != 1:
+            continue
+        match = matches[0]
+        key = match.casefold()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(match)
+    return tuple(ordered[:MAX_NAMED_TARGET_PATHS])

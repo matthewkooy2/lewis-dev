@@ -74,6 +74,7 @@ def get_freestyle_handoff(
         "goal_fit_warnings": list(job.edit_bundle_goal_fit_warnings),
         "semantic_warnings": list(job.edit_bundle_semantic_warnings),
         "ui_review_warnings": list(job.review_ui_warnings),
+        "repo_map_review_warnings": list(job.review_repo_map_warnings),
         "refinement": _refinement_summary(job),
         "stages": {
             "materialize": job.materialization_status,
@@ -192,6 +193,11 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
     if ui_review_warnings:
         lines.extend(["", "## Rendered UI Review (Advisory)", ""])
         lines.extend(f"- {warning}" for warning in ui_review_warnings)
+
+    repo_map_warnings = handoff.get("repo_map_review_warnings", [])
+    if repo_map_warnings:
+        lines.extend(["", "## Repo Map Review (Advisory)", ""])
+        lines.extend(f"- {warning}" for warning in repo_map_warnings)
 
     lines.extend(["", "## Risks And Errors", ""])
     lines.extend(f"- {risk}" for risk in handoff["risks"])
@@ -499,6 +505,7 @@ def _risk_summary(
         str(warning)[:500] for warning in job.edit_bundle_semantic_warnings
     )
     risks.extend(str(warning)[:500] for warning in job.review_ui_warnings)
+    risks.extend(str(warning)[:500] for warning in job.review_repo_map_warnings)
     risks.extend(_context_plan_risks("proposal", proposal))
     risks.extend(_context_plan_risks("edit-generation", generation))
     risks.extend(_anchor_mismatch_risks(generation))

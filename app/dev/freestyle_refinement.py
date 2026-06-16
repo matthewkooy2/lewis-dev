@@ -78,7 +78,7 @@ def refine_freestyle_job(
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     _preflight_refinement(job, root, state)
     refinement_id = uuid.uuid4().hex[:16]
-    memory = _previous_attempt_memory(job, state)
+    memory = _previous_attempt_memory(job, state, root)
     effective_goal = _effective_refinement_goal(
         job, refinement_goal, memory, ui_feedback
     )
@@ -471,6 +471,24 @@ def _memory_prompt_section(memory: dict[str, Any] | None) -> str:
             + " ".join(ui_warnings)
             + " Fix these rendered-layout/selector problems in this refinement."
         )
+    repo_map_warnings = memory.get("previous_repo_map_review_warnings") or []
+    if repo_map_warnings:
+        lines.append(
+            "The repo map flagged: "
+            + " ".join(repo_map_warnings)
+            + " Consider the connected implementation surfaces, not just the "
+            "files named in the prompt."
+        )
+    connected = memory.get("repo_map_connected_surfaces") or {}
+    if connected:
+        rendered = "; ".join(
+            f"{path} connects to {', '.join(related)}"
+            for path, related in connected.items()
+        )
+        lines.append(
+            "Repo map context used: the previously changed files connect to "
+            f"these related implementation surfaces: {rendered}."
+        )
     if not lines:
         return ""
     return (
@@ -480,14 +498,17 @@ def _memory_prompt_section(memory: dict[str, Any] | None) -> str:
     )
 
 
-def _previous_attempt_memory(job: FreestyleJob, state: Path) -> dict[str, Any]:
+def _previous_attempt_memory(
+    job: FreestyleJob, state: Path, root: Path | None = None
+) -> dict[str, Any]:
     """Collect a bounded record of what the previous attempt did and why it was
     flagged, so refinement generation can avoid repeating a rejected pattern.
 
     Best-effort and fail-open: any unreadable or malformed artifact yields an
     empty field rather than blocking the refinement. Only bounded, safe path
-    strings and the previous attempt's own advisory warnings are carried; no
-    file contents, secrets, or prompts are read.
+    strings, the previous attempt's own advisory warnings, and the repo map's
+    connected implementation surfaces for the changed files are carried; no file
+    contents, secrets, or prompts are read.
     """
     touched = _previous_bundle_touched_files(job, state)
     likely = _previous_proposal_likely_files(job, state)
@@ -509,7 +530,48 @@ def _previous_attempt_memory(job: FreestyleJob, state: Path) -> dict[str, Any]:
         "previous_proposal_likely_files": likely,
         "previous_warnings": warnings,
         "previous_ui_review_warnings": ui_warnings[:MAX_MEMORY_FILES],
+        "previous_repo_map_review_warnings": [
+            str(warning)[:500]
+            for warning in job.review_repo_map_warnings
+            if isinstance(warning, str) and warning
+        ][:MAX_MEMORY_FILES],
+        "repo_map_connected_surfaces": _repo_map_connected_surfaces(
+            job, state, root, touched + likely
+        ),
     }
+
+
+def _repo_map_connected_surfaces(
+    job: FreestyleJob,
+    state: Path,
+    root: Path | None,
+    seed_paths: list[str],
+) -> dict[str, list[str]]:
+    """Repo-map connected files for the previously changed/likely files.
+
+    Best-effort and fail-open: lets a refinement retrieve connected
+    implementation surfaces (route/page/CSS/JS/tests) rather than only the files
+    named directly in the prompt. Returns an empty mapping on any problem.
+    """
+    if root is None or not seed_paths:
+        return {}
+    try:
+        from app.dev.repo_map_context import (
+            connected_files_for_paths,
+            resolve_freestyle_index,
+        )
+
+        worktree = (state / "worktrees" / job.job_id)
+        index, _ = resolve_freestyle_index(worktree, root, state, refresh=False)
+        if index is None:
+            return {}
+        connected = connected_files_for_paths(index, seed_paths)
+        return {
+            path: related[:MAX_MEMORY_FILES]
+            for path, related in list(connected.items())[:MAX_MEMORY_FILES]
+        }
+    except Exception:
+        return {}
 
 
 def _previous_bundle_touched_files(job: FreestyleJob, state: Path) -> list[str]:
