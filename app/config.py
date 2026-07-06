@@ -43,10 +43,15 @@ class Settings:
     price_per_1k_output_tokens: float
     deepseek_code_model: str | None = None
     developer_code_workspace: bool = False
+    developer_workspace_root: Path | None = None
 
     @property
     def has_api_key(self) -> bool:
         return bool(self.deepseek_api_key)
+
+
+class DeveloperWorkspaceRootError(ValueError):
+    """Raised when LEWIS_DEVELOPER_WORKSPACE_ROOT is set but unusable."""
 
 
 MISSING_API_KEY_MESSAGE = (
@@ -92,6 +97,11 @@ def _env_optional_text(name: str, default: str | None = None) -> str | None:
     return text or None
 
 
+def _env_optional_path(name: str) -> Path | None:
+    text = _env_optional_text(name)
+    return Path(text).expanduser() if text else None
+
+
 def get_settings() -> Settings:
     load_dotenv()
     raw_user_name = os.getenv("LEWIS_USER_NAME")
@@ -114,4 +124,27 @@ def get_settings() -> Settings:
             "deepseek-v4-pro",
         ),
         developer_code_workspace=_env_bool("LEWIS_DEVELOPER_CODE_WORKSPACE"),
+        developer_workspace_root=_env_optional_path("LEWIS_DEVELOPER_WORKSPACE_ROOT"),
     )
+
+
+def resolve_developer_workspace_root(
+    settings: Settings, default: Path | None = None
+) -> Path:
+    """Resolve the root developer code tools should operate on.
+
+    When LEWIS_DEVELOPER_WORKSPACE_ROOT is unset, developer code tools keep
+    inspecting Lewis itself (``default``, normally ``ROOT_DIR``). When it is
+    set, the path is validated and used as-is; an external workspace that is
+    missing or not a directory raises instead of silently falling back to
+    Lewis, so a misconfigured path never traces or exposes the wrong repo.
+    """
+    if settings.developer_workspace_root is None:
+        return default if default is not None else ROOT_DIR
+    root = settings.developer_workspace_root
+    if not root.exists() or not root.is_dir():
+        raise DeveloperWorkspaceRootError(
+            "LEWIS_DEVELOPER_WORKSPACE_ROOT is set to "
+            f"{root} but that path does not exist or is not a directory."
+        )
+    return root.resolve(strict=True)

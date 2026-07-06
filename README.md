@@ -104,10 +104,28 @@ edit files, submit forms, make purchases, or message people.
 
 Developer/code workspace repository inspection is off by default. Set
 `LEWIS_DEVELOPER_CODE_WORKSPACE=true` only for local development if you want
-Lewis to list, read, and keyword-search safe text files in this repository for
-code-planning work. This mode is read-only, separate from document search,
-bounded, project-relative, secret-redacted, and blocks hidden, env, runtime,
-database, binary, cache, virtualenv, and out-of-repo paths.
+Lewis to list, read, and keyword-search safe text files for code-planning
+work. This mode is read-only, separate from document search, bounded,
+project-relative, secret-redacted, and blocks hidden, env, runtime, database,
+binary, cache, virtualenv, and out-of-workspace paths.
+
+By default, developer code tools (chat tools and the CLI) analyze the Lewis
+repository itself. To point them at a different project, set
+`LEWIS_DEVELOPER_WORKSPACE_ROOT=/path/to/project`; the path must exist and be
+a directory, or Lewis reports a clear error instead of silently falling back
+to its own repository. `LEWIS_DEVELOPER_CODE_WORKSPACE` only gates whether
+the chat tools are registered — it does not choose which repository they
+analyze, and disabling it does not change `LEWIS_DEVELOPER_WORKSPACE_ROOT`.
+
+Developer mode also enables the `trace_symbol` chat tool, and the CLI always
+provides `python -m app.main trace <symbol> [--mode quick|deep|review]
+[--file PATH] [--json]`: a static, read-only trace of one Python or
+JavaScript/TypeScript symbol showing its definition, callers, callees, side
+effects, tests, error handling, and (in review mode) deterministic findings
+with file:line citations. It never executes project code and labels every
+relationship as confirmed, inferred, framework-registered, ambiguous,
+external, dynamic, or unresolved. See `docs/code-tracing.md` for usage,
+supported languages, bounds, and static-analysis limitations.
 
 Any action with external consequences is saved to the SQLite approval queue as
 `pending`. Approving an item only marks it as approved. It does not execute the

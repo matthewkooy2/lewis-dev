@@ -24,6 +24,9 @@ from app.memory_service import propose_memory
 from app.project_search import ProjectFileSearch
 from app.project_inspection import ProjectInspector
 from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
+from app.trace.model import TRACE_MODES
+from app.trace.render import to_compact_dict
+from app.trace.service import CodeTracer
 
 
 ToolFunction = Callable[[Dict[str, Any]], Dict[str, Any]]
@@ -57,6 +60,7 @@ class ToolRegistry:
         project_file_search: ProjectFileSearch | None = None,
         developer_code_workspace: bool = False,
         project_inspector: ProjectInspector | None = None,
+        code_tracer: CodeTracer | None = None,
     ):
         self.document_search = document_search
         self.approval_store = approval_store
@@ -65,6 +69,7 @@ class ToolRegistry:
         self.project_file_search = project_file_search or ProjectFileSearch()
         self.developer_code_workspace = developer_code_workspace
         self.project_inspector = project_inspector or ProjectInspector()
+        self.code_tracer = code_tracer or CodeTracer()
         self._tools: dict[str, Tool] = {}
         self._register_defaults()
         if self.developer_code_workspace:
@@ -218,9 +223,9 @@ class ToolRegistry:
             Tool(
                 name="list_project_files",
                 description=(
-                    "Developer/code workspace only: list safe, read-only Lewis "
-                    "project files under app/ and tests/ plus allowlisted top-level "
-                    "text project files. Does not read file contents."
+                    "Developer/code workspace only: list safe, read-only text "
+                    "project files inside the configured project workspace. "
+                    "Does not read file contents."
                 ),
                 parameters={
                     "type": "object",
@@ -234,10 +239,10 @@ class ToolRegistry:
             Tool(
                 name="read_project_file",
                 description=(
-                    "Developer/code workspace only: read one safe Lewis project "
-                    "text file by project-relative path. Read-only, bounded, "
-                    "secret-redacted, and blocked for runtime, hidden, env, "
-                    "database, binary, and external paths."
+                    "Developer/code workspace only: read one safe text file from "
+                    "the configured project workspace by project-relative path. "
+                    "Read-only, bounded, secret-redacted, and blocked for runtime, "
+                    "hidden, env, database, binary, and external paths."
                 ),
                 parameters={
                     "type": "object",
@@ -258,8 +263,9 @@ class ToolRegistry:
                 name="search_project",
                 description=(
                     "Developer/code workspace only: bounded read-only keyword "
-                    "search over safe Lewis project text files. Separate from "
-                    "document search and never searches runtime or hidden files."
+                    "search over safe text files in the configured project "
+                    "workspace. Separate from document search and never searches "
+                    "runtime or hidden files."
                 ),
                 parameters={
                     "type": "object",
@@ -270,6 +276,52 @@ class ToolRegistry:
                     "additionalProperties": False,
                 },
                 function=self._search_project,
+            )
+        )
+        self._add(
+            Tool(
+                name="trace_symbol",
+                description=(
+                    "Developer/code workspace only: static, read-only code trace "
+                    "of one named function, class, method, or React component in "
+                    "the project. mode 'quick' shows the definition, direct "
+                    "callers, direct callees, and direct side effects; 'deep' "
+                    "also follows bounded call paths across files, transitive "
+                    "side effects, tests, error handling, and cycles; 'review' "
+                    "adds deterministic findings with file:line citations. "
+                    "Results label every relationship (confirmed, inferred, "
+                    "framework-registered, ambiguous, external, dynamic, "
+                    "unresolved); if the symbol is ambiguous, candidates are "
+                    "returned instead of guessing. Never executes project code."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": (
+                                "Symbol to trace: name, Class.method, dotted "
+                                "module path (app.llm.LewisAgent.run), or "
+                                "file::qualname (app/llm.py::LewisAgent.run)."
+                            ),
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": (
+                                "Optional project-relative source file to "
+                                "disambiguate the symbol."
+                            ),
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": list(TRACE_MODES),
+                            "description": "quick (default), deep, or review.",
+                        },
+                    },
+                    "required": ["symbol"],
+                    "additionalProperties": False,
+                },
+                function=self._trace_symbol,
             )
         )
 
@@ -544,6 +596,32 @@ class ToolRegistry:
                 {"path": item.path, "score": item.score, "snippet": item.snippet}
                 for item in results
             ],
+        }
+
+    def _trace_symbol(self, args: dict[str, Any]) -> dict[str, Any]:
+        unexpected = set(args) - {"symbol", "file", "mode"}
+        if unexpected:
+            return {
+                "ok": False,
+                "error": "trace_symbol only accepts symbol, file, and mode.",
+            }
+        symbol = str(args.get("symbol", "")).strip()
+        if not symbol:
+            return {"ok": False, "error": "trace_symbol requires a symbol name."}
+        raw_file = args.get("file")
+        file_hint = str(raw_file).strip() if raw_file is not None else None
+        outcome = self.code_tracer.trace(
+            symbol,
+            mode=str(args.get("mode", "quick") or "quick"),
+            file=file_hint or None,
+        )
+        if not outcome.result.ok:
+            return {"ok": False, "error": outcome.result.error}
+        return {
+            "ok": True,
+            "mode": outcome.result.mode,
+            "report": outcome.report,
+            "data": to_compact_dict(outcome.result),
         }
 
     def _get_current_time(self, args: dict[str, Any]) -> dict[str, Any]:

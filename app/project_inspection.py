@@ -17,18 +17,21 @@ MAX_SEARCH_QUERY_LENGTH = 120
 SEARCH_SNIPPET_CHARS = 240
 PROJECT_INSPECTION_PATH_LABEL = "Project inspection paths"
 
-SAFE_TOP_LEVEL_FILES = {
-    "README.md",
-    "pyproject.toml",
-    "requirements.txt",
-}
 SAFE_SUFFIXES = {
     ".css",
+    ".cjs",
     ".js",
+    ".jsx",
+    ".json",
     ".md",
+    ".mjs",
     ".py",
     ".toml",
+    ".ts",
+    ".tsx",
     ".txt",
+    ".yaml",
+    ".yml",
 }
 BLOCKED_RUNTIME_PARTS = {
     ".mypy_cache",
@@ -48,6 +51,17 @@ BLOCKED_RUNTIME_NAMES = {
     ".env",
     ".env.example",
     "lewis.sqlite3",
+}
+# Runtime-data directories that project inspection reports as "runtime files"
+# before the shared path validator labels them generic blocked runtime paths.
+# Version-control, virtualenv, and cache directories such as .git, .venv, and
+# __pycache__ intentionally keep the shared validator's wording.
+RUNTIME_DATA_PARTS = {
+    "cache",
+    "caches",
+    "data",
+    "dist",
+    "node_modules",
 }
 
 
@@ -144,15 +158,7 @@ class ProjectInspector:
         return path
 
     def _iter_project_file_candidates(self) -> list[Path]:
-        candidates: list[Path] = []
-        for child in _sorted_children(self.project_root):
-            if child.is_dir():
-                if child.name not in {"app", "tests"} or child.is_symlink():
-                    continue
-                candidates.extend(self._iter_allowed_directory(child))
-                continue
-            candidates.append(child)
-        return candidates
+        return self._iter_allowed_directory(self.project_root)
 
     def _iter_allowed_directory(self, directory: Path) -> list[Path]:
         candidates: list[Path] = []
@@ -168,13 +174,33 @@ class ProjectInspector:
         return candidates
 
     def _validate_requested_path(self, raw_path: str) -> str:
+        normalized = _normalize_raw_path(raw_path)
+        # Classify the clearest refusal reasons first so users get specific
+        # messages; the shared validator still runs afterwards and enforces
+        # every remaining protection, so nothing is unblocked by the ordering.
+        self._reject_blocked_file_names(normalized)
+        self._reject_runtime_data_paths(normalized)
         path = validate_relative_project_path(
-            _normalize_raw_path(raw_path),
+            normalized,
             self.project_root,
             PROJECT_INSPECTION_PATH_LABEL,
         )
         self._validate_allowed_project_area(path)
         return path
+
+    def _reject_blocked_file_names(self, normalized_path: str) -> None:
+        name = PurePosixPath(normalized_path).name.lower()
+        if name in BLOCKED_RUNTIME_NAMES or name.startswith("."):
+            raise ValueError(
+                f"{PROJECT_INSPECTION_PATH_LABEL} include a blocked file name."
+            )
+
+    def _reject_runtime_data_paths(self, normalized_path: str) -> None:
+        parts = tuple(
+            part.lower() for part in PurePosixPath(normalized_path).parts
+        )
+        if any(part in RUNTIME_DATA_PARTS for part in parts):
+            raise ValueError(f"{PROJECT_INSPECTION_PATH_LABEL} include runtime files.")
 
     def _validate_allowed_project_area(self, path: str) -> None:
         posix_path = PurePosixPath(path)
@@ -184,18 +210,6 @@ class ProjectInspector:
         name = posix_path.name.lower()
         if name in BLOCKED_RUNTIME_NAMES or name.startswith(".env"):
             raise ValueError(f"{PROJECT_INSPECTION_PATH_LABEL} include env files.")
-        if len(posix_path.parts) == 1:
-            if posix_path.name in SAFE_TOP_LEVEL_FILES:
-                return
-            raise ValueError(
-                f"{PROJECT_INSPECTION_PATH_LABEL} must be under app/ or tests/ "
-                "or be an explicitly safe top-level project file."
-            )
-        if parts[0] not in {"app", "tests"}:
-            raise ValueError(
-                f"{PROJECT_INSPECTION_PATH_LABEL} must be under app/ or tests/ "
-                "or be an explicitly safe top-level project file."
-            )
         if posix_path.suffix.lower() not in SAFE_SUFFIXES:
             raise ValueError(f"{PROJECT_INSPECTION_PATH_LABEL} require text files.")
 

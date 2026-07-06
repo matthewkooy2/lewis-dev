@@ -8,7 +8,14 @@ from app.approvals import ApprovalStore
 from app.budget import BudgetManager
 from app.code_proposals import CODE_PROPOSAL_ACTION_TYPE, propose_code_change
 from app.code_proposal_previews import patch_preview_warning
-from app.config import MISSING_API_KEY_MESSAGE, ROOT_DIR, Settings, get_settings
+from app.config import (
+    DeveloperWorkspaceRootError,
+    MISSING_API_KEY_MESSAGE,
+    ROOT_DIR,
+    Settings,
+    get_settings,
+    resolve_developer_workspace_root,
+)
 from app.dashboard import (
     complete_task,
     format_dashboard_count_lines,
@@ -29,9 +36,11 @@ from app.memory_service import (
     propose_memory_update,
 )
 from app.memory_store import Memory, MemoryEvent
+from app.project_inspection import ProjectInspector
 from app.project_search import ProjectFileSearch
 from app.rag import DocumentSearch, NO_DOCUMENTS_MESSAGE, NO_MATCHES_MESSAGE
 from app.tools import ToolRegistry
+from app.trace.service import CodeTracer
 
 
 def build_agent(settings: Settings | None = None) -> LewisAgent:
@@ -39,15 +48,32 @@ def build_agent(settings: Settings | None = None) -> LewisAgent:
     approval_store = ApprovalStore(settings.database_path)
     document_search = DocumentSearch(settings.documents_dir)
     logger = RunLogger(settings.database_path)
+
+    workspace_root = None
+    project_inspector = None
+    code_tracer = None
+    if settings.developer_code_workspace:
+        workspace_root = resolve_developer_workspace_root(settings, default=ROOT_DIR)
+        project_inspector = ProjectInspector(workspace_root)
+        code_tracer = CodeTracer(workspace_root)
+
     tools = ToolRegistry(
         document_search=document_search,
         approval_store=approval_store,
         logger=logger,
         user_name_configured=settings.user_name_configured,
         developer_code_workspace=settings.developer_code_workspace,
+        project_inspector=project_inspector,
+        code_tracer=code_tracer,
     )
     budget = BudgetManager(settings)
-    return LewisAgent(settings=settings, tools=tools, budget=budget, logger=logger)
+    return LewisAgent(
+        settings=settings,
+        tools=tools,
+        budget=budget,
+        logger=logger,
+        workspace_root=workspace_root,
+    )
 
 
 def chat() -> int:
@@ -56,7 +82,11 @@ def chat() -> int:
         print(MISSING_API_KEY_MESSAGE)
         return 1
 
-    agent = build_agent(settings)
+    try:
+        agent = build_agent(settings)
+    except DeveloperWorkspaceRootError as exc:
+        print(f"Lewis> {exc}")
+        return 1
     print("Lewis terminal assistant. Type 'exit' or 'quit' to leave.")
     prompt_name = settings.user_name if settings.user_name_configured else "You"
     while True:
@@ -436,6 +466,33 @@ def print_project_file_search(search: ProjectFileSearch, query: str) -> None:
         print(f"  {item.snippet}")
 
 
+def run_trace_command(
+    symbol: str, file: str | None, mode: str, as_json: bool
+) -> int:
+    import json
+
+    from app.trace.model import TraceResult
+    from app.trace.render import render_result
+
+    settings = get_settings()
+    try:
+        root = resolve_developer_workspace_root(settings, default=ROOT_DIR)
+    except DeveloperWorkspaceRootError as exc:
+        result = TraceResult(mode=mode, ok=False, error=str(exc))
+        if as_json:
+            print(json.dumps(result.to_dict(), indent=2, default=str))
+        else:
+            print(render_result(result))
+        return 1
+
+    outcome = CodeTracer(root).trace(symbol, mode=mode, file=file)
+    if as_json:
+        print(json.dumps(outcome.result.to_dict(), indent=2, default=str))
+    else:
+        print(outcome.report)
+    return 0 if outcome.result.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lewis")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -480,6 +537,28 @@ def main(argv: list[str] | None = None) -> int:
     search_parser.add_argument("query")
     project_search_parser = subparsers.add_parser("search-files")
     project_search_parser.add_argument("query")
+    trace_parser = subparsers.add_parser(
+        "trace",
+        help=(
+            "Static read-only trace of one project symbol "
+            "(quick/deep/review); never runs project code."
+        ),
+    )
+    trace_parser.add_argument(
+        "symbol",
+        help="Name, Class.method, dotted path, or file::qualname to trace.",
+    )
+    trace_parser.add_argument(
+        "--file", default=None, help="Project-relative file to disambiguate."
+    )
+    trace_parser.add_argument(
+        "--mode", choices=["quick", "deep", "review"], default="quick"
+    )
+    trace_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full structured trace result as JSON.",
+    )
     approve_parser = subparsers.add_parser("approve")
     approve_parser.add_argument("approval_id", type=int)
     reject_parser = subparsers.add_parser("reject")
@@ -495,6 +574,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "search-files":
         print_project_file_search(ProjectFileSearch(ROOT_DIR), args.query)
         return 0
+    if args.command == "trace":
+        return run_trace_command(
+            symbol=args.symbol,
+            file=args.file,
+            mode=args.mode,
+            as_json=args.json,
+        )
 
     settings = get_settings()
     store = ApprovalStore(settings.database_path)

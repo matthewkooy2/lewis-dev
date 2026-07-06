@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,7 +35,7 @@ from app.text_tool_calls import extract_text_tool_calls, strip_tool_call_markup
 from app.tools import ToolRegistry
 
 
-def build_system_prompt(settings: Settings) -> str:
+def build_system_prompt(settings: Settings, workspace_root: Path | None = None) -> str:
     owner = settings.user_name if settings.user_name_configured else "the user"
     signoff_instruction = (
         f"When drafting email, you may sign with {settings.user_name} if appropriate."
@@ -44,17 +45,24 @@ def build_system_prompt(settings: Settings) -> str:
             "Use a neutral signoff like 'Best regards,' with no name beneath it."
         )
     )
+    workspace_label = str(workspace_root) if workspace_root is not None else "Lewis"
     project_inspection_instruction = (
-        "Developer/code workspace mode is enabled. When the user asks to inspect "
-        "Lewis project source files for code-planning work, you may use "
+        f"Developer/code workspace mode is enabled, scoped to the configured "
+        f"project workspace ({workspace_label}). When the user asks to inspect "
+        "that project's source files for code-planning work, you may use "
         "list_project_files, read_project_file, and search_project. These tools "
         "are read-only, project-relative, bounded, text-only, and separate from "
-        "document search. Do not generate patches, edit files, apply patches, run "
-        "shell commands, run tests, use browser automation, inspect runtime data, "
-        "or execute code proposals."
+        "document search. When the user asks to trace a function, find callers "
+        "or callees, check side effects, find tests for a symbol, or review an "
+        "implementation, call trace_symbol (mode quick, deep, or review) instead "
+        "of searching files yourself; answer only from its report and keep its "
+        "confirmed/inferred/ambiguous/unresolved labels when summarizing. If it "
+        "returns candidates, ask which one or pass file::symbol. Do not generate "
+        "patches, edit files, apply patches, run shell commands, run tests, use "
+        "browser automation, inspect runtime data, or execute code proposals."
         if settings.developer_code_workspace
         else (
-            "Developer/code workspace mode is disabled. Do not inspect Lewis "
+            "Developer/code workspace mode is disabled. Do not inspect project "
             "repository files for code-planning work; create planning-only code "
             "proposals instead."
         )
@@ -205,13 +213,17 @@ class LewisAgent:
         tools: ToolRegistry,
         budget: BudgetManager,
         logger: RunLogger,
+        workspace_root: Path | None = None,
     ):
         self.settings = settings
         self.tools = tools
         self.budget = budget
         self.logger = logger
         self.messages: list[dict[str, Any]] = [
-            {"role": "system", "content": build_system_prompt(settings)}
+            {
+                "role": "system",
+                "content": build_system_prompt(settings, workspace_root),
+            }
         ]
         self.latest_approval_id: int | None = None
         self.latest_email_draft_approval_id: int | None = None
