@@ -41,7 +41,9 @@ def _init_repo(tmp_path: Path) -> Path:
     return root
 
 
-def _settings(tmp_path: Path, *, debug: bool) -> Settings:
+def _settings(
+    tmp_path: Path, *, debug: bool, freestyle_web_ui: bool = False
+) -> Settings:
     documents = tmp_path / "documents"
     documents.mkdir(exist_ok=True)
     return Settings(
@@ -58,11 +60,20 @@ def _settings(tmp_path: Path, *, debug: bool) -> Settings:
         price_per_1k_input_tokens=0.0,
         price_per_1k_output_tokens=0.0,
         deepseek_code_model="deepseek-code-test",
+        freestyle_web_ui=freestyle_web_ui,
     )
 
 
-def _client(tmp_path: Path, root: Path, *, debug: bool = True) -> TestClient:
-    app = create_app(_settings(tmp_path, debug=debug))
+def _client(
+    tmp_path: Path,
+    root: Path,
+    *,
+    debug: bool = True,
+    freestyle_web_ui: bool = False,
+) -> TestClient:
+    app = create_app(
+        _settings(tmp_path, debug=debug, freestyle_web_ui=freestyle_web_ui)
+    )
     app.state.freestyle_project_root = root
     return TestClient(app)
 
@@ -98,7 +109,7 @@ def _source_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_freestyle_page_and_navigation_are_debug_only(tmp_path):
+def test_freestyle_page_and_navigation_require_debug_or_dedicated_flag(tmp_path):
     root = _init_repo(tmp_path)
     normal = _client(tmp_path, root, debug=False)
     dev = _client(tmp_path, root)
@@ -109,6 +120,28 @@ def test_freestyle_page_and_navigation_are_debug_only(tmp_path):
     assert response.status_code == 200
     assert "Freestyle Command Center" in response.text
     assert "/dev/freestyle" in dev.get("/dashboard").text
+
+
+def test_dedicated_freestyle_flag_enables_ui_without_broad_debug_mode(tmp_path):
+    """LEWIS_FREESTYLE_UI alone (LEWIS_DEBUG left off) must be sufficient."""
+    root = _init_repo(tmp_path)
+    narrow = _client(tmp_path, root, debug=False, freestyle_web_ui=True)
+
+    response = narrow.get("/dev/freestyle")
+    assert response.status_code == 200
+    assert "Freestyle Command Center" in response.text
+    assert "/dev/freestyle" in narrow.get("/dashboard").text
+
+
+def test_opening_the_page_never_creates_a_job(tmp_path):
+    root = _init_repo(tmp_path)
+    client = _client(tmp_path, root, debug=False, freestyle_web_ui=True)
+
+    for _ in range(3):
+        response = client.get("/dev/freestyle")
+        assert response.status_code == 200
+
+    assert freestyle.list_freestyle_jobs(project_root=root) == []
 
 
 def test_page_renders_empty_state_and_requires_explicit_create_approval(tmp_path):

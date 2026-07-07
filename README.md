@@ -221,7 +221,29 @@ calls, token usage, and estimated cost. Configure budgets and pricing in `.env`:
 - `DEEPSEEK_PRICE_PER_1K_OUTPUT`
 
 Set `LEWIS_DEBUG=true` to print a concise token summary after each model
-request.
+request. `LEWIS_DEBUG` also enables the Freestyle web UI (see below).
+
+## Freestyle Web UI
+
+The Freestyle command center (`/dev/freestyle`, linked from the dashboard's
+"Developer" navigation group) is a developer-only local UI for inspecting and
+lightly operating approved, isolated-worktree coding jobs. It is disabled by
+default. Enable it with either flag in `.env`:
+
+- `LEWIS_FREESTYLE_UI=true` &mdash; enables only the Freestyle routes and nav
+  link. Prefer this if you do not also want `LEWIS_DEBUG`'s unrelated token
+  logging.
+- `LEWIS_DEBUG=true` &mdash; enables Freestyle plus the broader debug output
+  above.
+
+Every mutating action in the UI (creating a job, applying a generated bundle,
+running checks, refining, cleaning up, recovering stale state) still requires
+its own explicit form confirmation; enabling the UI only makes the page
+reachable, it does not skip any confirmation. See `LEWIS_FREESTYLE_PROVIDER`
+and the surrounding `LEWIS_LOCAL_*` variables in `.env.example` to choose
+which model (remote DeepSeek or a local OpenAI-compatible endpoint such as
+LM Studio) backs Freestyle job generation; that is independent of whether the
+UI itself is visible.
 
 ## Current Limitations
 

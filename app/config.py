@@ -52,10 +52,22 @@ class Settings:
     local_llm_model: str | None = None
     local_llm_api_key: str | None = None
     local_llm_json_mode: bool = False
+    # Dedicated Freestyle web UI flag. Enables the /dev/freestyle routes and
+    # its "Developer" navigation link without turning on unrelated broad
+    # debug functionality (LEWIS_DEBUG also still enables it, for existing
+    # developer workflows). Every job-creation, apply, checks, refine,
+    # cleanup, and recover action still requires its own explicit form
+    # confirmation regardless of this flag.
+    freestyle_web_ui: bool = False
 
     @property
     def has_api_key(self) -> bool:
         return bool(self.deepseek_api_key)
+
+    @property
+    def freestyle_ui_enabled(self) -> bool:
+        """Whether the Freestyle web UI (routes and nav link) is enabled."""
+        return self.debug or self.freestyle_web_ui
 
 
 class DeveloperWorkspaceRootError(ValueError):
@@ -139,6 +151,7 @@ def get_settings() -> Settings:
         local_llm_model=_env_optional_text("LEWIS_LOCAL_CODE_MODEL"),
         local_llm_api_key=_env_optional_text("LEWIS_LOCAL_API_KEY"),
         local_llm_json_mode=_env_bool("LEWIS_LOCAL_JSON_MODE"),
+        freestyle_web_ui=_env_bool("LEWIS_FREESTYLE_UI"),
     )
 
 

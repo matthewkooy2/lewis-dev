@@ -308,7 +308,7 @@ def _page(
             title,
             request.url.path,
             content,
-            show_dev_navigation=_settings(request).debug,
+            show_dev_navigation=_settings(request).freestyle_ui_enabled,
         ),
         status_code=status_code,
     )
