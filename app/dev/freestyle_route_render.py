@@ -60,7 +60,10 @@ def render_local_pages(
     except Exception:
         return ()
 
-    with tempfile.TemporaryDirectory(prefix="lewis-ui-render-") as tmp:
+    with tempfile.TemporaryDirectory(
+        prefix="lewis-ui-render-",
+        ignore_cleanup_errors=True,
+    ) as tmp:
         # A throwaway database keeps the real approval store untouched; debug is
         # off so optional developer-only routes are not mounted.
         try:

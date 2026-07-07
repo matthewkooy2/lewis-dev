@@ -68,6 +68,7 @@ def test_documents_dir_ignores_environment_override(monkeypatch, tmp_path):
 
 def test_settings_default_code_model_profile(monkeypatch):
     monkeypatch.setattr("app.config.load_dotenv", lambda: None)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.delenv("DEEPSEEK_CODE_MODEL", raising=False)
 
     settings = get_settings()

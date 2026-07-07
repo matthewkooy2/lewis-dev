@@ -329,7 +329,10 @@ def test_write_artifact_bytes_refuses_symlinked_directories_and_temp_files(tmp_p
     state.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (state / "checks").symlink_to(outside)
+    try:
+        (state / "checks").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not supported in this environment")
     with pytest.raises(FreestyleJobRefusedError, match="artifact path is unsafe"):
         write_artifact_bytes(
             state, "checks", _JOB_ID, "checks-1.json", b"{}\n", label="check"
