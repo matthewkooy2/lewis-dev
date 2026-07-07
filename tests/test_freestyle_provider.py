@@ -38,7 +38,13 @@ from app.dev.freestyle_provider import (
     provider_metadata,
     validate_provider_config,
 )
-from app.dev.freestyle_proposal import proposal_json_schema
+from app.dev.freestyle_context_plan import plan_context
+from app.dev.freestyle_proposal import (
+    ProposalContext,
+    _build_artifact,
+    _build_proposal_request,
+    proposal_json_schema,
+)
 from app.dev.freestyle_run import run_freestyle_job
 
 
@@ -332,6 +338,8 @@ def test_local_provider_context_limits_are_reduced():
     assert local.max_context_files < remote.max_context_files
     assert local.max_context_total_chars < remote.max_context_total_chars
     assert local.max_context_chars_per_file < remote.max_context_chars_per_file
+    assert local.max_proposal_input_tokens is not None
+    assert remote.max_proposal_input_tokens is None
     assert local.max_proposal_output_tokens < remote.max_proposal_output_tokens
     assert local.max_edit_output_tokens < remote.max_edit_output_tokens
     assert local.max_edit_prompt_chars < remote.max_edit_prompt_chars
@@ -349,6 +357,135 @@ def test_provider_display_is_secret_free():
     assert metadata["endpoint"] == "http://127.0.0.1:1234/v1"
     assert metadata["local_only"] is True
     assert "topsecret" not in json.dumps(metadata)
+
+
+def test_local_proposal_request_is_fit_under_input_budget_and_preserves_required_sections(
+    tmp_path,
+):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    config = ProviderProposalConfig(
+        api_key="",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://127.0.0.1:1234/v1",
+        provider=LOCAL_OPENAI_PROVIDER,
+        local_only=True,
+        supports_json_response_format=True,
+    )
+    plan = plan_context(job.goal)
+    files = tuple(
+        {
+            "path": f"app/dev/large_{index}.py",
+            "content": f"# large file {index}\n" + ("VALUE = 1\n" * 500),
+            "truncated": False,
+            "sha256": str(index),
+        }
+        for index in range(6)
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=sum(len(item["content"]) for item in files),
+        scanned_file_count=len(files),
+    )
+
+    request, fitted = _build_proposal_request(config, job, context, plan)
+
+    assert fitted.proposal_input_budget_tokens == context_limits_for(
+        config
+    ).max_proposal_input_tokens
+    assert fitted.estimated_request_input_tokens is not None
+    assert fitted.estimated_request_input_tokens <= fitted.proposal_input_budget_tokens
+    assert fitted.budget_removed_sections
+    assert len(fitted.files) < len(context.files)
+    assert len(fitted.files) >= 1
+    assert (
+        "Return one JSON object" in request["messages"][0]["content"]
+    )
+    assert json.loads(request["messages"][1]["content"])["goal"] == job.goal
+    assert request["response_format"]["json_schema"]["schema"] == proposal_json_schema()
+
+
+def test_local_proposal_budget_removals_are_recorded_in_artifact(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    config = ProviderProposalConfig(
+        api_key="",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://127.0.0.1:1234/v1",
+        provider=LOCAL_OPENAI_PROVIDER,
+        local_only=True,
+        supports_json_response_format=True,
+    )
+    plan = plan_context(job.goal)
+    files = tuple(
+        {
+            "path": f"app/dev/large_{index}.py",
+            "content": f"# large file {index}\n" + ("VALUE = 1\n" * 500),
+            "truncated": False,
+            "sha256": str(index),
+        }
+        for index in range(6)
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=sum(len(item["content"]) for item in files),
+        scanned_file_count=len(files),
+    )
+    _, fitted = _build_proposal_request(config, job, context, plan)
+    response = _FakeLocalClient(_proposal_content()).chat.completions.create()
+
+    artifact = _build_artifact(
+        job,
+        config,
+        fitted,
+        json.loads(_proposal_content()),
+        response,
+        "2026-07-07T00:00:00Z",
+        [],
+    )
+
+    summary = artifact["context_summary"]
+    assert summary["budget_removed_sections"] == list(fitted.budget_removed_sections)
+    assert summary["budget_removed_sections"]
+
+
+def test_small_local_proposal_request_is_unchanged(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    config = ProviderProposalConfig(
+        api_key="",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://127.0.0.1:1234/v1",
+        provider=LOCAL_OPENAI_PROVIDER,
+        local_only=True,
+        supports_json_response_format=True,
+    )
+    plan = plan_context(job.goal)
+    files = (
+        {
+            "path": "app/dev/sample.py",
+            "content": "VALUE = 1\n",
+            "truncated": False,
+            "sha256": "sample",
+        },
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=len(files[0]["content"]),
+        scanned_file_count=1,
+    )
+
+    request, fitted = _build_proposal_request(config, job, context, plan)
+
+    assert fitted.files == context.files
+    assert fitted.budget_removed_sections == ()
+    assert json.loads(request["messages"][1]["content"])["safe_files"] == list(files)
 
 
 # --- generation through the local provider --------------------------------------

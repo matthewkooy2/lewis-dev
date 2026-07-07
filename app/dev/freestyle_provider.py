@@ -156,6 +156,7 @@ class ProviderContextLimits:
     max_context_files: int
     max_context_total_chars: int
     max_context_chars_per_file: int
+    max_proposal_input_tokens: int | None
     max_proposal_output_tokens: int
     max_edit_output_tokens: int
     max_edit_prompt_chars: int
@@ -165,6 +166,7 @@ _DEEPSEEK_LIMITS = ProviderContextLimits(
     max_context_files=12,
     max_context_total_chars=48_000,
     max_context_chars_per_file=8_000,
+    max_proposal_input_tokens=None,
     max_proposal_output_tokens=10_000,
     max_edit_output_tokens=16_000,
     max_edit_prompt_chars=80_000,
@@ -173,6 +175,10 @@ _LOCAL_LIMITS = ProviderContextLimits(
     max_context_files=8,
     max_context_total_chars=24_000,
     max_context_chars_per_file=6_000,
+    # Reserve room inside an 8192-token local context window for the model's
+    # completion plus a safety margin, then fit the full serialized proposal
+    # request under the remaining deterministic input budget.
+    max_proposal_input_tokens=3_680,
     max_proposal_output_tokens=4_000,
     max_edit_output_tokens=8_000,
     max_edit_prompt_chars=40_000,
