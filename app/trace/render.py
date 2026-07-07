@@ -68,6 +68,7 @@ def render_result(result: TraceResult, limits: TraceLimits | None = None) -> str
 
     if result.mode == "review":
         _render_findings(lines, result)
+        _render_evidence(lines, result)
 
     caller_cap = 12 if result.mode == "review" else None
     _render_edges(
@@ -235,12 +236,16 @@ def _render_findings(lines: list[str], result: TraceResult) -> None:
             f"  [{finding.severity}/{finding.confidence}] {finding.category} "
             f"{finding.path}:{finding.line} — {finding.message}"
         )
-    if result.evidence:
-        lines.append("Evidence:")
-        for snippet in result.evidence:
-            lines.append(f"  {snippet.path}:{snippet.start_line}-{snippet.end_line}:")
-            for offset, text in enumerate(snippet.text.splitlines()):
-                lines.append(f"    {snippet.start_line + offset:>5} | {text}")
+
+
+def _render_evidence(lines: list[str], result: TraceResult) -> None:
+    if not result.evidence:
+        return
+    lines.append("Evidence:")
+    for snippet in result.evidence:
+        lines.append(f"  {snippet.path}:{snippet.start_line}-{snippet.end_line}:")
+        for offset, text in enumerate(snippet.text.splitlines()):
+            lines.append(f"    {snippet.start_line + offset:>5} | {text}")
 
 
 def _short_id(symbol_id: str) -> str:

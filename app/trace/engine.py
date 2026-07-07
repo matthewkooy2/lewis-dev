@@ -117,11 +117,25 @@ class TargetLookup:
     suggestions: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class SuppliedCallback:
+    """A statically identifiable callback one caller injects into a callee."""
+
+    prop: str
+    site: RawCall  # the injected invocation inside the callee
+    supplier_path: str
+    supplier_qualname: str | None
+    supplier_line: int
+    supplier_call: RawCall
+    definition: SymbolDefinition
+
+
 class TraceEngine:
     def __init__(self, index: ProjectIndex, limits: TraceLimits | None = None):
         self.index = index
         self.limits = limits or TraceLimits()
         self._resolution_cache: dict[tuple[str, int, str], ResolvedCallee] = {}
+        self._injected_sites_cache: dict[str, dict[str, RawCall]] = {}
 
     # ---- target resolution ---------------------------------------------------
 
@@ -243,6 +257,8 @@ class TraceEngine:
         if call.jsx_component:
             return self._resolve_jsx_component(module, call)
         if call.is_callback_reference:
+            if call.is_local_binding:
+                return self._resolve_local_binding(module, call)
             resolved = self._resolve_name(module, call.head, call.caller_qualname)
             if resolved is not None:
                 return ResolvedCallee(
@@ -258,6 +274,11 @@ class TraceEngine:
             resolved = self._resolve_receiver_call(module, call, receiver)
             if resolved is not None:
                 return resolved
+        if call.is_local_binding:
+            # The head is a parameter/destructured binding: an injected value.
+            # It shadows module names and must never fall through to
+            # workspace-wide name matching.
+            return self._resolve_local_binding(module, call)
         if not call.head:
             return self._resolve_by_method_name(call, receiver_note="expression")
 
@@ -290,6 +311,28 @@ class TraceEngine:
                 ),
             )
         return self._fallback_name_match(module, call)
+
+    def _resolve_local_binding(
+        self, module: ModuleIndex, call: RawCall
+    ) -> ResolvedCallee:
+        if call.attr_chain:
+            return ResolvedCallee(
+                "dynamic", None, RESOLUTION_DYNAMIC,
+                note=(
+                    f"call on a property of locally bound `{call.head}` "
+                    "(injected value; target depends on the caller)"
+                ),
+            )
+        note = (
+            f"injected/locally bound callback `{call.head}` "
+            "(target depends on what each caller supplies)"
+        )
+        if call.local_default_line is not None:
+            note += (
+                f"; default implementation at "
+                f"{module.path}:{call.local_default_line}"
+            )
+        return ResolvedCallee("dynamic", None, RESOLUTION_DYNAMIC, note=note)
 
     def _resolve_jsx_component(
         self, module: ModuleIndex, call: RawCall
@@ -668,6 +711,119 @@ class TraceEngine:
             return head in PYTHON_BUILTINS
         return head in JS_GLOBALS
 
+    # ---- injected callback propagation ---------------------------------------
+
+    def injected_callback_sites(self, target: SymbolDefinition) -> dict[str, RawCall]:
+        """Injected/locally bound callback invocations inside ``target``."""
+        cached = self._injected_sites_cache.get(target.symbol_id)
+        if cached is not None:
+            return cached
+        sites: dict[str, RawCall] = {}
+        module = self.index.module_for(target.path)
+        if module is not None:
+            scope = self._scope_qualnames(target)
+            for call in module.calls:
+                if (
+                    call.caller_qualname in scope
+                    and call.is_local_binding
+                    and not call.attr_chain
+                    and call.head not in sites
+                ):
+                    sites[call.head] = call
+        self._injected_sites_cache[target.symbol_id] = sites
+        return sites
+
+    def caller_supplied_callbacks(
+        self, target: SymbolDefinition
+    ) -> list[SuppliedCallback]:
+        """Callbacks that specific callers statically supply to ``target``.
+
+        Each entry ties one caller's options-object property to the workspace
+        definition it names — a call-path-specific relationship, never a
+        claim about every caller.
+        """
+        injected = self.injected_callback_sites(target)
+        if not injected:
+            return []
+        supplied: list[SuppliedCallback] = []
+        seen: set[tuple[str, str, str, int]] = set()
+        for path, module in self.index.modules.items():
+            for call in module.calls:
+                if not call.callback_args:
+                    continue
+                resolved = self.resolve_call(module, call)
+                if (
+                    resolved.definition is None
+                    or resolved.definition.symbol_id != target.symbol_id
+                ):
+                    continue
+                for prop, ident in call.callback_args:
+                    site = injected.get(prop)
+                    if site is None:
+                        continue
+                    definition = self._resolve_identifier(
+                        module, ident, call.caller_qualname
+                    )
+                    if definition is None:
+                        continue
+                    key = (prop, definition.symbol_id, path, call.line)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    supplied.append(
+                        SuppliedCallback(
+                            prop=prop,
+                            site=site,
+                            supplier_path=path,
+                            supplier_qualname=call.caller_qualname,
+                            supplier_line=call.line,
+                            supplier_call=call,
+                            definition=definition,
+                        )
+                    )
+                    if len(supplied) >= self.limits.max_callees:
+                        return supplied
+        return supplied
+
+    def _resolve_identifier(
+        self, module: ModuleIndex, name: str, caller_qualname: str | None
+    ) -> SymbolDefinition | None:
+        """Workspace definition a bare identifier refers to in ``module``."""
+        resolved = self._resolve_name(module, name, caller_qualname)
+        if resolved is not None:
+            return resolved
+        for binding in module.imports:
+            if binding.kind == "star" or binding.local_name != name:
+                continue
+            result = self.index.resolve_import_binding(module, binding, None)
+            if result == "external" or result == (None, None):
+                return None
+            path, qualname = result  # type: ignore[misc]
+            if not qualname:
+                return None
+            return self.index.definition_at(path, qualname)
+        return None
+
+    def _supplied_callback_edge(
+        self, target: SymbolDefinition, supplied: SuppliedCallback, depth: int
+    ) -> CallEdge:
+        supplier = supplied.supplier_qualname or "<module>"
+        return CallEdge(
+            caller_path=target.path,
+            caller_qualname=supplied.site.caller_qualname,
+            line=supplied.site.line,
+            callee_text=supplied.site.callee_text,
+            target_path=supplied.definition.path,
+            target_qualname=supplied.definition.qualname,
+            resolution=RESOLUTION_INFERRED,
+            note=(
+                f"injected `{supplied.prop}` for this call path only — "
+                f"supplied by {supplier} "
+                f"({supplied.supplier_path}:{supplied.supplier_line})"
+            ),
+            depth=depth,
+        )
+
     # ---- quick / deep traces ------------------------------------------------------
 
     def quick_trace(self, target: SymbolDefinition) -> TraceResult:
@@ -717,6 +873,18 @@ class TraceEngine:
                 callees_truncated = True
         if callees_truncated:
             truncations.append(f"Callees truncated at {limits.max_callees}.")
+
+        # Call-path-specific callbacks: when a caller statically supplies a
+        # callback for one of this function's injected bindings, follow it
+        # for that path (labeled inferred, never claimed globally).
+        for supplied in self.caller_supplied_callbacks(target):
+            if len(callees) < limits.max_callees:
+                callees.append(
+                    self._supplied_callback_edge(target, supplied, depth=1)
+                )
+            else:
+                truncations.append(f"Callees truncated at {limits.max_callees}.")
+                break
 
         callers, tests = self._find_callers_and_tests(target)
         if len(callers) > limits.max_callers:
@@ -793,6 +961,20 @@ class TraceEngine:
         frontier: list[tuple[SymbolDefinition, int]] = [(target, 0)]
         depth_truncated = False
         node_truncated = False
+        # Seed the root's caller-supplied callbacks so their paths and
+        # transitive effects are traced (each edge stays labeled with the
+        # specific supplying caller).
+        for supplied in self.caller_supplied_callbacks(target):
+            definition = supplied.definition
+            if len(edges) < limits.max_edges:
+                edges.append(self._supplied_callback_edge(target, supplied, depth=1))
+            if definition.symbol_id not in visited:
+                if len(visited) >= limits.max_nodes:
+                    node_truncated = True
+                    continue
+                visited[definition.symbol_id] = definition
+                parents[definition.symbol_id] = target.symbol_id
+                frontier.append((definition, 1))
         while frontier:
             current, depth = frontier.pop(0)
             if depth >= limits.max_depth:
@@ -827,6 +1009,44 @@ class TraceEngine:
                     visited[callee.symbol_id] = callee
                     parents[callee.symbol_id] = current.symbol_id
                     frontier.append((callee, depth + 1))
+                # Propagate callbacks supplied at THIS call site into the
+                # callee's injected bindings (call-path-specific, inferred).
+                if call.callback_args:
+                    callee_injected = self.injected_callback_sites(callee)
+                    for prop, ident in call.callback_args:
+                        site = callee_injected.get(prop)
+                        if site is None:
+                            continue
+                        cb_def = self._resolve_identifier(
+                            module, ident, call.caller_qualname
+                        )
+                        if cb_def is None or len(edges) >= limits.max_edges:
+                            continue
+                        supplier = call.caller_qualname or "<module>"
+                        edges.append(
+                            CallEdge(
+                                caller_path=callee.path,
+                                caller_qualname=site.caller_qualname,
+                                line=site.line,
+                                callee_text=site.callee_text,
+                                target_path=cb_def.path,
+                                target_qualname=cb_def.qualname,
+                                resolution=RESOLUTION_INFERRED,
+                                note=(
+                                    f"injected `{prop}` for this call path "
+                                    f"only — supplied by {supplier} "
+                                    f"({current.path}:{call.line})"
+                                ),
+                                depth=depth + 2,
+                            )
+                        )
+                        if cb_def.symbol_id not in visited:
+                            if len(visited) >= limits.max_nodes:
+                                node_truncated = True
+                                continue
+                            visited[cb_def.symbol_id] = cb_def
+                            parents[cb_def.symbol_id] = callee.symbol_id
+                            frontier.append((cb_def, depth + 2))
         if depth_truncated:
             truncations.append(
                 f"Call paths deeper than {limits.max_depth} levels were not followed."
@@ -904,6 +1124,7 @@ class TraceEngine:
     ) -> tuple[list[CallEdge], list[TestLink]]:
         callers: list[CallEdge] = []
         tests: list[TestLink] = []
+        injected_names = set(self.injected_callback_sites(target))
         for path, module in self.index.modules.items():
             for call in module.calls:
                 resolved = self.resolve_call(module, call)
@@ -926,6 +1147,15 @@ class TraceEngine:
                         )
                 if not matched:
                     continue
+                note = resolved.note
+                supplied_pairs = [
+                    f"{prop}={ident}"
+                    for prop, ident in call.callback_args
+                    if prop in injected_names
+                ]
+                if supplied_pairs:
+                    supplied_text = "supplies callbacks: " + ", ".join(supplied_pairs)
+                    note = f"{note}; {supplied_text}" if note else supplied_text
                 edge = CallEdge(
                     caller_path=path,
                     caller_qualname=call.caller_qualname,
@@ -934,7 +1164,7 @@ class TraceEngine:
                     target_path=target.path,
                     target_qualname=target.qualname,
                     resolution=resolved.resolution,
-                    note=resolved.note,
+                    note=note,
                 )
                 callers.append(edge)
                 if module.is_test:

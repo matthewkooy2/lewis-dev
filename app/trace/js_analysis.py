@@ -180,6 +180,10 @@ class _Frame:
         self.awaiting_body_brace = False
         self.contains_jsx = False
         self.local_types: dict[str, str] = {}
+        # Parameter/destructured bindings visible in this scope, mapped to the
+        # line of their local default implementation (None when no callable
+        # default is declared).
+        self.local_bindings: dict[str, int | None] = {}
         self.object_name: str | None = None
 
 
@@ -198,6 +202,7 @@ class _Pending:
         self.def_index = def_index
         self.paren_depth = paren_depth
         self.object_name: str | None = None
+        self.param_bindings: dict[str, int | None] = {}
 
 
 class _JsErrorInfo:
@@ -222,6 +227,11 @@ class _Analyzer:
         self.pending_scopes: list[_Pending] = []
         self.non_call_parens: set[int] = set()
         self.arrow_defs: dict[int, int] = {}  # token index of "=>" -> def index
+        self.arrow_params: dict[int, dict[str, int | None]] = {}
+        # Token ranges of parameter lists whose calls/effects belong to the
+        # function being defined (defaults run inside its scope), keyed as
+        # (start_index, end_index, qualname).
+        self._param_scopes: list[tuple[int, int, str]] = []
         self.definitions: list[dict] = []
         self.imports: list[ImportBinding] = []
         self.exports: list[ExportBinding] = []
@@ -518,6 +528,9 @@ class _Analyzer:
             name_token = self.tokens[self.i + 1]
             close_token = self.tokens[self.i + 2]
             if name_token.type == "id" and close_token.type == "jsx_expr_close":
+                is_local, local_default_line = self._lookup_local_binding(
+                    name_token.value
+                )
                 self.calls.append(
                     RawCall(
                         caller_qualname=self._caller_qualname(),
@@ -526,6 +539,8 @@ class _Analyzer:
                         attr_chain=(),
                         line=token.line,
                         is_callback_reference=True,
+                        is_local_binding=is_local,
+                        local_default_line=local_default_line,
                     )
                 )
         self._pending_jsx_handler_attr = False
@@ -582,6 +597,7 @@ class _Analyzer:
         if pending is not None and pending.kind == "function":
             frame = _Frame("function", self._def_qualname(pending.def_index),
                           def_index=pending.def_index)
+            frame.local_bindings.update(pending.param_bindings)
             self.frames.append(frame)
             self.braces.append(_Brace("function_body", pops_frame=True))
             return
@@ -1007,7 +1023,7 @@ class _Analyzer:
                 export_names=export_names,
                 signature=self._signature_between(value_index + offset, arrow_index),
             )
-            self.arrow_defs[arrow_index] = def_index
+            self._note_arrow(arrow_index, def_index, value_index + offset)
             return
         if value.type == "id" and value.value in REACT_WRAPPERS:
             inner = value_index + offset + 2  # wrapper ( ...
@@ -1022,7 +1038,7 @@ class _Analyzer:
                     export_names=export_names,
                     decorators=(value.value,),
                 )
-                self.arrow_defs[arrow_index] = def_index
+                self._note_arrow(arrow_index, def_index, inner)
             return
         if value.type == "punct" and value.value == "{":
             pending = _Pending("object_value", None, self.paren_depth)
@@ -1070,6 +1086,17 @@ class _Analyzer:
                 names.append(item.value)
             j += 1
         if require_source is None:
+            # Plain destructuring (`const { cb = (x) => ... } = options`):
+            # inside a function these are local bindings, and calling one is
+            # an injected/dynamic callback, not a module-level reference.
+            for frame in reversed(self.frames):
+                if frame.kind == "function":
+                    frame.local_bindings.update(
+                        self._collect_binding_names(self.i + 1)
+                    )
+                    break
+                if frame.kind == "module":
+                    break
             return
         category = EFFECT_IMPORT_ROOTS.get(_bare_root(require_source))
         for name in names[:40]:
@@ -1115,12 +1142,43 @@ class _Analyzer:
 
     def _register_function_header(self, header_index: int, def_index: int) -> None:
         end = min(len(self.tokens), header_index + MAX_LOOKAHEAD)
+        pending = _Pending("function", def_index, self.paren_depth)
         for j in range(header_index, end):
             item = self.tokens[j]
             if item.type == "punct" and item.value == "(":
                 self.non_call_parens.add(j)
+                pending.param_bindings = self._collect_binding_names(j)
+                self._note_param_scope(j, def_index)
                 break
-        self.pending_scopes.append(_Pending("function", def_index, self.paren_depth))
+        self.pending_scopes.append(pending)
+
+    def _note_arrow(self, arrow_index: int, def_index: int, params_start: int) -> None:
+        """Register an arrow definition together with its parameter bindings."""
+        self.arrow_defs[arrow_index] = def_index
+        self.arrow_params[arrow_index] = self._collect_binding_names(params_start)
+        self._param_scopes.append(
+            (params_start, arrow_index, self.definitions[def_index]["qualname"])
+        )
+
+    def _note_param_scope(self, open_index: int, def_index: int) -> None:
+        """Attribute calls inside a parameter list to the defined function."""
+        depth = 0
+        end = min(len(self.tokens), open_index + MAX_LOOKAHEAD)
+        close = open_index
+        for j in range(open_index, end):
+            item = self.tokens[j]
+            if item.type == "punct":
+                if item.value == "(":
+                    depth += 1
+                elif item.value == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close = j
+                        break
+        if close > open_index:
+            self._param_scopes.append(
+                (open_index, close, self.definitions[def_index]["qualname"])
+            )
 
     def _handle_class_keyword(self, token: Token) -> None:
         exported, export_names = self._consume_export_flag()
@@ -1197,7 +1255,10 @@ class _Analyzer:
             )
             self._pending_decorators = []
             self.non_call_parens.add(j + 1)
-            self.pending_scopes.append(_Pending("function", def_index, self.paren_depth))
+            pending = _Pending("function", def_index, self.paren_depth)
+            pending.param_bindings = self._collect_binding_names(j + 1)
+            self._note_param_scope(j + 1, def_index)
+            self.pending_scopes.append(pending)
             self.i = j
             return
         if after is not None and after.type == "punct" and after.value == "=":
@@ -1211,7 +1272,7 @@ class _Analyzer:
                     decorators=tuple(self._pending_decorators),
                 )
                 self._pending_decorators = []
-                self.arrow_defs[arrow_index] = def_index
+                self._note_arrow(arrow_index, def_index, j + 2)
                 self.i = j + 1
                 return
         self.i = j if modifiers_seen else self.i
@@ -1244,7 +1305,10 @@ class _Analyzer:
                 signature=self._signature_after(j),
             )
             self.non_call_parens.add(j + 1)
-            self.pending_scopes.append(_Pending("function", def_index, self.paren_depth))
+            pending = _Pending("function", def_index, self.paren_depth)
+            pending.param_bindings = self._collect_binding_names(j + 1)
+            self._note_param_scope(j + 1, def_index)
+            self.pending_scopes.append(pending)
             self.i = j
             return
         if after is not None and after.type == "punct" and after.value == ":":
@@ -1280,7 +1344,7 @@ class _Analyzer:
                     name_token.line,
                     parent=container,
                 )
-                self.arrow_defs[arrow_index] = def_index
+                self._note_arrow(arrow_index, def_index, value_index)
                 self.i = j + 1
                 return
             if value.type == "punct" and value.value == "{":
@@ -1298,6 +1362,7 @@ class _Analyzer:
 
     def _handle_arrow(self, token: Token) -> None:
         def_index = self.arrow_defs.pop(self.i, None)
+        params = self.arrow_params.pop(self.i, None)
         next_token = self.tokens[self.i + 1] if self.i + 1 < len(self.tokens) else None
         if def_index is None:
             return  # anonymous arrow: calls attribute to the enclosing scope
@@ -1305,6 +1370,7 @@ class _Analyzer:
         if next_token is not None and next_token.type == "punct" and next_token.value == "{":
             frame = _Frame("function", qualname, def_index=def_index)
             frame.awaiting_body_brace = True
+            frame.local_bindings.update(params or {})
             self.frames.append(frame)
             return
         frame = _Frame(
@@ -1314,6 +1380,7 @@ class _Analyzer:
             expr_arrow=True,
             snapshot=(self.paren_depth, len(self.braces), self.special_depth),
         )
+        frame.local_bindings.update(params or {})
         self.frames.append(frame)
 
     # ---- TS type declarations -------------------------------------------------
@@ -1485,6 +1552,17 @@ class _Analyzer:
                 if head in frame.local_types:
                     receiver_type = frame.local_types[head]
                     break
+        is_local, local_default_line = (
+            self._lookup_local_binding(head) if head else (False, None)
+        )
+        next_token = (
+            self.tokens[self.i + 1] if self.i + 1 < len(self.tokens) else None
+        )
+        has_arguments = not (
+            next_token is not None
+            and next_token.type == "punct"
+            and next_token.value == ")"
+        )
         call = RawCall(
             caller_qualname=caller,
             callee_text=callee_text,
@@ -1496,6 +1574,10 @@ class _Analyzer:
             is_dynamic=dynamic,
             argument_names=self._argument_names(self.i),
             receiver_type=receiver_type,
+            has_arguments=has_arguments,
+            is_local_binding=is_local,
+            local_default_line=local_default_line,
+            callback_args=self._object_literal_callback_args(self.i),
         )
         self.calls.append(call)
         self._classify_js_effect(call)
@@ -1609,6 +1691,70 @@ class _Analyzer:
             j += 1
         return tuple(names)
 
+    def _object_literal_callback_args(self, paren_index: int) -> tuple[tuple[str, str], ...]:
+        """Identifier-valued properties of object literals passed as arguments.
+
+        Supports the common options-object pattern: for
+        ``f(rows, { getDueDate, isEligiblePayment: shouldShowRow })`` this
+        yields (("getDueDate", "getDueDate"), ("isEligiblePayment",
+        "shouldShowRow")). Non-identifier values are skipped.
+        """
+        pairs: list[tuple[str, str]] = []
+        depth = 0
+        object_level: int | None = None
+        j = paren_index
+        end = min(len(self.tokens), paren_index + MAX_LOOKAHEAD)
+        while j < end and len(pairs) < 8:
+            token = self.tokens[j]
+            if token.type == "punct":
+                if token.value in {"(", "[", "{"}:
+                    if token.value == "{" and depth == 1 and object_level is None:
+                        object_level = depth + 1
+                    depth += 1
+                elif token.value in {")", "]", "}"}:
+                    depth -= 1
+                    if token.value == "}" and object_level is not None and depth < object_level:
+                        object_level = None
+                    if depth == 0:
+                        break
+            elif (
+                token.type in {"id", "keyword"}
+                and object_level is not None
+                and depth == object_level
+            ):
+                next_token = self.tokens[j + 1] if j + 1 < len(self.tokens) else None
+                next_value = (
+                    next_token.value
+                    if next_token is not None and next_token.type == "punct"
+                    else ""
+                )
+                if next_value in {",", "}"} and token.type == "id":
+                    pairs.append((token.value, token.value))  # shorthand
+                    j += 1
+                    continue
+                if next_value == ":":
+                    value_token = (
+                        self.tokens[j + 2] if j + 2 < len(self.tokens) else None
+                    )
+                    after_value = (
+                        self.tokens[j + 3] if j + 3 < len(self.tokens) else None
+                    )
+                    if (
+                        value_token is not None
+                        and value_token.type == "id"
+                        and after_value is not None
+                        and after_value.type == "punct"
+                        and after_value.value in {",", "}"}
+                    ):
+                        pairs.append((token.value, value_token.value))
+                        j += 3
+                        continue
+                    # Complex value: skip to the property end at this level.
+                    j = self._skip_to_binding_end(j + 2)
+                    continue
+            j += 1
+        return tuple(pairs)
+
     def _classify_js_effect(self, call: RawCall) -> None:
         head = call.head
         chain = call.attr_chain
@@ -1636,7 +1782,10 @@ class _Analyzer:
             self._add_effect(EFFECT_CONCURRENCY, "new Worker()", line, qualname)
             return
         if call.is_new and head == "Date" and not chain:
-            self._add_effect(EFFECT_TIME_RANDOM, "new Date()", line, qualname)
+            # Only zero-argument `new Date()` reads the clock; `new Date(value)`
+            # and `new Date(y, m, d)` construct deterministically from inputs.
+            if not call.has_arguments:
+                self._add_effect(EFFECT_TIME_RANDOM, "new Date()", line, qualname)
             return
         if head == "console" and chain:
             self._add_effect(EFFECT_CONSOLE_LOGGING, call.callee_text, line, qualname)
@@ -1822,6 +1971,13 @@ class _Analyzer:
         return None
 
     def _caller_qualname(self) -> str | None:
+        # Defaults in a parameter list execute inside the function being
+        # defined, so calls/effects there belong to it, not the outer scope.
+        while self._param_scopes and self._param_scopes[0][1] < self.i:
+            self._param_scopes.pop(0)
+        for start, end_index, qualname in reversed(self._param_scopes):
+            if start <= self.i <= end_index:
+                return qualname
         for frame in reversed(self.frames):
             if frame.kind == "function":
                 return frame.qualname
@@ -1879,6 +2035,117 @@ class _Analyzer:
                             return None
                 j += 1
         return None
+
+    def _collect_binding_names(self, start: int) -> dict[str, int | None]:
+        """Names bound by a parameter list or destructuring pattern.
+
+        Maps each binding to the line of its default value when that default
+        is a function/arrow (a local default implementation), else None.
+        Identifiers inside default expressions, object-pattern keys with an
+        alias, and TS type annotations are not bound.
+        """
+        bindings: dict[str, int | None] = {}
+        if start >= len(self.tokens):
+            return bindings
+        first = self.tokens[start]
+        if first.type == "keyword" and first.value == "async":
+            start += 1
+            if start >= len(self.tokens):
+                return bindings
+            first = self.tokens[start]
+        if first.type == "id":
+            bindings[first.value] = None  # single-parameter arrow
+            return bindings
+        if not (first.type == "punct" and first.value in {"(", "{", "["}):
+            return bindings
+        stack: list[str] = []
+        j = start
+        end = min(len(self.tokens), start + MAX_LOOKAHEAD)
+        while j < end and len(bindings) < 24:
+            item = self.tokens[j]
+            if item.type == "punct":
+                if item.value in {"(", "{", "["}:
+                    stack.append(item.value)
+                elif item.value in {")", "}", "]"}:
+                    if stack:
+                        stack.pop()
+                    if not stack:
+                        break
+                j += 1
+                continue
+            if item.type in {"id", "keyword"} and stack:
+                next_token = self.tokens[j + 1] if j + 1 < len(self.tokens) else None
+                next_value = (
+                    next_token.value
+                    if next_token is not None and next_token.type == "punct"
+                    else ""
+                )
+                if next_value == ":":
+                    if stack[-1] == "{":
+                        # Object-pattern key: the alias/pattern after `:` binds.
+                        j += 2
+                        continue
+                    # TS parameter annotation: bind the name, skip the type.
+                    if item.type == "id":
+                        bindings[item.value] = None
+                    j = self._skip_to_binding_end(j + 2)
+                    continue
+                if next_value == "=":
+                    if item.type == "id":
+                        bindings[item.value] = self._default_impl_line(j + 2)
+                    j = self._skip_to_binding_end(j + 2)
+                    continue
+                if next_value in {",", ")", "}", "]"}:
+                    if item.type == "id":
+                        bindings[item.value] = None
+                    j += 1
+                    continue
+            j += 1
+        return bindings
+
+    def _skip_to_binding_end(self, start: int) -> int:
+        """Index of the `,` or closing bracket ending the current binding."""
+        j = start
+        end = min(len(self.tokens), start + MAX_LOOKAHEAD)
+        level = 0
+        while j < end:
+            item = self.tokens[j]
+            if item.type == "punct":
+                if item.value in {"(", "{", "["}:
+                    level += 1
+                elif item.value in {")", "}", "]"}:
+                    if level == 0:
+                        return j  # caller pops this closer
+                    level -= 1
+                elif item.value == "," and level == 0:
+                    return j
+            j += 1
+        return j
+
+    def _default_impl_line(self, value_index: int) -> int | None:
+        """Line of a binding default when it is a function/arrow literal."""
+        if value_index >= len(self.tokens):
+            return None
+        token = self.tokens[value_index]
+        inner = value_index
+        if token.type == "keyword" and token.value == "async":
+            inner += 1
+            if inner >= len(self.tokens):
+                return None
+        if self.tokens[inner].type == "keyword" and self.tokens[inner].value == "function":
+            return token.line
+        if self._find_arrow(value_index) is not None:
+            return token.line
+        return None
+
+    def _lookup_local_binding(self, name: str) -> tuple[bool, int | None]:
+        """Whether ``name`` is a parameter/destructured binding in scope."""
+        for frame in reversed(self.frames):
+            if name in frame.local_bindings:
+                return True, frame.local_bindings[name]
+            if frame.kind == "module":
+                break
+        return False, None
 
     def _signature_after(self, name_index: int) -> str:
         """Bounded raw parameter text after a function/method name token."""

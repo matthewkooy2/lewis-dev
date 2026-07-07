@@ -95,7 +95,13 @@ def review_implementation(engine: TraceEngine, target: SymbolDefinition) -> Trac
             *result.truncations,
             f"Findings truncated at {engine.limits.max_findings}.",
         )
-    result.evidence = _evidence_snippets(lines, target, result.findings)
+    context = _callback_context_snippets(engine, target)
+    finding_evidence = _evidence_snippets(lines, target, result.findings)
+    if context:
+        finding_evidence = finding_evidence[
+            : max(0, MAX_EVIDENCE_SNIPPETS - len(context))
+        ]
+    result.evidence = (*finding_evidence, *context)
     result.warnings = (
         *result.warnings,
         "Static review only: dynamic behavior, runtime values, and "
@@ -696,6 +702,78 @@ def _find_def_node(tree: ast.Module, target: SymbolDefinition) -> ast.AST | None
         ) and getattr(node, "lineno", None) == target.line:
             return node
     return None
+
+
+MAX_CONTEXT_SUPPLIERS = 2
+MAX_CONTEXT_CALLBACK_DEFS = 2
+CONTEXT_SNIPPET_LINES = 6
+
+
+def _callback_context_snippets(
+    engine: TraceEngine, target: SymbolDefinition
+) -> list[Snippet]:
+    """Bounded caller/callee context when callbacks shape the target.
+
+    Shows how important callers configure the target's injected callback
+    options, plus the head of each supplied callback implementation —
+    a few lines each, never whole files.
+    """
+    supplied = engine.caller_supplied_callbacks(target)
+    if not supplied:
+        return []
+    snippets: list[Snippet] = []
+    seen: set[tuple[str, int]] = set()
+    suppliers = 0
+    for item in supplied:
+        if suppliers >= MAX_CONTEXT_SUPPLIERS:
+            break
+        key = (item.supplier_path, item.supplier_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        snippet = _bounded_context_snippet(
+            engine, item.supplier_path, item.supplier_line, before=1,
+            after=CONTEXT_SNIPPET_LINES - 2,
+        )
+        if snippet is not None:
+            snippets.append(snippet)
+            suppliers += 1
+    callback_defs = 0
+    for item in supplied:
+        if callback_defs >= MAX_CONTEXT_CALLBACK_DEFS:
+            break
+        definition = item.definition
+        key = (definition.path, definition.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        span = min(CONTEXT_SNIPPET_LINES - 1, definition.end_line - definition.line)
+        snippet = _bounded_context_snippet(
+            engine, definition.path, definition.line, before=0, after=span
+        )
+        if snippet is not None:
+            snippets.append(snippet)
+            callback_defs += 1
+    return snippets
+
+
+def _bounded_context_snippet(
+    engine: TraceEngine, path: str, line: int, *, before: int, after: int
+) -> Snippet | None:
+    text = engine.index.workspace.read_source(path)
+    if text is None:
+        return None
+    lines = text.splitlines()
+    if not (0 < line <= len(lines)):
+        return None
+    start = max(1, line - before)
+    end = min(len(lines), line + after)
+    return Snippet(
+        path=path,
+        start_line=start,
+        end_line=end,
+        text=redact_secret_values("\n".join(lines[start - 1 : end])),
+    )
 
 
 def _evidence_snippets(

@@ -128,6 +128,17 @@ class RawCall:
     argument_names: tuple[str, ...] = ()
     receiver_type: str | None = None
     is_callback_reference: bool = False
+    has_arguments: bool = False
+    # Head refers to a parameter/destructured local binding in an enclosing
+    # function scope (an injected value, not a module-level name).
+    is_local_binding: bool = False
+    # Line of the local default implementation for that binding, when the
+    # binding declares one (`{ getDueDate = (row) => ... } = options`).
+    local_default_line: int | None = None
+    # Object-literal properties passed at this call site whose values are
+    # bare identifiers: ((property_name, identifier), ...). Lets the engine
+    # follow caller-supplied callbacks per call path.
+    callback_args: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
