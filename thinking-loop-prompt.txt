@@ -1,0 +1,275 @@
+Implement a bounded, evidence-driven Freestyle execution loop for Lewis so the local Qwen2.5-Coder-7B model can iteratively plan, implement, test, diagnose, and repair changes instead of relying on one-shot generation.
+
+First inspect the current repository, existing Freestyle workflow, provider layer, trace subsystem, benchmark harness, worktree safety, edit-bundle validation, checks, review artifacts, and tests. Use your own engineering judgment and fit the solution into the current architecture.
+
+Do not commit, push, merge, rebase, contact Git remotes, install packages, weaken safety controls, or modify repositories outside Lewis.
+
+## Current state
+
+Freestyle now supports the local LM Studio provider:
+
+* Provider: `local-openai`
+* Endpoint: `http://127.0.0.1:1234/v1`
+* Model: `qwen2.5-coder-7b-instruct`
+* Local-only mode: enabled
+* No remote fallback
+
+Real benchmark results showed:
+
+* Proposal generation is reliable.
+* Unsafe-path requests are correctly rejected.
+* One edit bundle was structurally valid and applied, but tests failed.
+* One multi-file edit response was malformed JSON.
+* LM Studio rejected the current `json_object` response format because it accepts `json_schema` or `text`.
+
+The loop should address these demonstrated failure modes.
+
+## Goal
+
+Create a host-controlled Freestyle loop resembling:
+
+```text
+inspect and gather context
+→ plan
+→ critique plan
+→ revise if needed
+→ generate edit bundle
+→ validate bundle
+→ apply inside isolated worktree
+→ run allowlisted checks
+→ diagnose failures
+→ generate targeted repair bundle
+→ revalidate and reapply
+→ repeat within limits
+→ review final diff against the original goal
+→ stop for human approval
+```
+
+This is not an unlimited “keep asking the model” loop. Each model call should have a narrow role and receive fresh, relevant evidence.
+
+## Loop stages
+
+Use clearly separated stages such as:
+
+* Planner
+* Plan critic
+* Implementer
+* Diagnostician
+* Repairer
+* Final reviewer
+
+Store concise structured artifacts from each stage. Do not depend on endlessly appending all previous prompts and responses.
+
+Persist enough loop state to resume or inspect a job after Lewis or the PC restarts, including:
+
+* Original goal
+* Current plan
+* Relevant files and evidence
+* Attempts made
+* Generated bundles
+* Validation failures
+* Applied diffs
+* Commands and test results
+* Diagnoses
+* Repairs
+* Stop reason
+* Final review
+
+Do not store or request hidden chain-of-thought. Store concise decisions, evidence, assumptions, diagnoses, and next actions.
+
+## Context gathering
+
+Use the existing repository map, user-named files, imports, failed-test locations, and the new code-tracing subsystem to select compact context.
+
+Trace information may include:
+
+* Target symbols
+* Important callers and callees
+* Injected callbacks
+* Side effects
+* Relevant tests
+* Files connected to the requested change
+
+Treat tracing as one ranking signal, not the sole source of truth. Keep context bounded for Qwen and report when required context was omitted.
+
+## Structured output
+
+Correct the LM Studio structured-output support.
+
+The provider capability must distinguish at least:
+
+* Plain text
+* `json_object`
+* `json_schema`
+
+For this LM Studio setup, use a real `json_schema` payload when strict structured output is enabled. Supply the actual schema required for the stage rather than merely changing the type string.
+
+Keep explicit text mode available. Do not silently switch modes or providers after a failure. Record the selected mode in artifacts.
+
+Preserve raw malformed model responses in bounded diagnostic artifacts so failures can be investigated.
+
+## Validation and repair behavior
+
+Continue using Lewis’s deterministic validators as the authority.
+
+Different failures should trigger different responses:
+
+* Invalid JSON or schema shape: request a format-only repair.
+* Unsafe path or prohibited operation: stop immediately; never retry around safety.
+* Stale or missing edit anchor: provide the exact validation error and relevant current source.
+* Applied patch with failing tests: run a diagnosis stage, then request the smallest targeted repair.
+* Missing context: gather allowed context or stop honestly.
+* Repeated identical failure: stop instead of looping.
+
+The diagnostician should receive:
+
+* Original goal
+* Current plan
+* Current diff
+* Exact failed command
+* Exit code
+* Relevant failure output
+* Relevant source and test snippets
+
+The repairer should produce only a new validated edit bundle.
+
+## Bounds and stop conditions
+
+Use configurable conservative defaults, approximately:
+
+* Up to 2 planning/critique passes
+* 1 initial implementation attempt
+* Up to 3 test-driven repair cycles
+* 1 final review
+* Maximum 10–12 total model calls
+* One active local Freestyle job at a time
+* A maximum wall-clock duration
+* Bounded prompt and artifact sizes
+
+Stop when:
+
+* Required checks pass and final review has no blocking issue
+* The same failure or materially identical patch repeats
+* Progress stalls
+* A safety validator rejects the operation
+* Required context is unavailable
+* The task requires prohibited network, secret, package-install, Git-remote, or external-workspace access
+* The configured model-call or time limit is reached
+
+Every stop should produce a clear reason and useful next action.
+
+## Safety and approval boundary
+
+Preserve all existing protections:
+
+* Isolated worktree only
+* No changes to the main checkout
+* No arbitrary shell execution
+* Only existing allowlisted checks
+* No package installs
+* No Git remotes
+* No commits, merges, or pushes
+* No secret or runtime-file access
+* No changes outside declared and validated paths
+
+The loop may automatically apply validated bundles only inside its isolated worktree so it can run tests and repairs.
+
+It must always stop before integration into the user’s branch. Final output should show the diff, tests, attempts, unresolved concerns, and review findings for human approval.
+
+## Benchmark and reporting
+
+Fix the benchmark outcome model so it distinguishes:
+
+* Proposal generated
+* Bundle generated
+* Bundle validation failed
+* Patch applied
+* Tests failed
+* Tests passed
+* Rejected as expected
+* Loop exhausted
+* Safety stop
+
+A case with failing tests must never be labeled simply `completed`.
+
+Extend the benchmark to measure:
+
+* Model calls by stage
+* Retries and repairs
+* Prompt and completion tokens
+* Stage latency
+* Bundle validity
+* Patch applicability
+* Test results
+* Repeated-failure detection
+* Final review result
+* Stop reason
+
+Run the real benchmark against LM Studio/Qwen on this Windows PC.
+
+Include at least:
+
+* Simple one-file change
+* Small multi-file change
+* A task whose first patch fails tests but can be repaired
+* Malformed structured output
+* Unsafe operation rejection
+* A task that should stop because progress repeats or context is insufficient
+
+## Tests and validation
+
+Add focused tests for:
+
+* Stage transitions
+* Persistent/resumable loop state
+* JSON-schema mode
+* Text-mode malformed-output repair
+* Test-driven diagnosis and repair
+* Safety failures never retrying
+* Repetition/progress detection
+* Maximum-iteration and time stops
+* Human-approval boundary
+* Benchmark outcome accuracy
+* Trace-assisted context selection
+* Local-only/no-fallback behavior
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.\.venv\Scripts\python.exe -m ruff check . --no-cache
+.\.venv\Scripts\python.exe -m app.eval_runner
+```
+
+Then run the real local benchmark and manually inspect the generated plans, diagnoses, repairs, diffs, and final reviews.
+
+## Completion criteria
+
+The task is complete when:
+
+* Freestyle can run the bounded loop through real local Qwen.
+* A failing applied patch can receive targeted diagnosis and repair.
+* Strict LM Studio JSON-schema mode works or fails with a precise capability error.
+* Malformed text output can receive one bounded format repair.
+* Safety failures never trigger workaround attempts.
+* Repeated failures stop automatically.
+* Loop state is persistent and inspectable.
+* Benchmark outcomes accurately reflect test success or failure.
+* The final workflow always stops for human approval before integration.
+* Existing tests and safety controls remain green.
+* No commits or remote operations occurred.
+
+In the final response, report:
+
+1. Architecture chosen
+2. Loop stages and transition rules
+3. Persistent-state format
+4. Context-selection behavior
+5. JSON-schema implementation
+6. Stop and repetition rules
+7. Benchmark results from real Qwen
+8. Before-and-after success rates
+9. Remaining model limitations
+10. Recommended autonomy level
+11. Validation results
+12. Best next improvement
