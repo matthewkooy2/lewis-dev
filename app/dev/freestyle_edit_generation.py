@@ -10,6 +10,7 @@ source files.
 
 from __future__ import annotations
 
+import ast
 from collections import Counter
 from dataclasses import replace
 import hashlib
@@ -52,8 +53,10 @@ from app.dev.freestyle_context_plan import (
 from app.dev.freestyle_edit_bundle import (
     MAX_PROVENANCE_TEXT_CHARS,
     EditBundleExactMatchError,
+    EditBundleRecoverableOperationError,
     EditBundleValidation,
     _parse_bundle,
+    edit_bundle_json_schema,
     edit_bundle_schema_for_prompt,
     validate_edit_bundle_bytes,
 )
@@ -94,6 +97,8 @@ from app.dev.freestyle_provider import (
     context_limits_for,
     effective_api_key,
     provider_metadata,
+    response_format_for_schema,
+    sampling_parameters_for,
     validate_provider_config,
 )
 from app.dev.freestyle_state import (
@@ -113,6 +118,24 @@ MAX_PROPOSAL_ITEM_CHARS = 500
 MAX_OMISSION_RECORDS = 200
 MAX_SNIPPET_FILES = 6
 MAX_FAILED_ANCHOR_PREVIEW_CHARS = 500
+MAX_ANCHOR_EVIDENCE_CHARS = 6_000
+MAX_EXTRA_PREFERRED_PATHS = 8
+
+# Deterministic model-mistake categories a fresh, corrected generation could
+# fix; orchestration layers may attempt bounded recorded recovery for exactly
+# these. Safety refusals are never classified into this set.
+RECOVERABLE_GENERATION_CATEGORIES = frozenset(
+    {
+        "stale_anchor",
+        "ambiguous_replacement",
+        "identical_replacement",
+        "create_existing_file",
+        "missing_target_file",
+        "stale_expected_sha256",
+        "python_syntax_error",
+        "malformed_output",
+    }
+)
 
 # Trusted top-level provenance fields injected from local job/proposal state
 # before validation. The model is asked to emit only schema_version and
@@ -167,6 +190,63 @@ class _EditBundleFormatError(FreestyleJobRefusedError):
         self.diagnostic_details = details or {}
 
 
+class _EditBundlePreflightError(FreestyleJobRefusedError):
+    """A validated bundle would write Python that does not even parse.
+
+    Detected host-side with ``compile()`` (never executed) before the bundle is
+    persisted or applied, so one bounded repair retry can fix the syntax
+    instead of consuming a full apply/check/diagnose/repair cycle. Never raised
+    for safety failures, which must not trigger any retry.
+    """
+
+    def __init__(self, message: str, *, path: str, line: int | None, detail: str):
+        super().__init__(message)
+        self.path = path
+        self.line = line
+        self.detail = detail
+
+
+class EditGenerationFailedError(FreestyleJobRefusedError):
+    """Terminal edit-generation failure with a stable classification.
+
+    ``failure_category`` distinguishes recoverable model mistakes (see
+    ``RECOVERABLE_GENERATION_CATEGORIES``) from safety refusals
+    (``refused``) and provider transport failures (``provider_error``) so the
+    loop can choose bounded recovery versus an immediate accurate stop. The
+    message is unchanged from the original opaque refusal.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_category: str,
+        failed_path: str | None = None,
+    ):
+        super().__init__(message)
+        self.failure_category = failure_category
+        self.failed_path = failed_path
+
+
+def _generation_failure_classification(exc: Exception) -> tuple[str, str | None]:
+    """Map one generation failure onto (category, failed_path).
+
+    Safety refusals and every unrecognized ``FreestyleJobRefusedError`` stay
+    ``refused`` so nothing ever reclassifies a safety stop as recoverable.
+    """
+    if isinstance(exc, EditBundleExactMatchError):
+        return "stale_anchor", exc.path
+    if isinstance(exc, EditBundleRecoverableOperationError):
+        return exc.category, exc.path
+    if isinstance(exc, _EditBundlePreflightError):
+        return "python_syntax_error", exc.path
+    if isinstance(exc, _EditBundleFormatError):
+        return "malformed_output", None
+    if isinstance(exc, FreestyleJobRefusedError):
+        return "refused", None
+    return "provider_error", None
+
+
 def generate_edit_bundle(
     job_id: str,
     *,
@@ -177,8 +257,19 @@ def generate_edit_bundle(
     goal_override: str | None = None,
     title_override: str | None = None,
     artifact_metadata: dict[str, Any] | None = None,
+    extra_preferred_paths: tuple[str, ...] = (),
+    sampling_temperature: float | None = None,
 ) -> FreestyleJob:
-    """Generate, validate, and persist one edit bundle without applying it."""
+    """Generate, validate, and persist one edit bundle without applying it.
+
+    ``extra_preferred_paths`` lets an orchestrating loop prioritize the files
+    its latest diagnosis implicates (repairs must anchor on current failing
+    files, not just the original proposal's guesses). Each path passes the
+    same safety validation as proposal-suggested paths; unsafe entries are
+    dropped rather than widening any policy. ``sampling_temperature`` is a
+    bounded override (clamped in the provider layer) that recovery attempts
+    use to escape a temperature-0 attractor; None keeps deterministic 0.
+    """
     root, state = resolved_roots(project_root or ROOT_DIR, state_root)
     job = get_freestyle_job(job_id, project_root=root, state_root=state)
     if job.latest_refinement_id is not None and goal_override is None:
@@ -241,7 +332,15 @@ def generate_edit_bundle(
     try:
         validate_provider_config(config)
         limits = context_limits_for(config)
-        preferred_paths = tuple(proposal["likely_files_to_edit"])
+        loop_preferred = tuple(
+            path
+            for path in extra_preferred_paths[:MAX_EXTRA_PREFERRED_PATHS]
+            if isinstance(path, str)
+            and _safe_suggested_path(path, worktree) is not None
+        )
+        preferred_paths = tuple(
+            dict.fromkeys([*loop_preferred, *proposal["likely_files_to_edit"]])
+        )
         repo_map, repo_map_provenance = _resolve_repo_map(worktree, root, state)
         implementation_plan = build_job_implementation_plan(
             prompt_job,
@@ -268,7 +367,9 @@ def generate_edit_bundle(
             )
         anchor_snippets, anchor_metadata = _harvest_prompt_snippets(
             worktree,
-            _anchor_snippet_targets(proposal, context, plan),
+            _anchor_snippet_targets(
+                proposal, context, plan, extra_first=loop_preferred
+            ),
             prompt_job.goal,
         )
         context, user_prompt = _fit_prompt(
@@ -278,6 +379,7 @@ def generate_edit_bundle(
             plan,
             anchor_snippets,
             implementation_plan,
+            stage_context=_stage_context_for_prompt(artifact_metadata),
             max_prompt_chars=limits.max_edit_prompt_chars,
         )
         prompt_char_count = len(user_prompt) + len(_system_prompt(plan))
@@ -292,7 +394,13 @@ def generate_edit_bundle(
             api_key=effective_api_key(config),
             base_url=config.base_url,
         )
-        response = _call_deepseek(client, config, user_prompt, plan)
+        response = _call_deepseek(
+            client,
+            config,
+            user_prompt,
+            plan,
+            sampling_temperature=sampling_temperature,
+        )
         validation_status = "invalid"
         try:
             validation = _validated_response_bundle(
@@ -309,6 +417,7 @@ def generate_edit_bundle(
                 extra_messages=_bundle_repair_messages(
                     response, format_exc, config.api_key
                 ),
+                sampling_temperature=sampling_temperature,
             )
             capture.clear()
             try:
@@ -346,18 +455,32 @@ def generate_edit_bundle(
             fresh_snippets, _ = _harvest_prompt_snippets(
                 worktree, (match_exc.path,), prompt_job.goal
             )
+            evidence = _current_file_evidence(worktree, match_exc.path)
             retry_record["used"] = True
             retry_record["fresh_snippet_labels"] = [
                 item["label"] for item in fresh_snippets
             ]
+            retry_record["current_file_sha256"] = evidence.get("current_sha256")
+            retry_record["full_current_content_included"] = bool(
+                evidence.get("content_included")
+            )
+            retry_record["stale_anchor_analysis"] = _stale_anchor_analysis(
+                match_exc, context
+            )
             response = _call_deepseek(
                 client,
                 config,
                 user_prompt,
                 plan,
                 extra_messages=_anchor_repair_messages(
-                    response, match_exc, preview, fresh_snippets, config.api_key
+                    response,
+                    match_exc,
+                    preview,
+                    fresh_snippets,
+                    config.api_key,
+                    evidence=evidence,
                 ),
+                sampling_temperature=sampling_temperature,
             )
             capture.clear()
             try:
@@ -378,6 +501,39 @@ def generate_edit_bundle(
                     "status": "valid",
                     "repair_retry": True,
                     "anchor_repair": True,
+                }
+            )
+        except _EditBundlePreflightError as syntax_exc:
+            record = _attempt_record(1, "preflight_error", syntax_exc, response, config)
+            record["failed_path"] = syntax_exc.path
+            record["preflight_category"] = "python_syntax_error"
+            attempts.append(record)
+            response = _call_deepseek(
+                client,
+                config,
+                user_prompt,
+                plan,
+                extra_messages=_syntax_repair_messages(
+                    response, syntax_exc, config.api_key
+                ),
+                sampling_temperature=sampling_temperature,
+            )
+            capture.clear()
+            try:
+                validation = _validated_response_bundle(
+                    response, started.job_id, worktree, capture, trusted_metadata
+                )
+            except FreestyleJobRefusedError as second_exc:
+                attempts.append(
+                    _attempt_record(2, "error", second_exc, response, config)
+                )
+                raise
+            attempts.append(
+                {
+                    "attempt": 2,
+                    "status": "valid",
+                    "repair_retry": True,
+                    "syntax_repair": True,
                 }
             )
         validation_status = "valid"
@@ -424,6 +580,7 @@ def generate_edit_bundle(
         )
     except Exception as exc:
         completed_at = _utc_now()
+        failure_category, failed_path = _generation_failure_classification(exc)
         errors = [
             record["error"]
             for record in attempts
@@ -453,6 +610,9 @@ def generate_edit_bundle(
                 anchor_metadata=anchor_metadata,
                 implementation_plan=implementation_plan,
             )
+            artifact["validation"]["failure_category"] = failure_category
+            if failed_path is not None:
+                artifact["validation"]["failed_path"] = failed_path
             artifact["response_diagnostics"] = _response_diagnostics(
                 response,
                 context,
@@ -488,9 +648,11 @@ def generate_edit_bundle(
             updated_at=completed_at,
         )
         _write_job(failed, state)
-        raise FreestyleJobRefusedError(
+        raise EditGenerationFailedError(
             f"Could not generate an edit bundle for freestyle job {job_id}; "
-            "the error was recorded in local dev state."
+            "the error was recorded in local dev state.",
+            failure_category=failure_category,
+            failed_path=failed_path,
         ) from exc
 
     completed = replace(
@@ -647,6 +809,7 @@ def _fit_prompt(
     anchor_snippets: list[dict[str, str]],
     implementation_plan: ImplementationPlan | None = None,
     *,
+    stage_context: dict[str, Any] | None = None,
     max_prompt_chars: int = MAX_EDIT_PROMPT_CHARS,
 ) -> tuple[ProposalContext, str]:
     files = list(context.files)
@@ -676,6 +839,8 @@ def _fit_prompt(
             "omission_counts": dict(sorted(omission_counts.items())),
             "exact_edit_bundle_schema": schema,
         }
+        if stage_context is not None:
+            payload["stage_context"] = stage_context
         user_prompt = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
         if len(system_prompt) + len(user_prompt) <= max_prompt_chars:
             fitted = ProposalContext(
@@ -713,16 +878,76 @@ def _system_prompt(plan: ContextPlan) -> str:
     return _SYSTEM_PROMPT + _ui_goal_guidance(plan, for_edit_bundle=True)
 
 
+_MAX_STAGE_CONTEXT_CHARS = 20_000
+# Least-essential first: fresh affected-file source and the failing check
+# output are the evidence a repair most needs, so they are dropped last.
+_STAGE_CONTEXT_DROP_ORDER = (
+    "context_summary",
+    "current_plan",
+    "accumulated_diff",
+    "previous_attempts",
+    "latest_failed_check_output",
+    "current_source_of_affected_files",
+)
+
+
+def _stage_context_for_prompt(
+    artifact_metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return bounded loop/refinement context for the edit prompt, if any.
+
+    Oversized context is trimmed by dropping whole evidence sections in a
+    fixed least-essential-first order (recorded in ``dropped_for_budget``)
+    instead of silently truncating mid-value; the diagnosis and any
+    previous-generation-failure instructions are always kept.
+    """
+    if not isinstance(artifact_metadata, dict):
+        return None
+    raw = artifact_metadata.get("stage_context")
+    if not isinstance(raw, dict):
+        return None
+    context = dict(raw)
+    dropped: list[str] = []
+    encoded = json.dumps(context, ensure_ascii=True, sort_keys=True)
+    for key in _STAGE_CONTEXT_DROP_ORDER:
+        if len(encoded) <= _MAX_STAGE_CONTEXT_CHARS:
+            break
+        if key in context:
+            context.pop(key)
+            dropped.append(key)
+            encoded = json.dumps(context, ensure_ascii=True, sort_keys=True)
+    if len(encoded) > _MAX_STAGE_CONTEXT_CHARS:
+        context = {
+            "truncated": True,
+            "summary": str(raw.get("summary", ""))[:2_000],
+            "failed_command": str(raw.get("failed_command", ""))[:500],
+            "diagnosis": str(raw.get("diagnosis", ""))[:2_000],
+            "next_action": str(raw.get("next_action", ""))[:1_000],
+            "previous_generation_failure": str(
+                raw.get("previous_generation_failure", "")
+            )[:2_000],
+        }
+        dropped.append("all_extended_evidence")
+    if dropped:
+        context["dropped_for_budget"] = dropped
+    return context
+
+
 def _anchor_snippet_targets(
-    proposal: dict[str, Any], context: ProposalContext, plan: ContextPlan
+    proposal: dict[str, Any],
+    context: ProposalContext,
+    plan: ContextPlan,
+    *,
+    extra_first: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Choose which files to harvest exact anchors from, bounded and ordered.
 
-    Proposal likely-edit files first, then included files whose content was
-    truncated by the per-file budget, then priority-ranked files that were
-    omitted only because a context budget filled up.
+    Loop-supplied diagnosis paths first, then proposal likely-edit files, then
+    included files whose content was truncated by the per-file budget, then
+    priority-ranked files that were omitted only because a context budget
+    filled up.
     """
-    ordered: list[str] = list(proposal["likely_files_to_edit"])
+    ordered: list[str] = [*extra_first, *proposal["likely_files_to_edit"]]
     ordered.extend(
         str(item["path"]) for item in context.files if item.get("truncated")
     )
@@ -823,6 +1048,9 @@ def _default_anchor_retry() -> dict[str, Any]:
         "failed_path": None,
         "failed_old_text_preview": None,
         "fresh_snippet_labels": [],
+        "current_file_sha256": None,
+        "full_current_content_included": False,
+        "stale_anchor_analysis": None,
         "error": None,
         "skipped_reason": None,
     }
@@ -844,28 +1072,134 @@ def _anchor_retry_blocked_reason(exc: EditBundleExactMatchError) -> str | None:
     return None
 
 
+def _current_file_evidence(worktree: Path, relative: str) -> dict[str, Any]:
+    """Read one safety-screened worktree file as fresh repair evidence.
+
+    Applies the exact existing context path and content policy before any text
+    is quoted; unsafe or unreadable targets yield only an omission reason. The
+    full current content is included only for small files so a weak model can
+    fall back to one sha-guarded ``replace_file`` instead of guessing anchors.
+    """
+    try:
+        resolved_worktree = worktree.resolve(strict=True)
+    except OSError:
+        return {"path": relative, "omitted_reason": "unreadable"}
+    target = worktree.joinpath(*PurePosixPath(relative).parts)
+    reason = _context_path_omission_reason(relative, target, is_directory=False)
+    text = ""
+    if reason is None:
+        text, reason = _read_context_text(
+            target, resolved_worktree, limit=MAX_CONTEXT_FILE_BYTES
+        )
+    if reason is None and defines_approval_store(text):
+        reason = "approval_store_definition"
+    if reason is None and contains_sensitive_content(text):
+        reason = "sensitive_content"
+    if reason is not None:
+        return {"path": relative, "omitted_reason": reason}
+    included = len(text) <= MAX_ANCHOR_EVIDENCE_CHARS
+    evidence: dict[str, Any] = {
+        "path": relative,
+        # A successful bounded read is never truncated (oversized files are
+        # refused first), so this hash matches the file bytes on disk.
+        "current_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "char_count": len(text),
+        "content_included": included,
+    }
+    if included:
+        evidence["current_content"] = text
+    return evidence
+
+
+def _stale_anchor_analysis(
+    exc: EditBundleExactMatchError, context: ProposalContext | None
+) -> dict[str, Any]:
+    """Classify where a failed old_text anchor plausibly came from.
+
+    Pure string work over already-screened prompt context: an anchor that
+    appears in the prompt copy of the file means the source mutated after
+    capture (or the prompt copy was truncated mid-anchor); an anchor found
+    nowhere was invented or paraphrased by the model.
+    """
+    in_prompt_context = False
+    prompt_copy_truncated: bool | None = None
+    if context is not None:
+        for item in context.files:
+            if str(item.get("path", "")) != exc.path:
+                continue
+            prompt_copy_truncated = bool(item.get("truncated"))
+            in_prompt_context = exc.old_text in str(item.get("content", ""))
+            break
+    return {
+        "anchor_in_prompt_context": in_prompt_context,
+        "prompt_copy_truncated": prompt_copy_truncated,
+        "anchor_source": (
+            "prompt_context_stale_or_mutated" if in_prompt_context else "invented"
+        ),
+    }
+
+
 def _anchor_repair_messages(
     response: Any,
     exc: EditBundleExactMatchError,
     old_text_preview: str,
     fresh_snippets: list[dict[str, str]],
     api_key: str,
+    *,
+    evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, str], ...]:
     """Build one bounded host-authored repair turn for an exact-match failure."""
+    payload: dict[str, Any] = {
+        "previous_response_error": _bounded_generation_error(exc, api_key),
+        "failed_path": exc.path,
+        "failed_old_text_preview": old_text_preview,
+        "fresh_exact_anchor_snippets": fresh_snippets,
+        "instruction": (
+            "Your previous replace_text old_text did not match the current "
+            "file content exactly. Return one corrected JSON edit bundle "
+            "only. Use a smaller exact anchor: copy old_text verbatim, "
+            "character for character, from the fresh_exact_anchor_snippets "
+            "or from current_file_content for this exact path. Do "
+            "not invent, paraphrase, reorder, or approximate file text. "
+            "Output JSON only, with no markdown fences or prose."
+        ),
+    }
+    if evidence is not None and evidence.get("content_included"):
+        payload["current_file_content"] = evidence["current_content"]
+        payload["current_file_sha256"] = evidence["current_sha256"]
+        payload["instruction"] += (
+            " current_file_content is the complete, current text of the failed"
+            " file. If no minimal exact anchor works, you may instead emit one"
+            " replace_file operation for this path with expected_sha256 set to"
+            " current_file_sha256 and content set to the complete corrected"
+            " file text."
+        )
+    repair_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    messages: list[dict[str, str]] = []
+    echo = _response_preview_text(response)[:MAX_REPAIR_ECHO_CHARS]
+    if echo:
+        messages.append({"role": "assistant", "content": echo})
+    messages.append({"role": "user", "content": repair_payload})
+    return tuple(messages)
+
+
+def _syntax_repair_messages(
+    response: Any, exc: _EditBundlePreflightError, api_key: str
+) -> tuple[dict[str, str], ...]:
+    """Build one bounded host-authored repair turn for a syntax preflight failure."""
     repair_payload = json.dumps(
         {
             "previous_response_error": _bounded_generation_error(exc, api_key),
             "failed_path": exc.path,
-            "failed_old_text_preview": old_text_preview,
-            "fresh_exact_anchor_snippets": fresh_snippets,
+            "syntax_error_line": exc.line,
+            "syntax_error_detail": exc.detail,
             "instruction": (
-                "Your previous replace_text old_text did not match the current "
-                "file content exactly. Return one corrected JSON edit bundle "
-                "only. Use a smaller exact anchor: copy old_text verbatim, "
-                "character for character, from the fresh_exact_anchor_snippets "
-                "or the previously supplied content for this exact path. Do "
-                "not invent, paraphrase, reorder, or approximate file text. "
-                "Output JSON only, with no markdown fences or prose."
+                "The file content your previous bundle would write is not "
+                "valid Python; it was rejected before being applied. Return "
+                "one corrected JSON edit bundle only. Fix the syntax error at "
+                "the reported line, keep indentation exact, include any "
+                "required imports, and do not change unrelated code. Output "
+                "JSON only, with no markdown fences or prose."
             ),
         },
         separators=(",", ":"),
@@ -885,6 +1219,7 @@ def _call_deepseek(
     user_prompt: str,
     plan: ContextPlan,
     extra_messages: tuple[dict[str, str], ...] = (),
+    sampling_temperature: float | None = None,
 ) -> Any:
     request: dict[str, Any] = {
         "model": config.model,
@@ -893,14 +1228,17 @@ def _call_deepseek(
             {"role": "user", "content": user_prompt},
             *extra_messages,
         ],
-        "temperature": 0,
+        **sampling_parameters_for(config, temperature=sampling_temperature),
         "max_tokens": context_limits_for(config).max_edit_output_tokens,
     }
     # JSON response format is an explicit per-provider capability: DeepSeek
-    # supports it, local endpoints only send it when configured to. Without
-    # it, output shape is still enforced by deterministic validation.
-    if getattr(config, "supports_json_response_format", True):
-        request["response_format"] = {"type": "json_object"}
+    # supports json_object, local endpoints use json_schema when configured.
+    # Without it, output shape is still enforced by deterministic validation.
+    response_format = response_format_for_schema(
+        config, name="freestyle_edit_bundle", schema=edit_bundle_json_schema()
+    )
+    if response_format is not None:
+        request["response_format"] = response_format
     return client.chat.completions.create(**request)
 
 
@@ -928,7 +1266,90 @@ def _validated_response_bundle(
     )
     capture["normalization"] = normalization
     _require_parsed_envelope(bundle_bytes, job_id)
-    return validate_edit_bundle_bytes(job_id, bundle_bytes, worktree)
+    validation = validate_edit_bundle_bytes(job_id, bundle_bytes, worktree)
+    _require_python_syntax(validation)
+    return validation
+
+
+def _require_python_syntax(validation: EditBundleValidation) -> None:
+    """Deterministic host-side parse checks for every planned Python write.
+
+    Uses ``compile()``/``ast`` only (the code is never executed or imported)
+    so a bundle whose final content is not valid Python — or that corrupts a
+    file by introducing a duplicate definition of the same function or class,
+    the classic bad-anchor failure — is caught before it is persisted or
+    applied, instead of consuming a full check/diagnose/repair cycle.
+    Non-Python paths and deletions are never inspected.
+    """
+    for item in validation.planned:
+        if item.new_bytes is None:
+            continue
+        if not item.path.casefold().endswith((".py", ".pyi")):
+            continue
+        try:
+            source = item.new_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        try:
+            compile(source, item.path, "exec")
+        except SyntaxError as exc:
+            detail = " ".join(str(exc.msg or "invalid syntax").split())[:300]
+            raise _EditBundlePreflightError(
+                f"Edit bundle content for {item.path!r} is not valid Python "
+                f"(line {exc.lineno}: {detail}); refusing to stage code that "
+                "cannot parse.",
+                path=item.path,
+                line=exc.lineno,
+                detail=detail,
+            ) from exc
+        except ValueError:
+            continue
+        _require_no_new_duplicate_definitions(item, source)
+
+
+def _require_no_new_duplicate_definitions(item: Any, source: str) -> None:
+    """Refuse an edit that introduces a duplicate same-scope definition.
+
+    A weak model with a mis-scoped ``replace_text`` anchor routinely produces
+    two ``def name(...)`` blocks for the same function in one file; the result
+    still parses (the later definition silently wins) but the file is corrupt
+    and poisons every later diagnosis. Only *newly introduced* duplicates are
+    refused, so a file that legitimately shadowed a name before stays editable.
+    """
+    original_source: str | None = None
+    if item.original_bytes is not None:
+        try:
+            original_source = item.original_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            original_source = None
+    new_counts = _module_level_definition_counts(source)
+    original_counts = (
+        _module_level_definition_counts(original_source)
+        if original_source is not None
+        else {}
+    )
+    for name, count in new_counts.items():
+        if count > 1 and count > original_counts.get(name, 0):
+            raise _EditBundlePreflightError(
+                f"Edit bundle content for {item.path!r} defines {name!r} "
+                f"{count} times at the same scope; the edit anchored inside "
+                "an existing definition instead of replacing it.",
+                path=item.path,
+                line=None,
+                detail=f"duplicate definition of {name!r}",
+            )
+
+
+def _module_level_definition_counts(source: str) -> dict[str, int]:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return {}
+    counts: Counter[str] = Counter()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            counts[node.name] += 1
+    return dict(counts)
 
 
 def _normalized_bundle_bytes(

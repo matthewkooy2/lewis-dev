@@ -5,6 +5,21 @@ requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+# Default skip list plus the ignored local runtime directory: benchmark runs
+# may keep disposable fixture repositories (with their own tests/) under
+# runtime/, and those must never be collected by an ordinary repo-root pytest.
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "runtime",
+    "{arch}",
+]
 filterwarnings = [
     # Import-time warning from the installed fastapi -> starlette.testclient
     # pairing with the legacy httpx client. Resolving it upstream requires

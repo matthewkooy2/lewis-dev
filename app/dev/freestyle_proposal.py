@@ -58,6 +58,8 @@ from app.dev.freestyle_provider import (
     context_limits_for,
     effective_api_key,
     provider_metadata,
+    response_format_for_schema,
+    sampling_parameters_for,
     validate_provider_config,
 )
 from app.dev.freestyle_state import require_materialized, resolved_roots
@@ -202,6 +204,54 @@ class _ProposalSafetyError(FreestyleJobRefusedError):
 # Compatibility alias: the config is provider-neutral now, but existing
 # callers and tests construct it under the original DeepSeek-only name.
 DeepSeekProposalConfig = ProviderProposalConfig
+
+
+def proposal_json_schema() -> dict[str, Any]:
+    """JSON Schema for the model-emitted implementation proposal."""
+    concise_text = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_PROPOSAL_ITEM_CHARS,
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "proposed_implementation_steps",
+            "likely_files_to_edit",
+            "risks_unknowns",
+            "suggested_allowlisted_checks",
+        ],
+        "properties": {
+            "proposed_implementation_steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": concise_text,
+            },
+            "likely_files_to_edit": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": MAX_PROPOSAL_LIST_ITEMS,
+                "items": concise_text,
+            },
+            "risks_unknowns": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": 12,
+                "items": concise_text,
+            },
+            "suggested_allowlisted_checks": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": MAX_SUGGESTED_CHECK_ITEMS,
+                "items": {
+                    "type": "string",
+                    "enum": ["pytest", "ruff", "pytest-freestyle", "ruff-check"],
+                },
+            },
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -1171,9 +1221,9 @@ def _call_deepseek(
         "include patches, diffs, markdown, or commentary."
         + _ui_goal_guidance(plan, for_edit_bundle=False)
     )
-    return client.chat.completions.create(
-        model=config.model,
-        messages=[
+    request: dict[str, Any] = {
+        "model": config.model,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
@@ -1181,9 +1231,15 @@ def _call_deepseek(
             },
             *extra_messages,
         ],
-        temperature=0,
-        max_tokens=context_limits_for(config).max_proposal_output_tokens,
+        **sampling_parameters_for(config),
+        "max_tokens": context_limits_for(config).max_proposal_output_tokens,
+    }
+    response_format = response_format_for_schema(
+        config, name="freestyle_proposal", schema=proposal_json_schema()
     )
+    if response_format is not None:
+        request["response_format"] = response_format
+    return client.chat.completions.create(**request)
 
 
 def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[str]]:

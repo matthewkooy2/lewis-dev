@@ -110,7 +110,7 @@ def _routes_job(root: Path):
     job = _materialized_job(root, goal="Wire the shenanigans page route.")
     routes = Path(job.worktree_path) / "app" / "web_routes.py"
     routes.parent.mkdir(parents=True, exist_ok=True)
-    routes.write_text(_APPROVAL_REFERENCING_ROUTES, encoding="utf-8")
+    routes.write_text(_APPROVAL_REFERENCING_ROUTES, encoding="utf-8", newline="\n")
     return job, routes
 
 
@@ -119,7 +119,7 @@ def _multi_anchor_job(root: Path):
     job = _materialized_job(root)
     target = Path(job.worktree_path) / "src" / "multi.py"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_MULTI_ANCHOR_TEXT, encoding="utf-8")
+    target.write_text(_MULTI_ANCHOR_TEXT, encoding="utf-8", newline="\n")
     return job, target
 
 
@@ -796,7 +796,7 @@ def test_modifying_existing_non_approval_test_fixture_is_allowed(tmp_path):
     job = _materialized_job(root)
     target = Path(job.worktree_path) / "tests" / "test_calendar_page.py"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_CALENDAR_FIXTURE_TEST, encoding="utf-8")
+    target.write_text(_CALENDAR_FIXTURE_TEST, encoding="utf-8", newline="\n")
     updated_content = _CALENDAR_FIXTURE_TEST + (
         "\n\ndef test_calendar_page_handles_two_days(tmp_path):\n"
         f'    store = {APPROVAL_STORE_CLASS_NAME}(tmp_path / "db.sqlite3")\n'
@@ -1399,7 +1399,11 @@ def test_multi_replace_text_missing_or_ambiguous_match_fails_closed(tmp_path):
     assert "no exact match" in failed.edit_errors[0]
     assert target.read_text(encoding="utf-8") == before
 
-    target.write_text("DUP = 1\nDUP = 1\nKEEP = 2\n", encoding="utf-8")
+    target.write_text(
+        "DUP = 1\nDUP = 1\nKEEP = 2\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     before_dup = target.read_text(encoding="utf-8")
     ambiguous = _write_bundle(
         tmp_path,
@@ -1570,3 +1574,91 @@ def test_apply_edits_cli_dispatches_job_id_and_bundle_path(
     assert exit_code == 0
     assert calls == [(job.job_id, "bundle.json")]
     assert json.loads(capsys.readouterr().out)["job_id"] == job.job_id
+
+
+def test_recoverable_operation_errors_carry_categories_and_paths(tmp_path):
+    """Deterministic model-mistake refusals expose a stable category while
+    keeping the exact refusal message; safety refusals never gain one."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree = Path(job.worktree_path)
+    (worktree / "dup.py").write_bytes(b"X = 1\nX = 1\n")
+
+    scenarios = [
+        (
+            {"op": "create_file", "path": "src/sample.py", "content": "Y = 1\n"},
+            "create_existing_file",
+            "src/sample.py",
+        ),
+        (
+            {
+                "op": "replace_file",
+                "path": "missing.py",
+                "content": "Y = 1\n",
+                "expected_sha256": "0" * 64,
+            },
+            "missing_target_file",
+            "missing.py",
+        ),
+        (
+            {
+                "op": "replace_file",
+                "path": "src/sample.py",
+                "content": "Y = 1\n",
+                "expected_sha256": "0" * 64,
+            },
+            "stale_expected_sha256",
+            "src/sample.py",
+        ),
+        (
+            {
+                "op": "replace_text",
+                "path": "src/sample.py",
+                "old_text": "VALUE = 1",
+                "new_text": "VALUE = 1",
+            },
+            "identical_replacement",
+            "src/sample.py",
+        ),
+        (
+            {
+                "op": "replace_text",
+                "path": "dup.py",
+                "old_text": "X = 1",
+                "new_text": "X = 2",
+            },
+            "ambiguous_replacement",
+            "dup.py",
+        ),
+    ]
+    for operation, category, path in scenarios:
+        bundle = json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": job.job_id,
+                "created_at": "2026-06-10T12:00:00+00:00",
+                "operation_count": 1,
+                "operations": [operation],
+            }
+        ).encode("utf-8")
+        with pytest.raises(edit_bundle.EditBundleRecoverableOperationError) as info:
+            edit_bundle.validate_edit_bundle_bytes(job.job_id, bundle, worktree)
+        assert info.value.category == category
+        assert info.value.path == path
+
+    unsafe = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {"op": "create_file", "path": ".env", "content": "TOKEN=x\n"}
+            ],
+        }
+    ).encode("utf-8")
+    with pytest.raises(FreestyleJobRefusedError) as unsafe_info:
+        edit_bundle.validate_edit_bundle_bytes(job.job_id, unsafe, worktree)
+    assert not isinstance(
+        unsafe_info.value, edit_bundle.EditBundleRecoverableOperationError
+    )

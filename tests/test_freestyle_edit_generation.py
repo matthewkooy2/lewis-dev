@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -1122,6 +1123,9 @@ def test_prompt_includes_exact_anchor_snippets_and_anchor_instructions(tmp_path)
         "failed_path": None,
         "failed_old_text_preview": None,
         "fresh_snippet_labels": [],
+        "current_file_sha256": None,
+        "full_current_content_included": False,
+        "stale_anchor_analysis": None,
         "error": None,
         "skipped_reason": None,
     }
@@ -1489,3 +1493,194 @@ def test_generate_edits_cli_dispatches_only_the_requested_job_id(
     assert exit_code == 0
     assert calls == [job.job_id]
     assert json.loads(capsys.readouterr().out)["job_id"] == job.job_id
+
+
+def _syntax_error_bundle() -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "op": "create_file",
+                    "path": "app/dev/broken.py",
+                    "content": "def broken(:\n    return 1\n",
+                }
+            ],
+        }
+    )
+
+
+def test_python_syntax_preflight_triggers_one_bounded_repair(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _SequenceDeepSeekClient(
+        [_syntax_error_bundle(), _bundle_content(job.job_id)]
+    )
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    assert completed.edit_generation_status == "generated"
+    assert len(client.completions.calls) == 2
+    repair_payload = json.loads(
+        client.completions.calls[1]["messages"][-1]["content"]
+    )
+    assert repair_payload["failed_path"] == "app/dev/broken.py"
+    assert repair_payload["syntax_error_line"] == 1
+    assert "not" in repair_payload["instruction"]
+    artifact = _generation_artifact(root, completed)
+    assert [record["status"] for record in artifact["attempts"]] == [
+        "preflight_error",
+        "valid",
+    ]
+    assert artifact["attempts"][0]["failed_path"] == "app/dev/broken.py"
+    assert artifact["attempts"][1]["syntax_repair"] is True
+
+
+def test_syntax_preflight_never_persists_or_applies_a_broken_bundle(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    worktree_before = _source_snapshot(Path(job.worktree_path))
+    client = _FakeDeepSeekClient(_syntax_error_bundle())
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded") as info:
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert info.value.failure_category == "python_syntax_error"
+    assert info.value.failed_path == "app/dev/broken.py"
+    assert len(client.completions.calls) == 2
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert failed.edit_bundle_path is None
+    assert "not valid Python" in failed.edit_generation_errors[0]
+    artifact = _generation_artifact(root, failed)
+    assert artifact["validation"]["failure_category"] == "python_syntax_error"
+    assert artifact["validation"]["failed_path"] == "app/dev/broken.py"
+    assert _source_snapshot(Path(job.worktree_path)) == worktree_before
+
+
+def test_anchor_repair_includes_current_content_and_replace_file_fallback(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    client = _SequenceDeepSeekClient(
+        [_stale_anchor_bundle(job.job_id), _bundle_content(job.job_id)]
+    )
+
+    completed = generate_freestyle_edit_bundle(
+        job.job_id,
+        project_root=root,
+        deepseek_config=_config(),
+        deepseek_client=client,
+    )
+
+    repair_payload = json.loads(
+        client.completions.calls[1]["messages"][-1]["content"]
+    )
+    assert repair_payload["current_file_content"] == "VALUE = 1\n"
+    assert len(repair_payload["current_file_sha256"]) == 64
+    assert "replace_file" in repair_payload["instruction"]
+    assert "current_file_sha256" in repair_payload["instruction"]
+    artifact = _generation_artifact(root, completed)
+    retry = artifact["anchor_snippets"]["retry"]
+    assert retry["full_current_content_included"] is True
+    assert len(retry["current_file_sha256"]) == 64
+    analysis = retry["stale_anchor_analysis"]
+    assert analysis["anchor_in_prompt_context"] is False
+    assert analysis["anchor_source"] == "invented"
+
+
+def test_recoverable_operation_failures_classify_without_generation_retry(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    create_existing = json.dumps(
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "op": "create_file",
+                    "path": "app/dev/sample.py",
+                    "content": "VALUE = 2\n",
+                }
+            ],
+        }
+    )
+    identical = json.dumps(
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "op": "replace_text",
+                    "path": "app/dev/sample.py",
+                    "old_text": "VALUE = 1",
+                    "new_text": "VALUE = 1",
+                }
+            ],
+        }
+    )
+    for content, category in (
+        (create_existing, "create_existing_file"),
+        (identical, "identical_replacement"),
+    ):
+        client = _FakeDeepSeekClient(content)
+        with pytest.raises(FreestyleJobRefusedError, match="error was recorded") as info:
+            generate_freestyle_edit_bundle(
+                job.job_id,
+                project_root=root,
+                deepseek_config=_config(),
+                deepseek_client=client,
+            )
+        # Operation-shape mistakes stay single-shot at this layer; the loop owns
+        # the bounded regeneration for them.
+        assert len(client.completions.calls) == 1
+        assert info.value.failure_category == category
+        assert info.value.failed_path == "app/dev/sample.py"
+        failed = get_freestyle_job(job.job_id, project_root=root)
+        artifact = _generation_artifact(root, failed)
+        assert artifact["validation"]["failure_category"] == category
+
+
+def test_duplicate_definition_preflight_is_refused_and_classified(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _proposed_job(root)
+    duplicated = (
+        "def normalize(value):\n"
+        "    import re\n"
+        "\n"
+        "def normalize(value):\n"
+        "    return value\n"
+    )
+    bundle = json.dumps(
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "op": "replace_file",
+                    "path": "app/dev/sample.py",
+                    "content": duplicated,
+                    "expected_sha256": hashlib.sha256(b"VALUE = 1\n").hexdigest(),
+                }
+            ],
+        }
+    )
+    client = _FakeDeepSeekClient(bundle)
+
+    with pytest.raises(FreestyleJobRefusedError, match="error was recorded") as info:
+        generate_freestyle_edit_bundle(
+            job.job_id,
+            project_root=root,
+            deepseek_config=_config(),
+            deepseek_client=client,
+        )
+
+    assert info.value.failure_category == "python_syntax_error"
+    assert len(client.completions.calls) == 2
+    failed = get_freestyle_job(job.job_id, project_root=root)
+    assert "defines 'normalize' 2 times" in failed.edit_generation_errors[0]

@@ -168,6 +168,8 @@ def test_environment_defaults_to_deepseek_provider(monkeypatch):
         "LEWIS_LOCAL_BASE_URL",
         "LEWIS_LOCAL_CODE_MODEL",
         "LEWIS_LOCAL_API_KEY",
+        "DEEPSEEK_MODEL",
+        "DEEPSEEK_BASE_URL",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "remote-key")
@@ -421,7 +423,20 @@ def test_local_edit_generation_sends_json_mode_when_capability_enabled(tmp_path)
         deepseek_client=client,
     )
 
-    assert client.completions.calls[0]["response_format"] == {"type": "json_object"}
+    response_format = client.completions.calls[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "freestyle_edit_bundle"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert schema["required"] == ["schema_version", "operations"]
+    operation_schema = schema["properties"]["operations"]["items"]
+    assert operation_schema["required"] == ["op", "path"]
+    assert operation_schema["properties"]["op"]["enum"] == [
+        "create_file",
+        "replace_file",
+        "delete_file",
+        "replace_text",
+    ]
 
 
 def test_unreachable_local_endpoint_fails_closed_without_deepseek_wording(tmp_path):

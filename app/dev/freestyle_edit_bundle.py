@@ -140,6 +140,37 @@ _OPERATION_FIELDS = {
 }
 
 
+class EditBundleRecoverableOperationError(FreestyleJobRefusedError):
+    """One operation failed a deterministic freshness or shape check.
+
+    Raised with the exact same refusal message as before so every existing
+    caller still fails closed unchanged; it additionally carries a stable
+    ``category`` plus the failed path so orchestration layers can classify the
+    failure and attempt bounded, recorded recovery with fresh evidence. Never
+    raised for path, content, approval-sensitive, or secret safety failures,
+    which stay plain refusals that must never trigger any retry.
+
+    Categories: ``create_existing_file``, ``missing_target_file``,
+    ``stale_expected_sha256``, ``identical_replacement``,
+    ``ambiguous_replacement``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str,
+        path: str,
+        old_text: str | None = None,
+        new_text: str | None = None,
+    ):
+        super().__init__(message)
+        self.category = category
+        self.path = path
+        self.old_text = old_text
+        self.new_text = new_text
+
+
 class EditBundleExactMatchError(FreestyleJobRefusedError):
     """One replace_text old_text matched the current file exactly zero times.
 
@@ -389,6 +420,58 @@ def edit_bundle_schema_for_prompt() -> dict[str, Any]:
             ),
             "binary_or_nul_content": "forbidden",
             "absolute_traversal_backslash_symlink_and_outside_worktree_paths": "forbidden",
+        },
+    }
+
+
+def edit_bundle_json_schema() -> dict[str, Any]:
+    """JSON Schema for the lean model-emitted edit bundle.
+
+    Trusted provenance fields are intentionally absent: the model emits only
+    ``schema_version`` and ``operations`` and local code injects the rest before
+    deterministic validation.
+    """
+    path = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_EDIT_PATH_LENGTH,
+    }
+    content = {"type": "string"}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "operations"],
+        "properties": {
+            "schema_version": {"type": "integer"},
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_BUNDLE_OPERATIONS,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op", "path"],
+                    "properties": {
+                        "op": {
+                            "type": "string",
+                            "enum": [
+                                "create_file",
+                                "replace_file",
+                                "delete_file",
+                                "replace_text",
+                            ],
+                        },
+                        "path": path,
+                        "content": content,
+                        "expected_sha256": {"type": "string", "maxLength": 64},
+                        "old_text": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "new_text": content,
+                    },
+                },
+            },
         },
     }
 
@@ -778,14 +861,18 @@ def _validated_edit_target(
         )
     if expect_file:
         if not target.is_file():
-            raise FreestyleJobRefusedError(
+            raise EditBundleRecoverableOperationError(
                 f"Edit bundle {label} target {safe_path!r} is missing or not "
-                "a regular file."
+                "a regular file.",
+                category="missing_target_file",
+                path=safe_path,
             )
         _require_inside_worktree(target, resolved_worktree, label)
     elif target.exists():
-        raise FreestyleJobRefusedError(
-            f"Edit bundle {label} create_file target {safe_path!r} already exists."
+        raise EditBundleRecoverableOperationError(
+            f"Edit bundle {label} create_file target {safe_path!r} already exists.",
+            category="create_existing_file",
+            path=safe_path,
         )
     return target
 
@@ -854,9 +941,11 @@ def _require_fresh_expected_sha256(
         )
     actual = hashlib.sha256(original_bytes).hexdigest()
     if actual != expected:
-        raise FreestyleJobRefusedError(
+        raise EditBundleRecoverableOperationError(
             f"Edit bundle {label} expected_sha256 is stale for {path!r}: "
-            f"the bundle expects {expected} but the current file is {actual}."
+            f"the bundle expects {expected} but the current file is {actual}.",
+            category="stale_expected_sha256",
+            path=path,
         )
 
 
@@ -886,8 +975,12 @@ def _located_replacement(
                 f"Edit bundle {label} {field_name} exceeds the edit size limit."
             )
     if old_text == new_text:
-        raise FreestyleJobRefusedError(
-            f"Edit bundle {label} old_text and new_text are identical."
+        raise EditBundleRecoverableOperationError(
+            f"Edit bundle {label} old_text and new_text are identical.",
+            category="identical_replacement",
+            path=path,
+            old_text=old_text,
+            new_text=new_text,
         )
     occurrences = text.count(old_text)
     if occurrences == 0:
@@ -899,9 +992,13 @@ def _located_replacement(
             new_text=new_text,
         )
     if occurrences > 1:
-        raise FreestyleJobRefusedError(
+        raise EditBundleRecoverableOperationError(
             f"Edit bundle {label} replace_text matched {occurrences} times in "
-            f"{path!r}; refusing an ambiguous replacement."
+            f"{path!r}; refusing an ambiguous replacement.",
+            category="ambiguous_replacement",
+            path=path,
+            old_text=old_text,
+            new_text=new_text,
         )
     start = text.index(old_text)
     return _LocatedReplacement(

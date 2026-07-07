@@ -81,6 +81,7 @@ _CLI_COMMANDS = {
     "create",
     "generate-edits",
     "list",
+    "loop",
     "materialize",
     "propose",
     "recover",
@@ -244,6 +245,13 @@ class FreestyleJob:
     latest_run_artifact_path: str | None = None
     latest_run_completed_stages: tuple[str, ...] = ()
     latest_run_errors: tuple[str, ...] = ()
+    latest_loop_id: str | None = None
+    latest_loop_status: str = "not_run"
+    latest_loop_started_at: str | None = None
+    latest_loop_completed_at: str | None = None
+    latest_loop_artifact_path: str | None = None
+    latest_loop_stop_reason: str | None = None
+    latest_loop_errors: tuple[str, ...] = ()
     original_artifacts: dict[str, str | None] | None = None
     original_stage_statuses: dict[str, str] | None = None
     refinement_count: int = 0
@@ -500,6 +508,8 @@ def generate_freestyle_edit_bundle(
     goal_override: str | None = None,
     title_override: str | None = None,
     artifact_metadata: dict[str, Any] | None = None,
+    extra_preferred_paths: tuple[str, ...] = (),
+    sampling_temperature: float | None = None,
 ) -> FreestyleJob:
     """Generate and validate one provider edit bundle without applying it."""
     from app.dev.freestyle_edit_generation import generate_edit_bundle
@@ -513,6 +523,8 @@ def generate_freestyle_edit_bundle(
         goal_override=goal_override,
         title_override=title_override,
         artifact_metadata=artifact_metadata,
+        extra_preferred_paths=extra_preferred_paths,
+        sampling_temperature=sampling_temperature,
     )
     return _sync_refinement_if_needed(completed, project_root, state_root)
 
@@ -624,6 +636,34 @@ def run_freestyle_job(
         state_root=state_root,
         deepseek_config=deepseek_config,
         deepseek_client=deepseek_client,
+    )
+
+
+def run_freestyle_loop(
+    job_id: str,
+    *,
+    run_checks: bool = True,
+    check_ids: Sequence[str] | None = None,
+    resume: bool = False,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+    deepseek_config: Any | None = None,
+    deepseek_client: Any | None = None,
+    limits: Any | None = None,
+) -> FreestyleJob:
+    """Run the bounded evidence-driven freestyle loop in the isolated worktree."""
+    from app.dev.freestyle_loop import run_freestyle_loop as run_loop
+
+    return run_loop(
+        job_id,
+        run_checks=run_checks,
+        check_ids=check_ids,
+        resume=resume,
+        project_root=project_root,
+        state_root=state_root,
+        deepseek_config=deepseek_config,
+        deepseek_client=deepseek_client,
+        limits=limits,
     )
 
 
@@ -1554,6 +1594,13 @@ def _read_job(path: Path) -> FreestyleJob:
             payload.get("latest_run_completed_stages", ())
         )
         payload["latest_run_errors"] = tuple(payload.get("latest_run_errors", ()))
+        payload.setdefault("latest_loop_id", None)
+        payload.setdefault("latest_loop_status", "not_run")
+        payload.setdefault("latest_loop_started_at", None)
+        payload.setdefault("latest_loop_completed_at", None)
+        payload.setdefault("latest_loop_artifact_path", None)
+        payload.setdefault("latest_loop_stop_reason", None)
+        payload["latest_loop_errors"] = tuple(payload.get("latest_loop_errors", ()))
         payload.setdefault("original_artifacts", None)
         payload.setdefault("original_stage_statuses", None)
         payload.setdefault("refinement_count", 0)
@@ -1699,6 +1746,11 @@ def _failed_artifact_path(command: str | None, job_id: str | None) -> str | None
             "latest_run_status",
             {"error", "failed", "refused"},
             "latest_run_artifact_path",
+        ),
+        "loop": (
+            "latest_loop_status",
+            {"stopped", "safety_stop", "exhausted"},
+            "latest_loop_artifact_path",
         ),
         "refine": (
             "latest_refinement_status",
@@ -1878,6 +1930,28 @@ def main(argv: list[str] | None = None) -> int:
         metavar="CHECK_ID",
         help="Allowlisted check id to run (repeatable); requires --run-checks.",
     )
+    loop_parser = subparsers.add_parser(
+        "loop",
+        help="Run the bounded evidence-driven loop and stop for human approval.",
+    )
+    loop_parser.add_argument("job_id")
+    loop_parser.add_argument(
+        "--no-checks",
+        action="store_true",
+        help="Skip allowlisted checks for this loop attempt.",
+    )
+    loop_parser.add_argument(
+        "--check",
+        action="append",
+        dest="check_ids",
+        metavar="CHECK_ID",
+        help="Allowlisted check id to run (repeatable); omitted means all available.",
+    )
+    loop_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a previously running loop artifact for this job.",
+    )
     refine_parser = subparsers.add_parser(
         "refine",
         help="Generate a refinement bundle from the current isolated worktree.",
@@ -2004,6 +2078,15 @@ def main(argv: list[str] | None = None) -> int:
             _print_job(review_freestyle_job(args.job_id))
         elif args.command == "run-checks":
             _print_job(run_freestyle_checks(args.job_id, check_ids=args.check_ids))
+        elif args.command == "loop":
+            _print_job(
+                run_freestyle_loop(
+                    args.job_id,
+                    run_checks=not args.no_checks,
+                    check_ids=args.check_ids,
+                    resume=args.resume,
+                )
+            )
         elif args.command == "cleanup":
             print(
                 json.dumps(

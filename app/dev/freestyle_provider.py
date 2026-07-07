@@ -28,6 +28,16 @@ from app.dev.freestyle_coding import FreestyleJobRefusedError
 DEEPSEEK_PROVIDER = "deepseek"
 LOCAL_OPENAI_PROVIDER = "local-openai"
 KNOWN_PROVIDERS = frozenset({DEEPSEEK_PROVIDER, LOCAL_OPENAI_PROVIDER})
+STRUCTURED_OUTPUT_TEXT = "text"
+STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
+STRUCTURED_OUTPUT_JSON_SCHEMA = "json_schema"
+STRUCTURED_OUTPUT_MODES = frozenset(
+    {
+        STRUCTURED_OUTPUT_TEXT,
+        STRUCTURED_OUTPUT_JSON_OBJECT,
+        STRUCTURED_OUTPUT_JSON_SCHEMA,
+    }
+)
 _LOCAL_PROVIDER_ALIASES = frozenset(
     {"local", "local-openai", "lmstudio", "lm-studio", "openai-local"}
 )
@@ -74,6 +84,29 @@ class ProviderProposalConfig:
     provider: str = DEEPSEEK_PROVIDER
     local_only: bool = False
     supports_json_response_format: bool = True
+    structured_output_mode: str | None = None
+    # Optional deterministic sampling seed passed through to OpenAI-compatible
+    # endpoints that support it (LM Studio, vLLM). None omits the parameter.
+    sampling_seed: int | None = None
+
+    def __post_init__(self) -> None:
+        mode = self.structured_output_mode
+        if mode is None:
+            if self.supports_json_response_format:
+                mode = (
+                    STRUCTURED_OUTPUT_JSON_SCHEMA
+                    if self.provider == LOCAL_OPENAI_PROVIDER
+                    else STRUCTURED_OUTPUT_JSON_OBJECT
+                )
+            else:
+                mode = STRUCTURED_OUTPUT_TEXT
+        mode = str(mode).strip().casefold()
+        object.__setattr__(self, "structured_output_mode", mode)
+        object.__setattr__(
+            self,
+            "supports_json_response_format",
+            mode != STRUCTURED_OUTPUT_TEXT,
+        )
 
     @classmethod
     def from_process_environment(cls) -> ProviderProposalConfig:
@@ -90,6 +123,12 @@ class ProviderProposalConfig:
                 # back to a remote endpoint regardless of the env flag.
                 local_only=True,
                 supports_json_response_format=_env_flag("LEWIS_LOCAL_JSON_MODE"),
+                structured_output_mode=(
+                    STRUCTURED_OUTPUT_JSON_SCHEMA
+                    if _env_flag("LEWIS_LOCAL_JSON_MODE")
+                    else STRUCTURED_OUTPUT_TEXT
+                ),
+                sampling_seed=_env_seed("LEWIS_LOCAL_SEED"),
             )
         if provider == DEEPSEEK_PROVIDER:
             return cls(
@@ -171,6 +210,7 @@ def provider_metadata(config: Any) -> dict[str, Any]:
         metadata["endpoint"] = base_url[:200]
     if getattr(config, "local_only", False):
         metadata["local_only"] = True
+    metadata["structured_output_mode"] = structured_output_mode_for(config)
     return metadata
 
 
@@ -190,11 +230,13 @@ def validate_provider_config(config: Any) -> None:
     if not isinstance(config, ProviderProposalConfig):
         raise FreestyleJobRefusedError("DeepSeek proposal configuration is invalid.")
     if config.provider == DEEPSEEK_PROVIDER:
+        _validate_structured_output_mode(config)
         if config.local_only:
             raise FreestyleJobRefusedError(LOCAL_ONLY_REMOTE_REFUSAL)
         _validate_deepseek_fields(config)
         return
     if config.provider == LOCAL_OPENAI_PROVIDER:
+        _validate_structured_output_mode(config)
         _validate_local_fields(config)
         return
     raise FreestyleJobRefusedError(UNKNOWN_PROVIDER_MESSAGE)
@@ -300,6 +342,11 @@ def provider_config_from_settings(settings: Any) -> ProviderProposalConfig:
             supports_json_response_format=bool(
                 getattr(settings, "local_llm_json_mode", False)
             ),
+            structured_output_mode=(
+                STRUCTURED_OUTPUT_JSON_SCHEMA
+                if bool(getattr(settings, "local_llm_json_mode", False))
+                else STRUCTURED_OUTPUT_TEXT
+            ),
         )
     if provider == DEEPSEEK_PROVIDER:
         return ProviderProposalConfig(
@@ -325,3 +372,101 @@ def _env_flag(name: str) -> bool:
     if value is None:
         return False
     return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_seed(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
+def sampling_parameters_for(
+    config: Any, *, temperature: float | None = None
+) -> dict[str, Any]:
+    """Sampling parameters for one generation request.
+
+    Temperature 0 by default for deterministic first attempts; a bounded
+    override (clamped to [0, 1]) lets recovery attempts escape a temperature-0
+    attractor that would otherwise re-emit the identical failed output. A
+    configured seed is passed only for the local provider, where
+    OpenAI-compatible servers (LM Studio, vLLM) accept it.
+    """
+    value: float | int = 0
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        value = min(1.0, max(0.0, float(temperature)))
+    parameters: dict[str, Any] = {"temperature": value}
+    seed = getattr(config, "sampling_seed", None)
+    if (
+        is_local_provider(config)
+        and isinstance(seed, int)
+        and not isinstance(seed, bool)
+    ):
+        parameters["seed"] = seed
+    return parameters
+
+
+def structured_output_mode_for(config: Any) -> str:
+    """Return the explicit structured-output mode for one provider config."""
+    mode = getattr(config, "structured_output_mode", None)
+    if isinstance(mode, str) and mode.strip().casefold() in STRUCTURED_OUTPUT_MODES:
+        return mode.strip().casefold()
+    if getattr(config, "supports_json_response_format", False):
+        if is_local_provider(config):
+            return STRUCTURED_OUTPUT_JSON_SCHEMA
+        return STRUCTURED_OUTPUT_JSON_OBJECT
+    return STRUCTURED_OUTPUT_TEXT
+
+
+def response_format_for_schema(
+    config: Any,
+    *,
+    name: str,
+    schema: dict[str, Any],
+    strict: bool = True,
+) -> dict[str, Any] | None:
+    """Build the provider-specific response_format payload for a JSON stage.
+
+    ``None`` means explicit text mode. Local LM Studio-compatible endpoints use
+    the JSON Schema form when strict structured output is enabled; DeepSeek keeps
+    the original json_object shape unless configured otherwise.
+    """
+    mode = structured_output_mode_for(config)
+    if mode == STRUCTURED_OUTPUT_TEXT:
+        return None
+    if mode == STRUCTURED_OUTPUT_JSON_OBJECT:
+        return {"type": STRUCTURED_OUTPUT_JSON_OBJECT}
+    if mode == STRUCTURED_OUTPUT_JSON_SCHEMA:
+        return {
+            "type": STRUCTURED_OUTPUT_JSON_SCHEMA,
+            "json_schema": {
+                "name": _safe_schema_name(name),
+                "strict": bool(strict),
+                "schema": schema,
+            },
+        }
+    raise FreestyleJobRefusedError(
+        f"Unsupported structured output mode {mode!r} for freestyle provider."
+    )
+
+
+def _safe_schema_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name).strip())[:64]
+    return cleaned or "freestyle_stage"
+
+
+def _validate_structured_output_mode(config: ProviderProposalConfig) -> None:
+    mode = structured_output_mode_for(config)
+    if mode not in STRUCTURED_OUTPUT_MODES:
+        raise FreestyleJobRefusedError(
+            "Freestyle structured output mode must be text, json_object, or "
+            "json_schema."
+        )
+    if config.provider == LOCAL_OPENAI_PROVIDER and mode == STRUCTURED_OUTPUT_JSON_OBJECT:
+        raise FreestyleJobRefusedError(
+            "The local-openai provider does not use json_object strict output; "
+            "set LEWIS_LOCAL_JSON_MODE for json_schema or leave it disabled for text."
+        )
