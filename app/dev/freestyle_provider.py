@@ -262,18 +262,22 @@ def _validate_deepseek_fields(config: ProviderProposalConfig) -> None:
         raise FreestyleJobRefusedError(
             "DEEPSEEK_CODE_MODEL must be set in the process environment."
         )
-    if (
-        len(model) > 120
-        or model != config.model
-        or re.fullmatch(r"deepseek-[A-Za-z0-9._-]+", model, re.IGNORECASE) is None
-    ):
-        raise FreestyleJobRefusedError("DEEPSEEK_CODE_MODEL must name a DeepSeek model.")
     if not isinstance(config.base_url, str):
         raise FreestyleJobRefusedError(
             "DEEPSEEK_BASE_URL must use the official DeepSeek API endpoint."
         )
     parsed = urlparse(config.base_url)
+    loopback_endpoint = _is_explicit_loopback_endpoint(parsed)
     if (
+        len(model) > 120
+        or model != config.model
+        or (
+            not loopback_endpoint
+            and re.fullmatch(r"deepseek-[A-Za-z0-9._-]+", model, re.IGNORECASE) is None
+        )
+    ):
+        raise FreestyleJobRefusedError("DEEPSEEK_CODE_MODEL must name a DeepSeek model.")
+    if not loopback_endpoint and (
         parsed.scheme != "https"
         or parsed.hostname != "api.deepseek.com"
         or parsed.port not in {None, 443}
@@ -308,16 +312,20 @@ def _validate_local_fields(config: ProviderProposalConfig) -> None:
     if not isinstance(config.base_url, str):
         raise FreestyleJobRefusedError(LOCAL_BASE_URL_MESSAGE)
     parsed = urlparse(config.base_url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.hostname not in _LOOPBACK_HOSTNAMES
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path.rstrip("/") not in {"", "/v1"}
-    ):
+    if not _is_explicit_loopback_endpoint(parsed):
         raise FreestyleJobRefusedError(LOCAL_BASE_URL_MESSAGE)
+
+
+def _is_explicit_loopback_endpoint(parsed) -> bool:
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname in _LOOPBACK_HOSTNAMES
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path.rstrip("/") in {"", "/v1"}
+    )
 
 
 def provider_config_from_settings(settings: Any) -> ProviderProposalConfig:

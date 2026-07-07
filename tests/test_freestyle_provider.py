@@ -294,9 +294,19 @@ def test_deepseek_provider_validation_is_preserved():
             ProviderProposalConfig(
                 api_key="remote-key",
                 model="deepseek-test-code",
-                base_url="http://127.0.0.1:1234/v1",
+                base_url="https://example.com/v1",
             )
         )
+
+
+def test_deepseek_provider_accepts_loopback_lm_studio_endpoint():
+    validate_provider_config(
+        ProviderProposalConfig(
+            api_key="remote-key",
+            model="qwen2.5-coder-7b-instruct",
+            base_url="http://localhost:1234/v1",
+        )
+    )
 
 
 def test_local_only_mode_refuses_remote_deepseek_provider():
