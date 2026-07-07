@@ -174,7 +174,7 @@ def test_populated_detail_renders_handoff_artifacts_and_escaped_bounded_preview(
     assert "Blockers" in response.text
     assert "Errors And Risks" in response.text
     assert "Next Manual Steps" in response.text
-    assert "Missing or invalid DeepSeek configuration." in response.text
+    assert "Missing or invalid model provider configuration." in response.text
     assert "proposal preview" in response.text
     assert "&lt;script&gt;alert" in response.text
     assert "<script>alert" not in response.text

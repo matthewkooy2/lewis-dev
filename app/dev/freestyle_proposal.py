@@ -1,4 +1,9 @@
-"""DeepSeek-only proposal generation for materialized freestyle jobs."""
+"""Provider-backed proposal generation for materialized freestyle jobs.
+
+Supports the remote DeepSeek provider and one explicit local
+OpenAI-compatible provider (LM Studio / llama.cpp / vLLM on loopback); see
+app.dev.freestyle_provider for the fail-closed provider selection rules.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any
-from urllib.parse import urlparse
 
 from app.code_proposal_path_safety import validate_relative_project_path
 from app.config import ROOT_DIR
@@ -48,6 +52,14 @@ from app.dev.freestyle_policy import (
     contains_sensitive_content,
     defines_approval_store,
 )
+from app.dev.freestyle_provider import (
+    DEEPSEEK_API_BASE_URL as DEEPSEEK_API_BASE_URL,  # re-exported for callers
+    ProviderProposalConfig,
+    context_limits_for,
+    effective_api_key,
+    provider_metadata,
+    validate_provider_config,
+)
 from app.dev.freestyle_state import require_materialized, resolved_roots
 from app.dev.repo_map import RepoIndex
 from app.dev.repo_map_context import (
@@ -58,7 +70,6 @@ from app.dev.repo_map_context import (
 
 IMPLEMENTATION_PLAN_CATEGORY = "implementation-plans"
 
-DEEPSEEK_API_BASE_URL = "https://api.deepseek.com"
 MAX_CONTEXT_SCAN_FILES = 5_000
 MAX_CONTEXT_FILES = 12
 MAX_CONTEXT_FILE_BYTES = 64 * 1024
@@ -71,7 +82,7 @@ MAX_PROPOSAL_RESPONSE_CHARS = 100_000
 MAX_PROPOSAL_LIST_ITEMS = 20
 MAX_PROPOSAL_ITEM_CHARS = 500
 ALLOWED_SUGGESTED_CHECKS = frozenset({"pytest", "ruff"})
-# Generic advisory suggestions DeepSeek tends to produce, mapped onto the
+# Generic advisory suggestions code models tend to produce, mapped onto the
 # static check-registry ids that actually exist. Anything outside this map is
 # ignored with one bounded advisory warning instead of failing the proposal:
 # suggested checks are advisory ids only, are never executed from here, and
@@ -188,19 +199,9 @@ class _ProposalSafetyError(FreestyleJobRefusedError):
         self.diagnostic_details = details or {}
 
 
-@dataclass(frozen=True)
-class DeepSeekProposalConfig:
-    api_key: str
-    model: str
-    base_url: str = DEEPSEEK_API_BASE_URL
-
-    @classmethod
-    def from_process_environment(cls) -> DeepSeekProposalConfig:
-        return cls(
-            api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-            model=os.getenv("DEEPSEEK_CODE_MODEL", ""),
-            base_url=os.getenv("DEEPSEEK_BASE_URL", DEEPSEEK_API_BASE_URL),
-        )
+# Compatibility alias: the config is provider-neutral now, but existing
+# callers and tests construct it under the original DeepSeek-only name.
+DeepSeekProposalConfig = ProviderProposalConfig
 
 
 @dataclass(frozen=True)
@@ -299,7 +300,8 @@ def generate_freestyle_proposal(
     implementation_plan_artifact_path: str | None = None
     attempts: list[dict[str, Any]] = []
     try:
-        _validate_deepseek_config(config)
+        validate_provider_config(config)
+        limits = context_limits_for(config)
         worktree = _validated_job_worktree(started, root, state)
         prompt_job = replace(
             started,
@@ -325,6 +327,7 @@ def generate_freestyle_proposal(
             repo_map=repo_map,
             repo_map_provenance=repo_map_provenance,
             plan_recommended_paths=implementation_plan.context_recommendation_paths,
+            limits=limits,
         )
         if not context.files:
             raise FreestyleJobRefusedError(
@@ -338,7 +341,7 @@ def generate_freestyle_proposal(
             _implementation_plan_artifact_name(artifact_name),
         )
         client = deepseek_client or create_deepseek_client(
-            api_key=config.api_key,
+            api_key=effective_api_key(config),
             base_url=config.base_url,
         )
         response, proposal_fields = _proposal_with_one_repair(
@@ -440,8 +443,13 @@ def build_proposal_context(
     repo_map: RepoIndex | None = None,
     repo_map_provenance: dict[str, Any] | None = None,
     plan_recommended_paths: tuple[str, ...] = (),
+    limits: Any | None = None,
 ) -> ProposalContext:
     """Build bounded source context from safe files inside one worktree only.
+
+    ``limits`` optionally reduces the per-file/total/file-count budgets, e.g.
+    for small local models whose usable context is far below the remote
+    provider's; omitted limits keep the original module-level budgets.
 
     When a persistent ``repo_map`` is supplied it becomes a primary source of
     codebase memory: files the map links into the goal's connected
@@ -454,6 +462,13 @@ def build_proposal_context(
     resolved_worktree = worktree.resolve(strict=True)
     if worktree.is_symlink() or not resolved_worktree.is_dir():
         raise FreestyleJobRefusedError("Job worktree is unsafe for proposal context.")
+    max_context_files = getattr(limits, "max_context_files", MAX_CONTEXT_FILES)
+    max_total_chars = getattr(
+        limits, "max_context_total_chars", MAX_CONTEXT_TOTAL_CHARS
+    )
+    max_chars_per_file = getattr(
+        limits, "max_context_chars_per_file", MAX_CONTEXT_CHARS_PER_FILE
+    )
 
     candidates: list[_ContextCandidate] = []
     omissions: list[dict[str, str]] = []
@@ -541,7 +556,7 @@ def build_proposal_context(
     selected: list[dict[str, Any]] = []
     included_char_count = 0
     for candidate in sorted(candidates, key=lambda item: item.selection_key):
-        if len(selected) >= MAX_CONTEXT_FILES:
+        if len(selected) >= max_context_files:
             _record_omission(
                 omissions,
                 omission_counts,
@@ -549,7 +564,7 @@ def build_proposal_context(
                 "file_count_limit",
             )
             continue
-        if included_char_count >= MAX_CONTEXT_TOTAL_CHARS:
+        if included_char_count >= max_total_chars:
             _record_omission(
                 omissions,
                 omission_counts,
@@ -578,8 +593,8 @@ def build_proposal_context(
                 omissions, omission_counts, candidate.relative_path, "sensitive_content"
             )
             continue
-        remaining = MAX_CONTEXT_TOTAL_CHARS - included_char_count
-        char_limit = min(MAX_CONTEXT_CHARS_PER_FILE, remaining)
+        remaining = max_total_chars - included_char_count
+        char_limit = min(max_chars_per_file, remaining)
         included_text = text[:char_limit]
         if len(included_text) < len(text):
             _record_omission(
@@ -854,12 +869,12 @@ def _plan_recommendation_section(
 
 
 def _require_goal_grounded_context(context: ProposalContext) -> None:
-    """Fail closed before any DeepSeek call when context cannot ground the goal.
+    """Fail closed before any model call when context cannot ground the goal.
 
     Two deterministic gates run before any model call: a web/UI goal whose
     safe UI candidates were all dropped, and an explicitly named safe target
     file omitted only because the bounded context budget filled up. Both refuse
-    rather than ask DeepSeek to edit something it was never shown.
+    rather than ask the model to edit something it was never shown.
     """
     gap = ui_context_gap(context.context_plan)
     if gap is not None:
@@ -886,7 +901,7 @@ def _proposal_with_one_repair(
     *,
     implementation_plan: ImplementationPlan | None = None,
 ) -> tuple[Any, dict[str, list[str]]]:
-    """Call DeepSeek once, with exactly one repair retry for shape errors only.
+    """Call the configured provider once, with exactly one repair retry for shape errors only.
 
     Safety failures (unsafe paths, forbidden commands, non-allowlisted
     checks) and any second failure propagate unchanged, so the job still
@@ -1116,52 +1131,8 @@ def _proposal_repair_messages(
     return tuple(messages)
 
 
-def _validate_deepseek_config(config: DeepSeekProposalConfig) -> None:
-    if not isinstance(config, DeepSeekProposalConfig):
-        raise FreestyleJobRefusedError("DeepSeek proposal configuration is invalid.")
-    if (
-        not isinstance(config.api_key, str)
-        or not config.api_key.strip()
-        or config.api_key != config.api_key.strip()
-        or len(config.api_key) > 512
-        or any(ord(character) < 32 for character in config.api_key)
-    ):
-        raise FreestyleJobRefusedError(
-            "DEEPSEEK_API_KEY must be set in the process environment."
-        )
-    if not isinstance(config.model, str):
-        raise FreestyleJobRefusedError(
-            "DEEPSEEK_CODE_MODEL must be set in the process environment."
-        )
-    model = config.model.strip()
-    if not model:
-        raise FreestyleJobRefusedError(
-            "DEEPSEEK_CODE_MODEL must be set in the process environment."
-        )
-    if (
-        len(model) > 120
-        or model != config.model
-        or re.fullmatch(r"deepseek-[A-Za-z0-9._-]+", model, re.IGNORECASE) is None
-    ):
-        raise FreestyleJobRefusedError("DEEPSEEK_CODE_MODEL must name a DeepSeek model.")
-    if not isinstance(config.base_url, str):
-        raise FreestyleJobRefusedError(
-            "DEEPSEEK_BASE_URL must use the official DeepSeek API endpoint."
-        )
-    parsed = urlparse(config.base_url)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "api.deepseek.com"
-        or parsed.port not in {None, 443}
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path.rstrip("/") not in {"", "/v1"}
-    ):
-        raise FreestyleJobRefusedError(
-            "DEEPSEEK_BASE_URL must use the official DeepSeek API endpoint."
-        )
+# Compatibility alias for callers importing the original validator name.
+_validate_deepseek_config = validate_provider_config
 
 
 def _call_deepseek(
@@ -1211,7 +1182,7 @@ def _call_deepseek(
             *extra_messages,
         ],
         temperature=0,
-        max_tokens=MAX_PROPOSAL_OUTPUT_TOKENS,
+        max_tokens=context_limits_for(config).max_proposal_output_tokens,
     )
 
 
@@ -1221,11 +1192,11 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
         content = message.content
     except (AttributeError, IndexError, TypeError) as exc:
         raise FreestyleJobRefusedError(
-            "DeepSeek returned an invalid proposal response."
+            "The code model returned an invalid proposal response."
         ) from exc
     if not isinstance(content, str) or not content.strip():
         raise _ProposalFormatError(
-            "DeepSeek returned an empty proposal response.",
+            "The code model returned an empty proposal response.",
             status="empty_response",
             details={
                 "validator_category": "empty_response",
@@ -1234,7 +1205,7 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
         )
     if len(content) > MAX_PROPOSAL_RESPONSE_CHARS:
         raise _ProposalFormatError(
-            "DeepSeek proposal response exceeded the limit.",
+            "The proposal response exceeded the limit.",
             status="response_too_large",
         )
     text = content.strip()
@@ -1245,10 +1216,10 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise _ProposalFormatError(
-            "DeepSeek proposal response was not valid JSON.", status="invalid_json"
+            "The proposal response was not valid JSON.", status="invalid_json"
         ) from exc
     if not isinstance(payload, dict):
-        raise _ProposalFormatError("DeepSeek proposal response must be an object.")
+        raise _ProposalFormatError("The proposal response must be an object.")
     expected_fields = {
         "proposed_implementation_steps",
         "likely_files_to_edit",
@@ -1257,12 +1228,12 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
     }
     if "likely_files_to_edit" not in payload:
         raise _ProposalFormatError(
-            "DeepSeek proposal field 'likely_files_to_edit' is absent.",
+            "The proposal field 'likely_files_to_edit' is absent.",
             details={"validator_category": "absent"},
         )
     if set(payload) != expected_fields:
         raise _ProposalFormatError(
-            "DeepSeek proposal response contained unexpected fields."
+            "The proposal response contained unexpected fields."
         )
 
     steps = _validated_string_list(
@@ -1278,7 +1249,7 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
         safe_path, rejection = _suggested_path_validation(path, worktree)
         if safe_path is None:
             raise _ProposalSafetyError(
-                "DeepSeek proposed an unsafe likely file path.",
+                "The code model proposed an unsafe likely file path.",
                 status="unsafe_likely_path",
                 details=rejection,
             )
@@ -1290,7 +1261,7 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
     )
     if any(_FORBIDDEN_COMMAND_PATTERN.search(item) for item in (*steps, *risks)):
         raise _ProposalSafetyError(
-            "DeepSeek proposal contained a forbidden command suggestion.",
+            "The proposal contained a forbidden command suggestion.",
             status="unsafe_check",
             details={"validator_category": "forbidden_command"},
         )
@@ -1349,18 +1320,18 @@ def _validated_string_list(
 ) -> list[str]:
     if not isinstance(value, list) or not minimum <= len(value) <= maximum:
         raise _ProposalFormatError(
-            f"DeepSeek proposal field {field_name!r} has an invalid item count."
+            f"The proposal field {field_name!r} has an invalid item count."
         )
     cleaned: list[str] = []
     for item in value:
         if not isinstance(item, str):
             raise _ProposalFormatError(
-                f"DeepSeek proposal field {field_name!r} must contain text."
+                f"The proposal field {field_name!r} must contain text."
             )
         text = " ".join(item.strip().split())
         if not text or len(text) > item_limit or "\x00" in text:
             raise _ProposalFormatError(
-                f"DeepSeek proposal field {field_name!r} contains invalid text."
+                f"The proposal field {field_name!r} contains invalid text."
             )
         cleaned.append(text)
     return cleaned
@@ -1369,18 +1340,18 @@ def _validated_string_list(
 def _validated_likely_files(value: Any) -> list[str]:
     if value is None:
         raise _ProposalFormatError(
-            "DeepSeek proposal field 'likely_files_to_edit' is absent.",
+            "The proposal field 'likely_files_to_edit' is absent.",
             details={"validator_category": "absent"},
         )
     if not isinstance(value, list) or not 0 <= len(value) <= MAX_PROPOSAL_LIST_ITEMS:
         raise _ProposalFormatError(
-            "DeepSeek proposal field 'likely_files_to_edit' has an invalid item count."
+            "The proposal field 'likely_files_to_edit' has an invalid item count."
         )
     cleaned: list[str] = []
     for item in value:
         if not isinstance(item, str):
             raise _ProposalFormatError(
-                "DeepSeek proposal field 'likely_files_to_edit' must contain text.",
+                "The proposal field 'likely_files_to_edit' must contain text.",
                 details={
                     "validator_category": "non_string",
                     "rejected_path_preview": "[NON_STRING]",
@@ -1391,14 +1362,14 @@ def _validated_likely_files(value: Any) -> list[str]:
         ):
             category = "nul" if "\x00" in item else "control_character"
             raise _ProposalSafetyError(
-                "DeepSeek proposed an unsafe likely file path.",
+                "The code model proposed an unsafe likely file path.",
                 status="unsafe_likely_path",
                 details=_rejected_path_detail(item, category),
             )
         text = " ".join(item.strip().split())
         if not text or len(text) > MAX_PROPOSAL_ITEM_CHARS:
             raise _ProposalFormatError(
-                "DeepSeek proposal field 'likely_files_to_edit' contains invalid text.",
+                "The proposal field 'likely_files_to_edit' contains invalid text.",
                 details=_rejected_path_detail(item, "invalid_text"),
             )
         cleaned.append(text)
@@ -1419,7 +1390,7 @@ def _build_artifact(
     response_model = getattr(response, "model", None)
     usage = getattr(response, "usage", None)
     model_metadata: dict[str, Any] = {
-        "provider": "deepseek",
+        **provider_metadata(config),
         "requested_model": config.model,
     }
     if isinstance(response_model, str) and response_model:
@@ -1480,7 +1451,7 @@ def _build_failure_artifact(
     exc: Exception,
     completed_at: str,
 ) -> dict[str, Any]:
-    model_metadata: dict[str, Any] = {"provider": "deepseek"}
+    model_metadata: dict[str, Any] = provider_metadata(config)
     requested_model = _safe_model_name(getattr(config, "model", None))
     if requested_model:
         model_metadata["requested_model"] = requested_model
@@ -1727,7 +1698,7 @@ def _suggested_path_validation(
     normalized = raw_path.strip().replace("\\", "/")
     try:
         safe_path = validate_relative_project_path(
-            normalized, worktree, "DeepSeek likely files"
+            normalized, worktree, "model-proposed likely files"
         )
     except ValueError as exc:
         category = _rejected_path_category(raw_path)

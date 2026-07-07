@@ -32,6 +32,10 @@ from app.dev.freestyle_coding import (
 from app.dev.freestyle_checks import CHECK_REGISTRY, CHECKS_BY_ID
 from app.dev.freestyle_policy import is_job_id
 from app.dev.freestyle_proposal import DeepSeekProposalConfig
+from app.dev.freestyle_provider import (
+    describe_provider_config,
+    provider_config_from_settings,
+)
 from app.dev.freestyle_run import _required_bundle_path
 from app.web_components import (
     empty_state_html,
@@ -349,6 +353,7 @@ def _page_response(
         previews=previews,
         message=message,
         error=error,
+        provider_description=describe_provider_config(_deepseek_config(request)),
     )
     return HTMLResponse(
         page_html(
@@ -366,19 +371,16 @@ def _project_root(request: Request) -> Path:
 
 
 def _deepseek_config(request: Request) -> DeepSeekProposalConfig:
-    settings = request.app.state.settings
-    return DeepSeekProposalConfig(
-        api_key=settings.deepseek_api_key or "",
-        model=settings.deepseek_code_model or "",
-        base_url=settings.deepseek_base_url,
-    )
+    """Effective provider config (DeepSeek or local) from loaded settings."""
+    return provider_config_from_settings(request.app.state.settings)
 
 
 def _web_error(request: Request, exc: Exception) -> str:
     text = str(exc)
-    api_key = request.app.state.settings.deepseek_api_key
-    if api_key:
-        text = text.replace(api_key, "[REDACTED]")
+    settings = request.app.state.settings
+    for api_key in (settings.deepseek_api_key, settings.local_llm_api_key):
+        if api_key:
+            text = text.replace(api_key, "[REDACTED]")
     return _bounded_error(text, "Freestyle action could not be completed.")
 
 
@@ -433,6 +435,7 @@ def freestyle_page(
     previews: dict[str, str] | None = None,
     message: str = "",
     error: str = "",
+    provider_description: str = "",
 ) -> str:
     return "".join(
         [
@@ -442,6 +445,7 @@ def freestyle_page(
                 "<a class='button' href='/dev/freestyle'>Refresh</a>",
             ),
             _safety_notice(),
+            _provider_notice(provider_description),
             flash(message),
             _error_notice(error),
             "<section class='freestyle-layout'><div class='freestyle-rail'>",
@@ -496,6 +500,15 @@ def _safety_notice() -> str:
     return (
         "<section class='safety-notice'><strong>Human merge gate</strong>"
         f"<p>{escape(SAFETY_STATEMENT)}</p></section>"
+    )
+
+
+def _provider_notice(provider_description: str) -> str:
+    if not provider_description:
+        return ""
+    return (
+        "<section class='safety-notice'><strong>Effective model provider</strong>"
+        f"<p>{escape(provider_description)}</p></section>"
     )
 
 
@@ -677,7 +690,7 @@ def _refine_form(job: FreestyleJob, running: bool) -> str:
         "<section class='action-zone primary-zone'><h3>Refine This Job</h3>"
         "<p>This will inspect and modify only this job's isolated worktree. "
         "It will not touch the main checkout, commit, merge, push, pull, fetch, "
-        "or use any provider except DeepSeek. The default action stops at a "
+        "or use any provider except the one explicitly configured. The default action stops at a "
         "new validated generated bundle.</p>"
         f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/refine'>"
         "<label class='control'><span>Refinement goal</span>"

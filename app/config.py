@@ -44,6 +44,14 @@ class Settings:
     deepseek_code_model: str | None = None
     developer_code_workspace: bool = False
     developer_workspace_root: Path | None = None
+    # Freestyle model provider selection: "deepseek" (default) or a local
+    # OpenAI-compatible endpoint ("local-openai"/"lmstudio"/"local").
+    freestyle_provider: str = "deepseek"
+    freestyle_local_only: bool = False
+    local_llm_base_url: str | None = None
+    local_llm_model: str | None = None
+    local_llm_api_key: str | None = None
+    local_llm_json_mode: bool = False
 
     @property
     def has_api_key(self) -> bool:
@@ -125,6 +133,12 @@ def get_settings() -> Settings:
         ),
         developer_code_workspace=_env_bool("LEWIS_DEVELOPER_CODE_WORKSPACE"),
         developer_workspace_root=_env_optional_path("LEWIS_DEVELOPER_WORKSPACE_ROOT"),
+        freestyle_provider=os.getenv("LEWIS_FREESTYLE_PROVIDER", "deepseek"),
+        freestyle_local_only=_env_bool("LEWIS_FREESTYLE_LOCAL_ONLY"),
+        local_llm_base_url=_env_optional_text("LEWIS_LOCAL_BASE_URL"),
+        local_llm_model=_env_optional_text("LEWIS_LOCAL_CODE_MODEL"),
+        local_llm_api_key=_env_optional_text("LEWIS_LOCAL_API_KEY"),
+        local_llm_json_mode=_env_bool("LEWIS_LOCAL_JSON_MODE"),
     )
 
 

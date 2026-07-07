@@ -24,11 +24,19 @@ MAX_HANDOFF_ARTIFACT_BYTES = 1_000_000
 MAX_HANDOFF_ERRORS = 20
 MAX_HANDOFF_RISKS = 20
 _NO_INTEGRATION_STATEMENT = NO_INTEGRATION_STATEMENT_HANDOFF
+# Lowercased substrings that mark a missing/invalid model provider
+# configuration in recorded errors, for DeepSeek and local providers alike.
+# The flag key stays "missing_deepseek_config" for artifact compatibility.
 _DEEPSEEK_CONFIG_MARKERS = (
     "deepseek proposal configuration",
     "deepseek_api_key",
     "deepseek_code_model",
     "deepseek_base_url",
+    "lewis_local_api_key",
+    "lewis_local_code_model",
+    "lewis_local_base_url",
+    "unknown freestyle model provider",
+    "lewis_freestyle_local_only",
 )
 
 
@@ -514,7 +522,7 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
     reasons = [
         label
         for key, label in (
-            ("missing_deepseek_config", "Missing or invalid DeepSeek configuration."),
+            ("missing_deepseek_config", "Missing or invalid model provider configuration."),
             ("inconsistent_edit_state", "Edit application state is inconsistent."),
             ("running_lock", "A stage is marked running or in progress."),
             ("failed_checks", "One or more allowlisted checks failed."),
@@ -674,7 +682,9 @@ def _human_next_steps(job: FreestyleJob, blocked: dict[str, Any]) -> list[str]:
                 ]
             )
     elif job.proposal_status != "proposed":
-        steps.append("Configure DeepSeek if needed, then generate the proposal.")
+        steps.append(
+            "Configure the model provider if needed, then generate the proposal."
+        )
     elif (
         job.edit_generation_status != "generated"
         or job.edit_bundle_validation_status != "valid"

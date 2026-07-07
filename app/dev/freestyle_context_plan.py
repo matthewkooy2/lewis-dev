@@ -67,7 +67,7 @@ _NAMED_BASENAME_PATTERN = re.compile(
 NAMED_TARGET_BUDGET_BLOCKER = (
     "An explicitly named target file from the goal was safe and present in the "
     "isolated worktree but could not fit within the bounded model context; "
-    "refusing to call DeepSeek without the file the goal explicitly requires "
+    "refusing to call the code model without the file the goal explicitly requires "
     "inspecting or changing."
 )
 
@@ -429,7 +429,7 @@ PLAN_WARNING_NO_UI_FILES = (
 UI_CONTEXT_GAP_MESSAGE = (
     "This goal was classified as web/UI work and recognized web/UI files exist "
     "as safe context candidates, but none were included in the bounded model "
-    "context; refusing to call DeepSeek with context that cannot ground the goal."
+    "context; refusing to call the code model with context that cannot ground the goal."
 )
 GOAL_FIT_WARNING_CREATE_ONLY = (
     "UI goal-fit warning: the generated bundle only creates new files and does "

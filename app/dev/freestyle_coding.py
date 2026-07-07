@@ -452,7 +452,8 @@ def propose_freestyle_job(
     failure_artifact_name: str = "proposal-failure.json",
     artifact_metadata: dict[str, Any] | None = None,
 ) -> FreestyleJob:
-    """Generate a structured DeepSeek proposal for one materialized job."""
+    """Generate a structured proposal for one materialized job via the
+    configured model provider."""
     from app.dev.freestyle_proposal import generate_freestyle_proposal
 
     completed = generate_freestyle_proposal(
@@ -500,7 +501,7 @@ def generate_freestyle_edit_bundle(
     title_override: str | None = None,
     artifact_metadata: dict[str, Any] | None = None,
 ) -> FreestyleJob:
-    """Generate and validate one DeepSeek edit bundle without applying it."""
+    """Generate and validate one provider edit bundle without applying it."""
     from app.dev.freestyle_edit_generation import generate_edit_bundle
 
     completed = generate_edit_bundle(
@@ -1785,6 +1786,10 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("list", help="List local freestyle jobs.")
     subparsers.add_parser(
+        "provider",
+        help="Show the effective model provider, endpoint, and model.",
+    )
+    subparsers.add_parser(
         "cleanup-status",
         help="Read-only inventory of jobs, worktrees, branches, and artifacts.",
     )
@@ -1957,6 +1962,17 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "list":
             for job in list_freestyle_jobs():
                 _print_job(job)
+        elif args.command == "provider":
+            from app.dev.freestyle_provider import (
+                ProviderProposalConfig,
+                describe_provider_config,
+            )
+
+            print(
+                describe_provider_config(
+                    ProviderProposalConfig.from_process_environment()
+                )
+            )
         elif args.command == "cleanup-status":
             print(json.dumps(get_freestyle_cleanup_status(), indent=2, sort_keys=True))
         elif args.command == "show":
