@@ -421,12 +421,20 @@ def structured_output_mode_for(config: Any) -> str:
     """Return the explicit structured-output mode for one provider config."""
     mode = getattr(config, "structured_output_mode", None)
     if isinstance(mode, str) and mode.strip().casefold() in STRUCTURED_OUTPUT_MODES:
-        return mode.strip().casefold()
-    if getattr(config, "supports_json_response_format", False):
+        resolved = mode.strip().casefold()
+    elif getattr(config, "supports_json_response_format", False):
         if is_local_provider(config):
-            return STRUCTURED_OUTPUT_JSON_SCHEMA
-        return STRUCTURED_OUTPUT_JSON_OBJECT
-    return STRUCTURED_OUTPUT_TEXT
+            resolved = STRUCTURED_OUTPUT_JSON_SCHEMA
+        else:
+            resolved = STRUCTURED_OUTPUT_JSON_OBJECT
+    else:
+        resolved = STRUCTURED_OUTPUT_TEXT
+    if (
+        resolved == STRUCTURED_OUTPUT_JSON_OBJECT
+        and _uses_loopback_json_schema_response_format(config)
+    ):
+        return STRUCTURED_OUTPUT_JSON_SCHEMA
+    return resolved
 
 
 def response_format_for_schema(
@@ -464,6 +472,15 @@ def response_format_for_schema(
 def _safe_schema_name(name: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name).strip())[:64]
     return cleaned or "freestyle_stage"
+
+
+def _uses_loopback_json_schema_response_format(config: Any) -> bool:
+    """LM Studio-compatible loopback endpoints require json_schema, not json_object."""
+    base_url = getattr(config, "base_url", None)
+    if not isinstance(base_url, str) or not base_url:
+        return False
+    parsed = urlparse(base_url)
+    return _is_explicit_loopback_endpoint(parsed)
 
 
 def _validate_structured_output_mode(config: ProviderProposalConfig) -> None:

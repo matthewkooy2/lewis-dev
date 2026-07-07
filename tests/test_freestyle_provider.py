@@ -38,6 +38,7 @@ from app.dev.freestyle_provider import (
     provider_metadata,
     validate_provider_config,
 )
+from app.dev.freestyle_proposal import proposal_json_schema
 from app.dev.freestyle_run import run_freestyle_job
 
 
@@ -447,6 +448,54 @@ def test_local_edit_generation_sends_json_mode_when_capability_enabled(tmp_path)
         "delete_file",
         "replace_text",
     ]
+
+
+def test_loopback_proposal_uses_json_schema_response_format(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _FakeLocalClient(_proposal_content())
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://localhost:1234/v1",
+    )
+
+    proposed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=config,
+        deepseek_client=client,
+    )
+
+    assert proposed.proposal_status == "proposed"
+    response_format = client.completions.calls[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "freestyle_proposal"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == proposal_json_schema()
+    artifact = _read_artifact(root, proposed.proposal_artifact_path)
+    assert artifact["model_metadata"]["structured_output_mode"] == "json_schema"
+
+
+def test_remote_deepseek_proposal_keeps_json_object_response_format(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _FakeLocalClient(_proposal_content())
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="deepseek-test-code",
+        base_url=DEEPSEEK_API_BASE_URL,
+    )
+
+    proposed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=config,
+        deepseek_client=client,
+    )
+
+    assert proposed.proposal_status == "proposed"
+    assert client.completions.calls[0]["response_format"] == {"type": "json_object"}
 
 
 def test_unreachable_local_endpoint_fails_closed_without_deepseek_wording(tmp_path):
