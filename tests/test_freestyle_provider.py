@@ -36,12 +36,14 @@ from app.dev.freestyle_provider import (
     effective_api_key,
     provider_config_from_settings,
     provider_metadata,
+    proposal_input_budget_tokens_for,
     validate_provider_config,
 )
 from app.dev.freestyle_context_plan import plan_context
 from app.dev.freestyle_proposal import (
     ProposalContext,
     _build_artifact,
+    _call_deepseek,
     _build_proposal_request,
     proposal_json_schema,
 )
@@ -338,7 +340,9 @@ def test_local_provider_context_limits_are_reduced():
     assert local.max_context_files < remote.max_context_files
     assert local.max_context_total_chars < remote.max_context_total_chars
     assert local.max_context_chars_per_file < remote.max_context_chars_per_file
-    assert local.max_proposal_input_tokens is not None
+    assert local.proposal_total_context_tokens == 8192
+    assert local.proposal_reserved_output_tokens == 2048
+    assert proposal_input_budget_tokens_for(_local_config()) == 3680
     assert remote.max_proposal_input_tokens is None
     assert local.max_proposal_output_tokens < remote.max_proposal_output_tokens
     assert local.max_edit_output_tokens < remote.max_edit_output_tokens
@@ -392,11 +396,12 @@ def test_local_proposal_request_is_fit_under_input_budget_and_preserves_required
 
     request, fitted = _build_proposal_request(config, job, context, plan)
 
-    assert fitted.proposal_input_budget_tokens == context_limits_for(
-        config
-    ).max_proposal_input_tokens
+    assert fitted.proposal_input_budget_tokens == proposal_input_budget_tokens_for(config)
     assert fitted.estimated_request_input_tokens is not None
     assert fitted.estimated_request_input_tokens <= fitted.proposal_input_budget_tokens
+    assert fitted.estimated_request_input_tokens <= 5500
+    assert fitted.configured_total_context_tokens == 8192
+    assert fitted.reserved_output_tokens == 2048
     assert fitted.budget_removed_sections
     assert len(fitted.files) < len(context.files)
     assert len(fitted.files) >= 1
@@ -451,6 +456,9 @@ def test_local_proposal_budget_removals_are_recorded_in_artifact(tmp_path):
     summary = artifact["context_summary"]
     assert summary["budget_removed_sections"] == list(fitted.budget_removed_sections)
     assert summary["budget_removed_sections"]
+    assert summary["configured_total_context_tokens"] == 8192
+    assert summary["reserved_output_tokens"] == 2048
+    assert summary["estimated_request_input_tokens"] == fitted.estimated_request_input_tokens
 
 
 def test_small_local_proposal_request_is_unchanged(tmp_path):
@@ -486,6 +494,71 @@ def test_small_local_proposal_request_is_unchanged(tmp_path):
     assert fitted.files == context.files
     assert fitted.budget_removed_sections == ()
     assert json.loads(request["messages"][1]["content"])["safe_files"] == list(files)
+
+
+def test_loopback_deepseek_endpoint_uses_local_proposal_budget(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    plan = plan_context(job.goal)
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://localhost:1234/v1",
+    )
+    files = tuple(
+        {
+            "path": f"app/dev/large_{index}.py",
+            "content": f"# large file {index}\n" + ("VALUE = 1\n" * 500),
+            "truncated": False,
+            "sha256": str(index),
+        }
+        for index in range(6)
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=sum(len(item["content"]) for item in files),
+        scanned_file_count=len(files),
+    )
+
+    request, fitted = _build_proposal_request(config, job, context, plan)
+
+    assert proposal_input_budget_tokens_for(config) == 3680
+    assert fitted.estimated_request_input_tokens is not None
+    assert fitted.estimated_request_input_tokens <= 5500
+    assert request["max_tokens"] == 2048
+    assert request["response_format"]["type"] == "json_schema"
+
+
+def test_irreducible_local_proposal_request_stops_before_provider_call(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    plan = plan_context(job.goal)
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://localhost:1234/v1",
+    )
+    file = {
+        "path": "app/dev/large.py",
+        "content": "VALUE = 1\n" * 5000,
+        "truncated": False,
+        "sha256": "large",
+    }
+    context = ProposalContext(
+        files=(file,),
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=len(file["content"]),
+        scanned_file_count=1,
+    )
+    client = _FakeLocalClient(_proposal_content())
+
+    with pytest.raises(FreestyleJobRefusedError, match="proposal_context_too_large"):
+        _call_deepseek(client, config, job, context, plan)
+
+    assert client.completions.calls == []
 
 
 # --- generation through the local provider --------------------------------------

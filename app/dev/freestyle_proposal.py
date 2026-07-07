@@ -59,6 +59,7 @@ from app.dev.freestyle_provider import (
     context_limits_for,
     effective_api_key,
     provider_metadata,
+    proposal_input_budget_tokens_for,
     response_format_for_schema,
     sampling_parameters_for,
     validate_provider_config,
@@ -203,6 +204,22 @@ class _ProposalSafetyError(FreestyleJobRefusedError):
         self.diagnostic_details = details or {}
 
 
+class _ProposalContextBudgetError(FreestyleJobRefusedError):
+    """The locally bounded proposal request cannot fit within model context."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        context: ProposalContext,
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.diagnostic_status = "proposal_context_too_large"
+        self.diagnostic_details = details or {}
+        self.proposal_context = context
+
+
 # Compatibility alias: the config is provider-neutral now, but existing
 # callers and tests construct it under the original DeepSeek-only name.
 DeepSeekProposalConfig = ProviderProposalConfig
@@ -298,6 +315,8 @@ class ProposalContext:
     budget_removed_sections: tuple[dict[str, str], ...] = ()
     estimated_request_input_tokens: int | None = None
     proposal_input_budget_tokens: int | None = None
+    configured_total_context_tokens: int | None = None
+    reserved_output_tokens: int | None = None
 
     @property
     def inspected_paths(self) -> tuple[str, ...]:
@@ -426,6 +445,9 @@ def generate_freestyle_proposal(
             artifact, state, started.job_id, artifact_name
         )
     except Exception as exc:
+        proposal_context = getattr(exc, "proposal_context", None)
+        if isinstance(proposal_context, ProposalContext):
+            context = proposal_context
         errors = [
             record["error"]
             for record in attempts
@@ -1261,7 +1283,9 @@ def _fit_proposal_request(
     response_format: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ProposalContext]:
     limits = context_limits_for(config)
-    budget_tokens = getattr(limits, "max_proposal_input_tokens", None)
+    budget_tokens = proposal_input_budget_tokens_for(config)
+    total_context_tokens = getattr(limits, "proposal_total_context_tokens", None)
+    reserved_output_tokens = getattr(limits, "proposal_reserved_output_tokens", None)
     implementation_plan_section = (
         implementation_plan.prompt_section() if implementation_plan is not None else None
     )
@@ -1311,6 +1335,8 @@ def _fit_proposal_request(
                 budget_removed_sections=tuple(removed),
                 estimated_request_input_tokens=estimated_tokens,
                 proposal_input_budget_tokens=budget_tokens,
+                configured_total_context_tokens=total_context_tokens,
+                reserved_output_tokens=reserved_output_tokens,
             )
             return request, fitted_context
         if len(files) > 1:
@@ -1354,8 +1380,27 @@ def _fit_proposal_request(
                 }
             )
             continue
-        raise FreestyleJobRefusedError(
-            "No safe proposal request fit within the configured proposal input budget."
+        fitted_context = replace(
+            context,
+            files=tuple(files),
+            included_char_count=included_char_count,
+            budget_removed_sections=tuple(removed),
+            estimated_request_input_tokens=estimated_tokens,
+            proposal_input_budget_tokens=budget_tokens,
+            configured_total_context_tokens=total_context_tokens,
+            reserved_output_tokens=reserved_output_tokens,
+        )
+        raise _ProposalContextBudgetError(
+            "proposal_context_too_large: the required proposal instructions, "
+            "goal, schema, and highest-priority implementation evidence do not "
+            "fit within the configured local proposal input budget.",
+            context=fitted_context,
+            details={
+                "configured_total_context_tokens": total_context_tokens,
+                "reserved_output_tokens": reserved_output_tokens,
+                "final_estimated_input_tokens": estimated_tokens,
+                "dropped_sections": list(removed),
+            },
         )
 
 
@@ -1605,6 +1650,8 @@ def _build_artifact(
             "budget_removed_sections": list(context.budget_removed_sections),
             "estimated_request_input_tokens": context.estimated_request_input_tokens,
             "proposal_input_budget_tokens": context.proposal_input_budget_tokens,
+            "configured_total_context_tokens": context.configured_total_context_tokens,
+            "reserved_output_tokens": context.reserved_output_tokens,
         },
     }
 
@@ -1667,6 +1714,8 @@ def _context_summary(context: ProposalContext | None) -> dict[str, Any]:
             "budget_removed_sections": [],
             "estimated_request_input_tokens": None,
             "proposal_input_budget_tokens": None,
+            "configured_total_context_tokens": None,
+            "reserved_output_tokens": None,
         }
     return {
         "scanned_file_count": context.scanned_file_count,
@@ -1675,6 +1724,8 @@ def _context_summary(context: ProposalContext | None) -> dict[str, Any]:
         "budget_removed_sections": list(context.budget_removed_sections),
         "estimated_request_input_tokens": context.estimated_request_input_tokens,
         "proposal_input_budget_tokens": context.proposal_input_budget_tokens,
+        "configured_total_context_tokens": context.configured_total_context_tokens,
+        "reserved_output_tokens": context.reserved_output_tokens,
         "omission_counts": context.omission_counts,
         "omitted_files": [
             {

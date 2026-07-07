@@ -156,6 +156,8 @@ class ProviderContextLimits:
     max_context_files: int
     max_context_total_chars: int
     max_context_chars_per_file: int
+    proposal_total_context_tokens: int | None
+    proposal_reserved_output_tokens: int | None
     max_proposal_input_tokens: int | None
     max_proposal_output_tokens: int
     max_edit_output_tokens: int
@@ -166,6 +168,8 @@ _DEEPSEEK_LIMITS = ProviderContextLimits(
     max_context_files=12,
     max_context_total_chars=48_000,
     max_context_chars_per_file=8_000,
+    proposal_total_context_tokens=None,
+    proposal_reserved_output_tokens=None,
     max_proposal_input_tokens=None,
     max_proposal_output_tokens=10_000,
     max_edit_output_tokens=16_000,
@@ -175,24 +179,60 @@ _LOCAL_LIMITS = ProviderContextLimits(
     max_context_files=8,
     max_context_total_chars=24_000,
     max_context_chars_per_file=6_000,
-    # Reserve room inside an 8192-token local context window for the model's
-    # completion plus a safety margin, then fit the full serialized proposal
-    # request under the remaining deterministic input budget.
+    proposal_total_context_tokens=8_192,
+    proposal_reserved_output_tokens=2_048,
+    # Keep the estimated input under an explicit safe ceiling for 8k-context
+    # loopback models; if a tighter explicit value exists, it wins.
     max_proposal_input_tokens=3_680,
-    max_proposal_output_tokens=4_000,
+    max_proposal_output_tokens=2_048,
     max_edit_output_tokens=8_000,
     max_edit_prompt_chars=40_000,
 )
 
 
 def context_limits_for(config: Any) -> ProviderContextLimits:
-    if is_local_provider(config):
+    if is_local_provider(config) or uses_loopback_context_limits(config):
         return _LOCAL_LIMITS
     return _DEEPSEEK_LIMITS
 
 
 def is_local_provider(config: Any) -> bool:
     return getattr(config, "provider", None) == LOCAL_OPENAI_PROVIDER
+
+
+def uses_loopback_context_limits(config: Any) -> bool:
+    """Return True when the configured endpoint is an explicit loopback server.
+
+    Lewis permits LM Studio-compatible loopback endpoints both through the
+    explicit local provider and through a DeepSeek-shaped config that points at
+    localhost. Those requests need the same bounded small-context budgets.
+    """
+    base_url = getattr(config, "base_url", None)
+    if not isinstance(base_url, str) or not base_url:
+        return False
+    return _is_explicit_loopback_endpoint(urlparse(base_url))
+
+
+def proposal_input_budget_tokens_for(config: Any) -> int | None:
+    """Return the effective proposal input budget for one provider config."""
+    limits = context_limits_for(config)
+    explicit_budget = getattr(limits, "max_proposal_input_tokens", None)
+    total_context = getattr(limits, "proposal_total_context_tokens", None)
+    reserved_output = getattr(limits, "proposal_reserved_output_tokens", None)
+    candidates: list[int] = []
+    if isinstance(explicit_budget, int) and explicit_budget > 0:
+        candidates.append(explicit_budget)
+    if (
+        isinstance(total_context, int)
+        and total_context > 0
+        and isinstance(reserved_output, int)
+        and reserved_output >= 0
+    ):
+        candidates.append(max(0, total_context - reserved_output))
+        candidates.append(5_500)
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def effective_api_key(config: Any) -> str:
