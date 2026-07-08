@@ -212,6 +212,7 @@ class CodingAgentJob:
     cancellation_requested: bool
     cancellation_requested_at: str | None
     last_error: str | None
+    project_id: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> CodingAgentJob:
@@ -243,6 +244,7 @@ class CodingAgentJob:
             cancellation_requested=bool(row["cancellation_requested"]),
             cancellation_requested_at=row["cancellation_requested_at"],
             last_error=row["last_error"],
+            project_id=row["project_id"] if "project_id" in row.keys() else None,
         )
 
 
@@ -296,6 +298,7 @@ class LaunchRequest:
     effort: str | None = None
     max_turns: int = 6
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    project_id: str | None = None
 
 
 class CodingAgentStore:
@@ -349,8 +352,8 @@ class CodingAgentStore:
                     input_tokens, cached_input_tokens, output_tokens,
                     reasoning_tokens, token_usage_source, estimated_cost_usd,
                     cost_source, duration_seconds, failure_category,
-                    cancellation_requested, cancellation_requested_at, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cancellation_requested, cancellation_requested_at, last_error, project_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.id,
@@ -380,6 +383,7 @@ class CodingAgentStore:
                     int(job.cancellation_requested),
                     job.cancellation_requested_at,
                     job.last_error,
+                    job.project_id,
                 ),
             )
 
@@ -997,6 +1001,7 @@ class CodingAgentService:
     def launch(self, request: LaunchRequest) -> CodingAgentJob:
         request = _validated_launch_request(request, self.settings)
         repository = repository_by_id(self.settings, request.repository_id)
+        project_id = _validated_project_link(self.settings, request.project_id, repository)
         executable = self._resolve_executable(request.provider)
         self.store.upsert_repository(repository)
         now = _utc_now()
@@ -1028,6 +1033,7 @@ class CodingAgentService:
             cancellation_requested=False,
             cancellation_requested_at=None,
             last_error=None,
+            project_id=project_id,
         )
         self.store.create_job(job)
         cancel_event = threading.Event()
@@ -1412,7 +1418,29 @@ def _validated_launch_request(request: LaunchRequest, settings: Settings) -> Lau
         effort=effort,
         max_turns=max_turns,
         timeout_seconds=timeout,
+        project_id=_validate_optional_project_id(request.project_id),
     )
+
+
+def _validated_project_link(settings: Settings, project_id: str | None, repository: ApprovedRepository) -> str | None:
+    clean = _validate_optional_project_id(project_id)
+    if clean is None:
+        return None
+    from app.projects import ProjectStore
+
+    project = ProjectStore(settings.database_path).require_project(clean)
+    if str(project.repository_root).casefold() != str(repository.root).casefold():
+        raise CodingAgentError("Project id does not match the selected approved repository.")
+    return clean
+
+
+def _validate_optional_project_id(project_id: str | None) -> str | None:
+    clean = str(project_id or "").strip()
+    if not clean:
+        return None
+    if not _is_job_id(clean):
+        raise CodingAgentError("Project id must be a 32-character lowercase hex id.")
+    return clean
 
 
 def _validate_goal(goal: str) -> str:

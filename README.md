@@ -284,6 +284,41 @@ Optional local configuration:
 - `LEWIS_CODING_AGENT_DEFAULT_TIMEOUT_SECONDS` and
   `LEWIS_CODING_AGENT_MAX_TIMEOUT_SECONDS` set server-side runtime bounds.
 
+## Projects Workspace
+
+The Projects workspace (`/projects`) is disabled by default. Enable it with:
+
+```text
+LEWIS_PROJECTS_UI=true
+```
+
+Projects store project metadata, notes, repository map runs, indexed files,
+symbols, relationships, summaries, diagrams, and activity in the Lewis SQLite
+database. They do not write notes or generated map data into source
+repositories. Opening `/projects` only reads the registry; repository mapping
+starts only from an explicit refresh action.
+
+Project repositories must still be approved. By default Projects reuse
+`LEWIS_CODING_AGENT_REPOSITORIES`; set `LEWIS_PROJECT_REPOSITORIES` to use a
+Projects-specific allowlist. Paths are canonicalized, must be Git top-level
+repositories, and are checked for symlink escapes and unexpected nested Git
+repositories. Mapping is read-only and uses fixed Git metadata commands plus
+static parsing only. It does not install packages, run repository code, modify
+files, commit, push, pull, merge, or switch branches.
+
+Useful optional limits:
+
+- `LEWIS_PROJECT_MAP_MAX_FILES`
+- `LEWIS_PROJECT_MAP_MAX_FILE_BYTES`
+- `LEWIS_PROJECT_MAP_TIMEOUT_SECONDS`
+- `LEWIS_PROJECT_MAP_MAX_MODEL_CALLS`
+- `LEWIS_PROJECT_MAP_MODEL_SUMMARIES`
+- `LEWIS_PROJECT_MAP_IGNORED_DIRECTORIES`
+
+After changing these settings on the Windows home PC, restart Lewis with
+`scripts\windows\request-lewis-restart.ps1` or stop and start the local web
+process.
+
 ## Current Limitations
 
 - No browser automation.

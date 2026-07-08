@@ -310,6 +310,7 @@ def _page(
             content,
             show_dev_navigation=_settings(request).freestyle_ui_enabled,
             show_coding_agents_navigation=_settings(request).coding_agents_ui_enabled,
+            show_projects_navigation=_settings(request).projects_ui_enabled,
         ),
         status_code=status_code,
     )

@@ -361,6 +361,7 @@ def _page_response(
             request.url.path,
             content,
             show_dev_navigation=True,
+            show_projects_navigation=request.app.state.settings.projects_ui_enabled,
             show_coding_agents_navigation=request.app.state.settings.coding_agents_ui_enabled,
         ),
         status_code=status_code,

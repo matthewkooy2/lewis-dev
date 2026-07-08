@@ -20,7 +20,13 @@ def page_html(
     *,
     show_dev_navigation: bool = False,
     show_coding_agents_navigation: bool = False,
+    show_projects_navigation: bool = False,
 ) -> str:
+    projects_navigation = (
+        nav_group(active_path, "Projects", (("/projects", "Projects"),))
+        if show_projects_navigation
+        else ""
+    )
     dev_links = []
     if show_dev_navigation:
         dev_links.append(("/dev/freestyle", "Freestyle"))
@@ -44,6 +50,7 @@ def page_html(
       {nav_group(active_path, "Overview", (("/dashboard", "Dashboard"), ("/usage", "Usage")))}
       {nav_group(active_path, "Review", (("/approvals", "Approvals"), ("/tasks", "Tasks"), ("/calendar", "Calendar"), ("/history", "History")))}
       {nav_group(active_path, "Knowledge", (("/memories", "Memories"), ("/documents", "Document Search")))}
+      {projects_navigation}
       {nav_group(active_path, "Assistant", (("/chat", "Chat"),))}
       {dev_navigation}
     </nav>

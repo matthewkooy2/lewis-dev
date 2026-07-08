@@ -67,6 +67,32 @@ class Settings:
     claude_cli_path: Path | None = None
     coding_agent_default_timeout_seconds: int = 600
     coding_agent_max_timeout_seconds: int = 3600
+    projects_web_ui: bool = False
+    project_repositories: tuple[Path, ...] = ()
+    project_map_max_files: int = 6_000
+    project_map_max_file_bytes: int = 512 * 1024
+    project_map_timeout_seconds: int = 900
+    project_map_max_model_calls: int = 0
+    project_map_model_summaries: bool = False
+    project_map_ignored_directories: tuple[str, ...] = (
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "build",
+        "coverage",
+        "dist",
+        "htmlcov",
+        ".cache",
+        ".lewis-dev",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "logs",
+        "runtime",
+        "target",
+    )
 
     @property
     def has_api_key(self) -> bool:
@@ -81,6 +107,21 @@ class Settings:
     def coding_agents_ui_enabled(self) -> bool:
         """Whether the Coding Agents web UI (routes and nav link) is enabled."""
         return self.debug or self.coding_agents_web_ui
+
+    @property
+    def projects_ui_enabled(self) -> bool:
+        """Whether the Projects workspace UI (routes and nav link) is enabled."""
+        return self.debug or self.projects_web_ui
+
+    @property
+    def approved_project_repository_roots(self) -> tuple[Path, ...]:
+        """Repository roots Projects may use.
+
+        A Projects-specific allowlist can be configured later without breaking
+        existing Coding Agents setups. When unset, Projects reuse the Coding
+        Agents allowlist.
+        """
+        return self.project_repositories or self.coding_agent_repositories
 
 
 class DeveloperWorkspaceRootError(ValueError):
@@ -135,6 +176,14 @@ def _env_optional_path(name: str) -> Path | None:
     return Path(text).expanduser() if text else None
 
 
+def _env_text_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = tuple(item.strip() for item in value.split(os.pathsep) if item.strip())
+    return items or default
+
+
 def _env_path_tuple(name: str) -> tuple[Path, ...]:
     value = os.getenv(name)
     if not value:
@@ -186,6 +235,21 @@ def get_settings() -> Settings:
         ),
         coding_agent_max_timeout_seconds=_env_int(
             "LEWIS_CODING_AGENT_MAX_TIMEOUT_SECONDS", 3600
+        ),
+        projects_web_ui=_env_bool("LEWIS_PROJECTS_UI"),
+        project_repositories=_env_path_tuple("LEWIS_PROJECT_REPOSITORIES"),
+        project_map_max_files=_env_int("LEWIS_PROJECT_MAP_MAX_FILES", 6_000),
+        project_map_max_file_bytes=_env_int(
+            "LEWIS_PROJECT_MAP_MAX_FILE_BYTES", 512 * 1024
+        ),
+        project_map_timeout_seconds=_env_int(
+            "LEWIS_PROJECT_MAP_TIMEOUT_SECONDS", 900
+        ),
+        project_map_max_model_calls=_env_int("LEWIS_PROJECT_MAP_MAX_MODEL_CALLS", 0),
+        project_map_model_summaries=_env_bool("LEWIS_PROJECT_MAP_MODEL_SUMMARIES"),
+        project_map_ignored_directories=_env_text_tuple(
+            "LEWIS_PROJECT_MAP_IGNORED_DIRECTORIES",
+            Settings.__dataclass_fields__["project_map_ignored_directories"].default,
         ),
     )
 

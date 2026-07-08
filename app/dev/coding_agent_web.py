@@ -28,15 +28,15 @@ READ_ONLY_LABEL = "Read-only analysis and proposal jobs. File modifications and 
 def register_coding_agent_web_routes(app: FastAPI) -> None:
     @app.get("/dev/coding-agents", response_class=HTMLResponse)
     def coding_agents_home(
-        request: Request, message: str = "", error: str = ""
+        request: Request, message: str = "", error: str = "", project_id: str = ""
     ) -> HTMLResponse:
-        if set(request.query_params) - {"message", "error"}:
+        if set(request.query_params) - {"message", "error", "project_id"}:
             return _page_response(
                 request,
                 error="Coding Agents views only accept status-message parameters.",
                 status_code=400,
             )
-        return _page_response(request, message=message, error=error)
+        return _page_response(request, message=message, error=error, project_id=project_id)
 
     @app.get("/dev/coding-agents/{job_id}", response_class=HTMLResponse)
     def coding_agent_detail(
@@ -78,6 +78,7 @@ def register_coding_agent_web_routes(app: FastAPI) -> None:
             "max_turns",
             "timeout_seconds",
             "launch_confirm",
+            "project_id",
         }
         if set(fields) - allowed:
             return _redirect(error="Launch accepts only the bounded Coding Agents form fields.")
@@ -93,6 +94,7 @@ def register_coding_agent_web_routes(app: FastAPI) -> None:
                     effort=str(fields.get("effort", "")),
                     max_turns=_int_field(fields.get("max_turns"), 6),
                     timeout_seconds=_int_field(fields.get("timeout_seconds"), 600),
+                    project_id=str(fields.get("project_id", "")) or None,
                 )
             )
         except Exception as exc:
@@ -127,6 +129,7 @@ def _page_response(
     selected_job_id: str | None = None,
     message: str = "",
     error: str = "",
+    project_id: str = "",
     status_code: int = 200,
 ) -> HTMLResponse:
     service = _service(request)
@@ -139,14 +142,33 @@ def _page_response(
             error = "Selected Coding Agents job was not found."
         else:
             events = service.store.list_events(selected.id)
+    repositories = service.repositories()
+    preselected_repository_id = ""
+    preselected_project_id = ""
+    if project_id:
+        try:
+            from app.projects import ProjectStore
+
+            project = ProjectStore(request.app.state.settings.database_path).require_project(project_id)
+            for repo in repositories:
+                if str(repo.root).casefold() == str(project.repository_root).casefold():
+                    preselected_repository_id = repo.repo_id
+                    preselected_project_id = project.id
+                    break
+            if not preselected_repository_id:
+                error = "Project repository is not in the Coding Agents approved repository list."
+        except Exception as exc:
+            error = _web_error(exc)
     content = coding_agents_page(
-        repositories=service.repositories(),
+        repositories=repositories,
         statuses=service.provider_statuses(),
         jobs=jobs,
         selected_job=selected,
         events=events,
         message=message,
         error=error,
+        preselected_repository_id=preselected_repository_id,
+        preselected_project_id=preselected_project_id,
     )
     return HTMLResponse(
         page_html(
@@ -154,6 +176,7 @@ def _page_response(
             request.url.path,
             content,
             show_dev_navigation=request.app.state.settings.freestyle_ui_enabled,
+            show_projects_navigation=request.app.state.settings.projects_ui_enabled,
             show_coding_agents_navigation=True,
         ),
         status_code=status_code,
@@ -169,6 +192,8 @@ def coding_agents_page(
     events: list[CodingAgentEventRecord],
     message: str = "",
     error: str = "",
+    preselected_repository_id: str = "",
+    preselected_project_id: str = "",
 ) -> str:
     return "".join(
         [
@@ -178,7 +203,7 @@ def coding_agents_page(
             _error_notice(error),
             _status_panel(statuses),
             "<section class='freestyle-layout'><div class='freestyle-rail'>",
-            _launch_form(repositories),
+            _launch_form(repositories, preselected_repository_id, preselected_project_id),
             _jobs_list(jobs, selected_job.id if selected_job else None),
             "</div><div class='freestyle-detail'>",
             _job_detail(selected_job, events),
@@ -231,9 +256,9 @@ def _status_panel(statuses: dict[str, ProviderStatus]) -> str:
     )
 
 
-def _launch_form(repositories: list[Any]) -> str:
+def _launch_form(repositories: list[Any], preselected_repository_id: str = "", preselected_project_id: str = "") -> str:
     repo_options = "".join(
-        f"<option value='{escape(repo.repo_id)}'>{escape(repo.label)} - {escape(repo.root)}</option>"
+        f"<option value='{escape(repo.repo_id)}'{' selected' if repo.repo_id == preselected_repository_id else ''}>{escape(repo.label)} - {escape(repo.root)}</option>"
         for repo in repositories
     )
     if not repo_options:
@@ -245,6 +270,7 @@ def _launch_form(repositories: list[Any]) -> str:
     return (
         "<section class='band freestyle-create'><h2>Launch Read-Only Job</h2>"
         "<form method='post' action='/dev/coding-agents/launch'>"
+        f"<input type='hidden' name='project_id' value='{escape(preselected_project_id)}'>"
         "<label class='control'><span>Approved repository</span>"
         f"<select name='repository_id' required>{repo_options}</select></label>"
         "<label class='control'><span>Provider</span><select name='provider' required>"

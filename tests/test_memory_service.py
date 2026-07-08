@@ -45,7 +45,7 @@ def test_migration_2_creates_memory_tables(tmp_path):
             "SELECT version, name FROM schema_migrations ORDER BY version"
         ).fetchall()
     assert {"memories", "memory_events"} <= tables
-    assert migrations == [(1, "baseline_schema"), (2, "memory_schema"), (3, "coding_agents_schema")]
+    assert migrations == [(1, "baseline_schema"), (2, "memory_schema"), (3, "coding_agents_schema"), (4, "projects_schema")]
 
 
 def test_existing_approval_and_run_rows_survive_memory_migration(tmp_path):
@@ -739,4 +739,4 @@ def test_memory_migration_rerun_is_idempotent(tmp_path):
         migrations = conn.execute(
             "SELECT version, name FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert migrations == [(1, "baseline_schema"), (2, "memory_schema"), (3, "coding_agents_schema")]
+    assert migrations == [(1, "baseline_schema"), (2, "memory_schema"), (3, "coding_agents_schema"), (4, "projects_schema")]
