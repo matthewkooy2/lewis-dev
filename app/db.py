@@ -146,7 +146,82 @@ def _memory_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _coding_agents_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coding_agent_repositories (
+            root TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coding_agent_jobs (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            repository_root TEXT NOT NULL,
+            repository_label TEXT NOT NULL,
+            goal TEXT NOT NULL,
+            model TEXT,
+            effort TEXT,
+            max_turns INTEGER NOT NULL,
+            timeout_seconds INTEGER NOT NULL,
+            external_session_id TEXT,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            updated_at TEXT NOT NULL,
+            input_tokens INTEGER,
+            cached_input_tokens INTEGER,
+            output_tokens INTEGER,
+            reasoning_tokens INTEGER,
+            token_usage_source TEXT,
+            estimated_cost_usd REAL,
+            cost_source TEXT,
+            duration_seconds REAL,
+            failure_category TEXT,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0,
+            cancellation_requested_at TEXT,
+            last_error TEXT,
+            FOREIGN KEY(repository_root) REFERENCES coding_agent_repositories(root)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coding_agent_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            content_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(job_id) REFERENCES coding_agent_jobs(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_coding_agent_events_job_sequence
+        ON coding_agent_events(job_id, sequence)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_coding_agent_jobs_updated
+        ON coding_agent_jobs(updated_at DESC)
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "baseline_schema", _baseline_schema),
     Migration(2, "memory_schema", _memory_schema),
+    Migration(3, "coding_agents_schema", _coding_agents_schema),
 )

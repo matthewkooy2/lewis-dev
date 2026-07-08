@@ -40,10 +40,14 @@ def test_initialize_empty_database_creates_core_schema(tmp_path):
         "runs",
         "memories",
         "memory_events",
+        "coding_agent_repositories",
+        "coding_agent_jobs",
+        "coding_agent_events",
     } <= _table_names(db_path)
     assert _migration_rows(db_path) == [
         (1, "baseline_schema"),
         (2, "memory_schema"),
+        (3, "coding_agents_schema"),
     ]
     assert _column_names(db_path, "approvals") == [
         "id",
@@ -90,6 +94,35 @@ def test_initialize_empty_database_creates_core_schema(tmp_path):
         "actor",
         "details_json",
         "created_at",
+    ]
+    assert _column_names(db_path, "coding_agent_jobs") == [
+        "id",
+        "provider",
+        "repository_root",
+        "repository_label",
+        "goal",
+        "model",
+        "effort",
+        "max_turns",
+        "timeout_seconds",
+        "external_session_id",
+        "state",
+        "created_at",
+        "started_at",
+        "completed_at",
+        "updated_at",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "token_usage_source",
+        "estimated_cost_usd",
+        "cost_source",
+        "duration_seconds",
+        "failure_category",
+        "cancellation_requested",
+        "cancellation_requested_at",
+        "last_error",
     ]
 
 
@@ -223,6 +256,7 @@ def test_initialize_twice_does_not_duplicate_migrations_or_alter_counts(tmp_path
     assert _migration_rows(db_path) == [
         (1, "baseline_schema"),
         (2, "memory_schema"),
+        (3, "coding_agents_schema"),
     ]
     with sqlite3.connect(db_path) as conn:
         approval_count = conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]

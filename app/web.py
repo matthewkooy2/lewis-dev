@@ -22,6 +22,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if app.state.settings.freestyle_ui_enabled:
         dev_web = import_module("app" + ".dev.freestyle_web")
         dev_web.register_freestyle_web_routes(app)
+    if app.state.settings.coding_agents_ui_enabled:
+        coding_agents_web = import_module("app" + ".dev.coding_agent_web")
+        coding_agents_web.register_coding_agent_web_routes(app)
     return app
 
 

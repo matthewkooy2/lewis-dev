@@ -14,12 +14,20 @@ from app.memory_store import Memory, MemoryEvent
 
 
 def page_html(
-    title: str, active_path: str, content: str, *, show_dev_navigation: bool = False
+    title: str,
+    active_path: str,
+    content: str,
+    *,
+    show_dev_navigation: bool = False,
+    show_coding_agents_navigation: bool = False,
 ) -> str:
+    dev_links = []
+    if show_dev_navigation:
+        dev_links.append(("/dev/freestyle", "Freestyle"))
+    if show_coding_agents_navigation:
+        dev_links.append(("/dev/coding-agents", "Coding Agents"))
     dev_navigation = (
-        nav_group(active_path, "Developer", (("/dev/freestyle", "Freestyle"),))
-        if show_dev_navigation
-        else ""
+        nav_group(active_path, "Developer", tuple(dev_links)) if dev_links else ""
     )
     return f"""<!doctype html>
 <html lang="en">

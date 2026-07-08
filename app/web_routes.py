@@ -309,6 +309,7 @@ def _page(
             request.url.path,
             content,
             show_dev_navigation=_settings(request).freestyle_ui_enabled,
+            show_coding_agents_navigation=_settings(request).coding_agents_ui_enabled,
         ),
         status_code=status_code,
     )

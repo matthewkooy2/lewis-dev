@@ -59,6 +59,14 @@ class Settings:
     # cleanup, and recover action still requires its own explicit form
     # confirmation regardless of this flag.
     freestyle_web_ui: bool = False
+    # Dedicated Coding Agents web UI flag. Enables the /dev/coding-agents
+    # routes and navigation link for bounded read-only Codex/Claude CLI jobs.
+    coding_agents_web_ui: bool = False
+    coding_agent_repositories: tuple[Path, ...] = ()
+    codex_cli_path: Path | None = None
+    claude_cli_path: Path | None = None
+    coding_agent_default_timeout_seconds: int = 600
+    coding_agent_max_timeout_seconds: int = 3600
 
     @property
     def has_api_key(self) -> bool:
@@ -68,6 +76,11 @@ class Settings:
     def freestyle_ui_enabled(self) -> bool:
         """Whether the Freestyle web UI (routes and nav link) is enabled."""
         return self.debug or self.freestyle_web_ui
+
+    @property
+    def coding_agents_ui_enabled(self) -> bool:
+        """Whether the Coding Agents web UI (routes and nav link) is enabled."""
+        return self.debug or self.coding_agents_web_ui
 
 
 class DeveloperWorkspaceRootError(ValueError):
@@ -122,6 +135,18 @@ def _env_optional_path(name: str) -> Path | None:
     return Path(text).expanduser() if text else None
 
 
+def _env_path_tuple(name: str) -> tuple[Path, ...]:
+    value = os.getenv(name)
+    if not value:
+        return ()
+    paths: list[Path] = []
+    for item in value.split(os.pathsep):
+        text = item.strip().strip('"').strip("'")
+        if text:
+            paths.append(Path(text).expanduser())
+    return tuple(paths)
+
+
 def get_settings() -> Settings:
     load_dotenv()
     raw_user_name = os.getenv("LEWIS_USER_NAME")
@@ -152,6 +177,16 @@ def get_settings() -> Settings:
         local_llm_api_key=_env_optional_text("LEWIS_LOCAL_API_KEY"),
         local_llm_json_mode=_env_bool("LEWIS_LOCAL_JSON_MODE"),
         freestyle_web_ui=_env_bool("LEWIS_FREESTYLE_UI"),
+        coding_agents_web_ui=_env_bool("LEWIS_CODING_AGENTS_UI"),
+        coding_agent_repositories=_env_path_tuple("LEWIS_CODING_AGENT_REPOSITORIES"),
+        codex_cli_path=_env_optional_path("LEWIS_CODEX_CLI_PATH"),
+        claude_cli_path=_env_optional_path("LEWIS_CLAUDE_CLI_PATH"),
+        coding_agent_default_timeout_seconds=_env_int(
+            "LEWIS_CODING_AGENT_DEFAULT_TIMEOUT_SECONDS", 600
+        ),
+        coding_agent_max_timeout_seconds=_env_int(
+            "LEWIS_CODING_AGENT_MAX_TIMEOUT_SECONDS", 3600
+        ),
     )
 
 

@@ -245,6 +245,45 @@ which model (remote DeepSeek or a local OpenAI-compatible endpoint such as
 LM Studio) backs Freestyle job generation; that is independent of whether the
 UI itself is visible.
 
+## Coding Agents Web UI
+
+The Coding Agents command center (`/dev/coding-agents`, linked from the
+Developer navigation group) is disabled by default. Enable it with either flag
+in `.env`:
+
+- `LEWIS_CODING_AGENTS_UI=true` - enables only the Coding Agents routes and nav
+  link.
+- `LEWIS_DEBUG=true` - enables Coding Agents plus the broader debug output.
+
+Phase 1 is intentionally read-only: "Read-only analysis and proposal jobs. File
+modifications and Git integration are disabled." Jobs may run only inside roots
+listed in `LEWIS_CODING_AGENT_REPOSITORIES`, separated with the OS path
+separator (`;` on Windows). Lewis resolves and validates the selected root at
+launch, requires it to be the Git top level, rejects nested repositories and
+symlink escapes, and never auto-discovers repositories or accepts browser-supplied
+paths.
+
+Provider CLIs use their existing local authentication. Lewis never stores or
+passes provider secrets, environment variables from the browser, arbitrary shell
+commands, arbitrary argv, executable paths, package-manager commands, Git write
+operations, commits, pushes, merges, branch changes, or worktree creation.
+Opening the page does not launch a provider process; provider authentication
+status is refreshed only through an explicit status-refresh action.
+
+The fixed Phase 1 invocations are:
+
+```text
+codex exec --json --sandbox read-only --ask-for-approval never --color never --cd <approved-repo> [-m <model>] -
+claude -p --output-format stream-json --permission-mode plan --tools Read,Grep,Glob,LS --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite --safe-mode --disable-slash-commands --no-chrome [--model <model>] [--effort <level>]
+```
+
+Optional local configuration:
+
+- `LEWIS_CODEX_CLI_PATH` and `LEWIS_CLAUDE_CLI_PATH` can pin executable
+  locations. Leave them empty for safe PATH lookup.
+- `LEWIS_CODING_AGENT_DEFAULT_TIMEOUT_SECONDS` and
+  `LEWIS_CODING_AGENT_MAX_TIMEOUT_SECONDS` set server-side runtime bounds.
+
 ## Current Limitations
 
 - No browser automation.
