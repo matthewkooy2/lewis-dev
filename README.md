@@ -274,7 +274,7 @@ The fixed Phase 1 invocations are:
 
 ```text
 codex exec --json --sandbox read-only --color never --cd <approved-repo> [-m <model>] -
-claude -p --output-format stream-json --permission-mode plan --tools Read,Grep,Glob,LS --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite --safe-mode --disable-slash-commands --no-chrome [--model <model>] [--effort <level>]
+claude -p --output-format stream-json --verbose --permission-mode plan --tools Read,Grep,Glob,LS --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite --safe-mode --disable-slash-commands --no-chrome [--model <model>] [--effort <level>]
 ```
 
 Optional local configuration:

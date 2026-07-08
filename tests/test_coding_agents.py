@@ -184,8 +184,10 @@ def test_claude_stream_normalization_and_invocation(tmp_path):
     assert job.output_tokens == 3
     assert job.estimated_cost_usd == 0.01
     invocation = runner.invocations[0]
-    assert invocation.args[:5] == ("claude.exe", "-p", "--output-format", "stream-json", "--permission-mode")
+    assert invocation.args[:4] == ("claude.exe", "-p", "--output-format", "stream-json")
+    assert "--verbose" in invocation.args
     assert "plan" in invocation.args
+    assert "MultiEdit" not in " ".join(invocation.args)
     assert "--dangerously-skip-permissions" not in invocation.args
     assert "--tools" in invocation.args
     assert "Read,Grep,Glob,LS" in invocation.args

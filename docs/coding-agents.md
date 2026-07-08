@@ -34,7 +34,7 @@ codex exec --json --sandbox read-only --color never --cd <approved-repo> [-m <mo
 Claude jobs use:
 
 ```text
-claude -p --output-format stream-json --permission-mode plan --tools Read,Grep,Glob,LS --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite --safe-mode --disable-slash-commands --no-chrome [--model <model>] [--effort <level>]
+claude -p --output-format stream-json --verbose --permission-mode plan --tools Read,Grep,Glob,LS --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite --safe-mode --disable-slash-commands --no-chrome [--model <model>] [--effort <level>]
 ```
 
 The prompt is sent on stdin. Browser input is limited to provider, approved repository id, goal, model, Claude effort, max turns, timeout, and explicit confirmation.
