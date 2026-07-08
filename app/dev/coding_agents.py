@@ -86,6 +86,7 @@ _ALLOWED_ENV_KEYS = {
 }
 _GENERATED_OR_CACHE_PARTS = {
     ".cache",
+    ".lewis-dev",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
@@ -97,6 +98,7 @@ _GENERATED_OR_CACHE_PARTS = {
     "dist",
     "htmlcov",
     "node_modules",
+    "runtime",
     "target",
     "vendor",
 }

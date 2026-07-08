@@ -265,6 +265,12 @@ def test_repository_allowlist_enforcement(tmp_path):
     with pytest.raises(agents.RepositoryRefusedError):
         agents.repository_by_id(settings, "not-approved")
 
+    for generated_name in (".lewis-dev", "runtime"):
+        generated_nested = repo / generated_name / "fixtures" / "nested"
+        generated_nested.mkdir(parents=True)
+        (generated_nested / ".git").mkdir()
+        assert agents.repository_by_id(settings, selected.repo_id).root == repo.resolve()
+
     nested = repo / "nested"
     nested.mkdir()
     (nested / ".git").mkdir()
