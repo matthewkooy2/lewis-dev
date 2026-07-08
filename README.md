@@ -273,7 +273,7 @@ status is refreshed only through an explicit status-refresh action.
 The fixed Phase 1 invocations are:
 
 ```text
-codex exec --json --sandbox read-only --ask-for-approval never --color never --cd <approved-repo> [-m <model>] -
+codex exec --json --sandbox read-only --color never --cd <approved-repo> [-m <model>] -
 claude -p --output-format stream-json --permission-mode plan --tools Read,Grep,Glob,LS --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite --safe-mode --disable-slash-commands --no-chrome [--model <model>] [--effort <level>]
 ```
 

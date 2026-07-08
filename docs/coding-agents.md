@@ -28,7 +28,7 @@ Leave these empty to use safe PATH lookup.
 Codex jobs use:
 
 ```text
-codex exec --json --sandbox read-only --ask-for-approval never --color never --cd <approved-repo> [-m <model>] -
+codex exec --json --sandbox read-only --color never --cd <approved-repo> [-m <model>] -
 ```
 
 Claude jobs use:

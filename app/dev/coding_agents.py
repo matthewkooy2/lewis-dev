@@ -682,8 +682,6 @@ class CodexAdapter:
             "--json",
             "--sandbox",
             "read-only",
-            "--ask-for-approval",
-            "never",
             "--color",
             "never",
             "--cd",

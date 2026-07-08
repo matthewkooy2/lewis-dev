@@ -142,6 +142,7 @@ def test_codex_jsonl_normalization_and_invocation(tmp_path):
     assert job.token_usage_source == "reported"
     invocation = runner.invocations[0]
     assert invocation.args[:5] == ("codex.exe", "exec", "--json", "--sandbox", "read-only")
+    assert "--ask-for-approval" not in invocation.args
     assert "workspace-write" not in invocation.args
     assert "danger-full-access" not in invocation.args
     assert invocation.cwd == repo.resolve()
