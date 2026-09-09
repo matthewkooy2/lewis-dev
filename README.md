@@ -205,6 +205,13 @@ uv run --locked python -m app.main web
 
 Then open `http://127.0.0.1:8787`.
 
+The dashboard uses one shared, in-memory conversation across browser tabs.
+Model calls run in a worker thread, and complete chat turns are serialized.
+Other pages remain available during a model call; the chat history shows each
+turn once its reply is ready. Cancelling an HTTP request does not stop a model
+call that has already started: that turn finishes and is recorded before the
+next turn can use the agent.
+
 The dashboard can:
 
 - Show local counts for pending drafts, tasks, calendar proposals, approved

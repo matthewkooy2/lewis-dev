@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
+from threading import Lock
 
 from fastapi import FastAPI
 
@@ -18,6 +19,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings or get_settings()
     app.state.chat_agent = None
     app.state.chat_messages = []
+    app.state.chat_lock = Lock()
     register_web_routes(app)
     if app.state.settings.freestyle_ui_enabled:
         dev_web = import_module("app" + ".dev.freestyle_web")
