@@ -218,9 +218,9 @@ def test_populated_detail_renders_handoff_artifacts_and_escaped_bounded_preview(
     assert "[preview truncated]" in response.text
     assert len(response.text) < MAX_WEB_PREVIEW_CHARS + 40_000
     assert "does not commit, merge, push" in response.text
-    assert f"/dev/freestyle/{job.job_id}/apply" in response.text
-    assert f"/dev/freestyle/{job.job_id}/review" in response.text
-    assert f"/dev/freestyle/{job.job_id}/run-checks" in response.text
+    assert f"/dev/freestyle/{job.job_id}/apply" not in response.text
+    assert f"/dev/freestyle/{job.job_id}/review" not in response.text
+    assert f"/dev/freestyle/{job.job_id}/run-checks" not in response.text
     assert f"/dev/freestyle/{job.job_id}/cleanup" in response.text
     assert f"/dev/freestyle/{job.job_id}/recover" in response.text
     assert "Advanced Maintenance And Danger Actions" in response.text

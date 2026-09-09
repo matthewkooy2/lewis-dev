@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -61,6 +63,9 @@ def get_freestyle_handoff(
     )
     review = _read_optional_artifact(artifacts["review"], state, "review", errors)
     checks = _read_optional_artifact(artifacts["checks"], state, "checks", errors)
+    applied = _read_optional_artifact(
+        artifacts["applied_edit"], state, "applied edit", errors
+    )
     changed_files = _changed_file_summary(job, root, state, review, errors)
     check_summary = _check_summary(job, checks)
     blocked = _blocked_summary(job, errors)
@@ -100,6 +105,17 @@ def get_freestyle_handoff(
         ),
         "changed_files": changed_files,
         "checks": check_summary,
+        "review_snapshot": {
+            key: review[key]
+            for key in (
+                "generated_at",
+                "diff_snippets",
+                "files_omitted_from_diff_snippets",
+            )
+            if review and key in review
+        },
+        "check_results": (checks or {}).get("checks", []),
+        "result": _result_summary(job, state, applied, review, checks, blocked),
         "bounded_errors": errors[:MAX_HANDOFF_ERRORS],
         "risks": risks[:MAX_HANDOFF_RISKS],
         "blocked": blocked,
@@ -382,16 +398,7 @@ def _read_optional_artifact(
         return None
     path = state.joinpath(*PurePosixPath(reference).parts)
     try:
-        if path.is_symlink() or not path.is_file():
-            raise FreestyleJobRefusedError(
-                f"Latest {label} artifact is missing or unsafe."
-            )
-        path.resolve(strict=True).relative_to(state.resolve(strict=True))
-        if path.stat().st_size > MAX_HANDOFF_ARTIFACT_BYTES:
-            raise FreestyleJobRefusedError(
-                f"Latest {label} artifact exceeds read limit."
-            )
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_bounded_artifact(path, state))
         if not isinstance(payload, dict):
             raise FreestyleJobRefusedError(f"Latest {label} artifact is not an object.")
         return payload
@@ -400,6 +407,121 @@ def _read_optional_artifact(
             _bounded_error(str(exc), f"Could not read latest {label} artifact.")
         )
         return None
+
+
+def _read_bounded_artifact(path: Path, state: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Artifact is missing or unsafe.")
+    path.resolve(strict=True).relative_to(state.resolve(strict=True))
+    with path.open("rb") as stream:
+        data = stream.read(MAX_HANDOFF_ARTIFACT_BYTES + 1)
+    if len(data) > MAX_HANDOFF_ARTIFACT_BYTES:
+        raise ValueError("Artifact exceeds read limit.")
+    return data
+
+
+def _not_before(candidate: str | None, reference: str | None) -> bool:
+    if not candidate or not reference:
+        return False
+    try:
+        return datetime.fromisoformat(candidate) >= datetime.fromisoformat(reference)
+    except (TypeError, ValueError):
+        return False
+
+
+def _result_summary(
+    job: FreestyleJob,
+    state: Path,
+    applied: dict[str, Any] | None,
+    review: dict[str, Any] | None,
+    checks: dict[str, Any] | None,
+    blocked: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive display state from existing artifacts; never persist a second lifecycle."""
+    from app.dev.freestyle_run import _required_bundle_path
+
+    bundle_state = "unavailable"
+    try:
+        bundle = _read_bounded_artifact(_required_bundle_path(job, state), state)
+        if job.edit_apply_status == "applied" and (
+            not applied
+            or applied.get("job_id") != job.job_id
+            or not applied.get("bundle_sha256")
+        ):
+            bundle_state = "unknown"
+        else:
+            bundle_state = (
+                "applied"
+                if applied
+                and applied.get("job_id") == job.job_id
+                and applied.get("bundle_sha256") == hashlib.sha256(bundle).hexdigest()
+                else "pending"
+            )
+    except (OSError, ValueError, FreestyleJobRefusedError):
+        pass
+    applied_at = job.edit_applied_at
+    review_current = bool(
+        applied_at
+        and review
+        and job.review_status == "reviewed"
+        and _not_before(review.get("generated_at"), applied_at)
+    )
+    checks_current = bool(
+        applied_at
+        and checks
+        and job.checks_started_at
+        and _not_before(job.checks_started_at, applied_at)
+        and checks.get("started_at") == job.checks_started_at
+        and isinstance(checks.get("summary"), dict)
+        and checks.get("summary", {}).get("overall_status") == job.checks_status
+    )
+    review_current = review_current and bundle_state != "pending"
+    checks_current = checks_current and bundle_state != "pending"
+    if blocked.get("running_lock"):
+        action, label = "wait", "Work in progress"
+    elif job.edit_apply_status == "inconsistent":
+        action, label = "recover", "Recovery required"
+    elif job.approval_state != "approved" or job.status not in {
+        "ready",
+        "materialized",
+    }:
+        action, label = "inspect", "Job unavailable"
+    elif job.materialization_status != "materialized":
+        action, label = "materialize", "Ready to start"
+    elif job.edit_apply_status == "error":
+        action, label = "refine", "Edit application failed"
+    elif bundle_state == "unknown":
+        action, label = "inspect", "Application evidence unavailable"
+    elif bundle_state == "pending":
+        action, label = "apply", "New bundle ready to apply"
+    elif job.edit_generation_status == "error":
+        action, label = "refine", "Bundle generation failed"
+    elif job.edit_apply_status != "applied":
+        action, label = "generate", "Generate an edit bundle"
+    elif bundle_state == "unavailable" and job.edit_bundle_path:
+        action, label = "inspect", "Latest bundle unavailable"
+    elif not review_current:
+        action, label = "review", "Edits applied — review needed"
+    elif job.checks_status not in {"passed", "not_run"} or job.checks_modified_worktree:
+        action, label = "checks", "Checks need attention"
+    elif (
+        not checks_current
+        or job.checks_status == "not_run"
+        or job.checks_passed_count < 1
+    ):
+        action, label = "checks", "Edits applied — checks needed"
+    else:
+        action, label = "handoff", "Ready for human review"
+    return {
+        "action": action,
+        "label": label,
+        "bundle_state": bundle_state,
+        "review_current": review_current,
+        "checks_current": checks_current,
+        "reviewed_at": (review or {}).get("generated_at"),
+        "checked_at": (checks or {}).get("generated_at"),
+        "check_attempt_status": job.checks_status,
+    }
 
 
 def _changed_file_summary(

@@ -416,3 +416,200 @@ def test_handoff_module_adds_no_model_env_runtime_or_mutating_dependencies():
         "from app.tools",
     ):
         assert forbidden not in source
+
+
+def _generated_bundle(root, job_id, identifier, old="VALUE = 1", new="VALUE = 2"):
+    state = root / freestyle.DEV_STATE_DIR_NAME
+    directory = state / "edit-bundles" / job_id
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"bundle-{identifier}.json"
+    payload = json.loads(_bundle(root, job_id).read_text())
+    payload["operations"][0].update(old_text=old, new_text=new)
+    path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+    generation = directory / f"generation-{identifier}.json"
+    generation.write_text("{}", encoding="utf-8")
+    _set_metadata(
+        root,
+        job_id,
+        edit_generation_status="generated",
+        edit_bundle_validation_status="valid",
+        edit_bundle_path=path.relative_to(state).as_posix(),
+        edit_generation_artifact_path=generation.relative_to(state).as_posix(),
+    )
+    return path
+
+
+@pytest.fixture
+def completed_job(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _created_job(root)
+    materialize_freestyle_job(job.job_id, project_root=root)
+    path = _generated_bundle(root, job.job_id, "a" * 16)
+    apply_freestyle_edit_bundle(job.job_id, str(path), project_root=root)
+    review_freestyle_job(job.job_id, project_root=root)
+    job = run_freestyle_checks(
+        job.job_id, check_ids=["pytest-freestyle"], project_root=root
+    )
+    return root, job
+
+
+def _result_page(root, job_id):
+    from app.dev.freestyle_web import freestyle_page
+
+    job = freestyle.get_freestyle_job(job_id, project_root=root)
+    status = get_freestyle_handoff(job_id, project_root=root)
+    return status, freestyle_page([job], selected_job=job, handoff=status)
+
+
+def test_completed_job_leads_with_result_checks_and_recorded_diff(completed_job):
+    root, job = completed_job
+    before = _metadata_path(root, job.job_id).read_bytes()
+    source = _source_snapshot(root)
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == "handoff"
+    assert status["result"]["bundle_state"] == "applied"
+    assert "Ready for human review" in page
+    assert "-VALUE = 1" in page and "+VALUE = 2" in page
+    assert "pytest-freestyle: passed" in page
+    assert "Exit code: 0" in page
+    assert (
+        page.index("Next action")
+        < page.index("Check results")
+        < page.index("Recorded diff")
+        < page.index("Job details and artifacts")
+    )
+    assert "Apply Latest Generated Bundle" not in page
+    assert "Integrate manually outside Lewis" in page
+    assert _metadata_path(root, job.job_id).read_bytes() == before
+    assert _source_snapshot(root) == source
+
+
+def test_new_bundle_after_success_requires_apply_and_invalidates_old_results(
+    completed_job,
+):
+    root, job = completed_job
+    path = _generated_bundle(root, job.job_id, "b" * 16, "VALUE = 2", "VALUE = 3")
+    # Generation can leave the preceding application's status and check records intact.
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == "apply"
+    assert "Apply Latest Generated Bundle" in page
+    assert "Ready for human review" not in page
+    assert status["result"]["checks_current"] is False
+    assert "predates the latest edits" in page
+    apply_freestyle_edit_bundle(job.job_id, str(path), project_root=root)
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == "review"
+    assert "Apply Latest Generated Bundle" not in page
+    review_freestyle_job(job.job_id, project_root=root)
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == "checks"
+    assert "Ready for human review" not in page
+
+
+@pytest.mark.parametrize(
+    "changes,action,label",
+    [
+        (
+            {"checks_status": "failed", "checks_failed_count": 1},
+            "checks",
+            "Checks need attention",
+        ),
+        ({"checks_status": "error"}, "checks", "Checks need attention"),
+        ({"checks_status": "not_run"}, "checks", "checks needed"),
+        ({"checks_modified_worktree": True}, "checks", "Checks need attention"),
+        ({"edit_apply_status": "inconsistent"}, "recover", "Recovery required"),
+        ({"edit_apply_status": "error"}, "refine", "Edit application failed"),
+        ({"edit_generation_status": "error"}, "refine", "Bundle generation failed"),
+        ({"checks_status": "running"}, "wait", "Work in progress"),
+    ],
+)
+def test_job_result_never_calls_failed_or_running_work_complete(
+    completed_job, changes, action, label
+):
+    root, job = completed_job
+    _set_metadata(root, job.job_id, **changes)
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == action
+    assert label in page
+    assert "Ready for human review" not in page
+    assert "Apply Latest Generated Bundle" not in page
+
+
+def test_missing_latest_bundle_does_not_offer_reapply_or_completion(completed_job):
+    root, job = completed_job
+    (root / freestyle.DEV_STATE_DIR_NAME / job.edit_bundle_path).unlink()
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == "inspect"
+    assert "Latest bundle unavailable" in page
+    assert "Apply Latest Generated Bundle" not in page
+
+
+def test_diff_and_check_output_are_escaped_bounded_and_marked_incomplete(completed_job):
+    from app.dev.freestyle_web import MAX_WEB_PREVIEW_CHARS, freestyle_page
+
+    root, job = completed_job
+    status = get_freestyle_handoff(job.job_id, project_root=root)
+    status["review_snapshot"]["diff_snippets"] = [
+        {
+            "path": "<script>file</script>",
+            "unified_diff": "+<script>alert(1)</script>\n"
+            + "x" * (MAX_WEB_PREVIEW_CHARS + 1),
+            "truncated": True,
+        }
+    ]
+    status["review_snapshot"]["files_omitted_from_diff_snippets"] = [".env"]
+    status["check_results"][0]["stderr"] = "<script>alert(2)</script>"
+    page = freestyle_page([job], selected_job=job, handoff=status)
+    assert "<script>" not in page
+    assert "&lt;script&gt;alert(1)" in page and "&lt;script&gt;alert(2)" in page
+    assert "Diff truncated" in page and "files were omitted" in page
+    assert "x" * (MAX_WEB_PREVIEW_CHARS + 1) not in page
+
+
+def test_missing_application_evidence_is_not_mistaken_for_unapplied_bundle(
+    completed_job,
+):
+    root, job = completed_job
+    (root / freestyle.DEV_STATE_DIR_NAME / job.edit_artifact_path).unlink()
+    status, page = _result_page(root, job.job_id)
+    assert status["result"]["action"] == "inspect"
+    assert "Application evidence unavailable" in page
+    assert "Apply Latest Generated Bundle" not in page
+
+
+def test_a_failed_check_attempt_does_not_display_older_results_as_current(
+    completed_job,
+):
+    root, job = completed_job
+    _set_metadata(root, job.job_id, checks_status="error")
+    status, page = _result_page(root, job.job_id)
+    assert not status["result"]["checks_current"]
+    assert "Latest check attempt: error" in page
+    assert "earlier attempt" in page
+
+
+def test_repeated_apply_post_does_not_turn_completed_job_into_failure(
+    completed_job, tmp_path
+):
+    from dataclasses import replace
+    from fastapi.testclient import TestClient
+    from app.eval_runner import _settings
+    from app.web import create_app
+
+    root, job = completed_job
+    app = create_app(replace(_settings(tmp_path), freestyle_web_ui=True))
+    app.state.freestyle_project_root = root
+    client = TestClient(
+        app,
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+    )
+    before = _metadata_path(root, job.job_id).read_bytes()
+    response = client.post(
+        f"/dev/freestyle/{job.job_id}/apply",
+        data={"confirm_apply": "apply-latest-generated"},
+    )
+    assert response.status_code == 200
+    assert "This bundle is already applied" in response.text
+    assert "Ready for human review" in response.text
+    assert _metadata_path(root, job.job_id).read_bytes() == before
