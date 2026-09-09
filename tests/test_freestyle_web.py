@@ -75,7 +75,11 @@ def _client(
         _settings(tmp_path, debug=debug, freestyle_web_ui=freestyle_web_ui)
     )
     app.state.freestyle_project_root = root
-    return TestClient(app)
+    return TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
 
 def _job(root: Path):
@@ -711,7 +715,11 @@ def test_missing_deepseek_error_is_inline_without_traceback_or_secret(
     settings = replace(_settings(tmp_path, debug=True), deepseek_api_key=secret)
     app = create_app(settings)
     app.state.freestyle_project_root = root
-    client = TestClient(app)
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
     response = client.post(f"/dev/freestyle/{job.job_id}/run")
 

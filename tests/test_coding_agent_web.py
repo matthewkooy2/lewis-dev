@@ -116,13 +116,29 @@ def _client_with_fake_service(tmp_path: Path):
     app = create_app(_settings(tmp_path, enabled=True))
     fake = FakeService(tmp_path)
     app.state.coding_agent_service = fake
-    return TestClient(app), fake
+    return TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    ), fake
 
 
 def test_coding_agents_page_requires_feature_flag(tmp_path):
-    normal = TestClient(create_app(_settings(tmp_path, enabled=False, debug=False)))
-    enabled = TestClient(create_app(_settings(tmp_path, enabled=True, debug=False)))
-    debug = TestClient(create_app(_settings(tmp_path, enabled=False, debug=True)))
+    normal = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(_settings(tmp_path, enabled=False, debug=False)),
+    )
+    enabled = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(_settings(tmp_path, enabled=True, debug=False)),
+    )
+    debug = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(_settings(tmp_path, enabled=False, debug=True)),
+    )
 
     assert normal.get("/dev/coding-agents").status_code == 404
     assert "/dev/coding-agents" not in normal.get("/dashboard").text

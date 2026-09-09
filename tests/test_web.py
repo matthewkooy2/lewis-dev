@@ -65,7 +65,11 @@ def _chat_settings(tmp_path: Path) -> Settings:
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(create_app(_settings(tmp_path)))
+    return TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(_settings(tmp_path)),
+    )
 
 
 def test_web_routes_are_available(tmp_path):
@@ -95,7 +99,11 @@ def test_dashboard_route_returns_expected_labels(tmp_path):
         title="Email Alex",
         payload={"to": "Alex", "body": "Hello"},
     )
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/dashboard")
 
@@ -124,7 +132,11 @@ def test_chat_response_shows_memory_context_note_without_payload(tmp_path):
     settings = _chat_settings(tmp_path)
     app = create_app(settings)
     app.state.chat_agent = FakeChatAgent(memory_context_count=2)
-    client = TestClient(app)
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
     response = client.post("/chat", json={"message": "How should I write this?"})
 
@@ -140,7 +152,11 @@ def test_chat_response_without_memory_context_keeps_ui_unchanged(tmp_path):
     settings = _chat_settings(tmp_path)
     app = create_app(settings)
     app.state.chat_agent = FakeChatAgent(memory_context_count=0)
-    client = TestClient(app)
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
     response = client.post("/chat", json={"message": "Hello"})
 
@@ -169,7 +185,11 @@ def test_dashboard_recent_cards_keep_existing_action_visibility(tmp_path):
     )
     store.update_status(approved.id, "approved")
     store.update_status(task.id, "approved")
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/dashboard")
 
@@ -216,7 +236,11 @@ def test_approvals_route_renders_pending_items_only(tmp_path):
     from app.executors import execute_approved
 
     execute_approved(store, previewed.id)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/approvals")
 
@@ -244,7 +268,11 @@ def test_approve_and_reject_form_actions_update_status_only(tmp_path):
         title="Call dentist",
         payload={"title": "Call dentist", "description": "Schedule a cleaning."},
     )
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     approve_response = client.post(
         f"/approvals/{approve_item.id}/approve", follow_redirects=False
@@ -278,7 +306,11 @@ def test_code_proposal_approval_displays_patch_preview_path_classification(tmp_p
             "+++ b/app/templates/chat.html"
         ),
     )
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/approvals")
 
@@ -304,7 +336,11 @@ def test_execute_approved_route_only_performs_dry_run_preview(tmp_path):
         payload={"to": "Alex", "subject": "Hello", "body": "Hi"},
     )
     store.update_status(item.id, "approved")
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.post(f"/approvals/{item.id}/execute-approved")
 
@@ -340,7 +376,11 @@ def test_tasks_route_renders_active_tasks_only_with_valid_actions(tmp_path):
     store.update_status(approved.id, "approved")
     store.update_status(completed.id, "completed")
     store.update_status(rejected.id, "rejected")
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/tasks")
 
@@ -375,7 +415,11 @@ def test_calendar_route_renders_active_calendar_with_valid_actions(tmp_path):
     )
     store.update_status(approved.id, "approved")
     store.update_status(rejected.id, "rejected")
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/calendar")
 
@@ -422,7 +466,11 @@ def test_memories_route_shows_active_memories_and_recent_events(tmp_path):
     from app.memory_service import archive_memory
 
     archive_memory(settings.database_path, archived.id)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/memories")
 
@@ -452,7 +500,11 @@ def test_memories_archive_action_archives_active_memory(tmp_path):
     )
     approve_approval(store, item.id)
     memory = MemoryStore(settings.database_path).get_by_approval_id(item.id)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.post(
         f"/memories/{memory.id}/archive",
@@ -487,7 +539,11 @@ def test_memories_update_action_creates_pending_approval_without_editing(tmp_pat
     )
     approve_approval(store, item.id)
     memory = MemoryStore(settings.database_path).get_by_approval_id(item.id)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.post(
         f"/memories/{memory.id}/propose-update",
@@ -529,7 +585,11 @@ def test_memory_update_approval_shows_comparison_and_pending_actions(tmp_path):
     )
     approve_approval(store, item.id)
     memory = MemoryStore(settings.database_path).get_by_approval_id(item.id)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     update_response = client.post(
         f"/memories/{memory.id}/propose-update",
@@ -587,7 +647,11 @@ def test_history_route_renders_processed_items_without_normal_actions(tmp_path):
     from app.executors import execute_approved
 
     execute_approved(store, previewed.id)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/history")
 
@@ -621,7 +685,11 @@ def test_history_route_defaults_invalid_filter_to_all(tmp_path):
         payload={"title": "Completed task"},
     )
     store.update_status(completed.id, "completed")
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/history?type=not-real")
 
@@ -677,7 +745,11 @@ def test_history_route_orders_by_last_changed_then_id(tmp_path):
                 ),
             ],
         )
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get("/history")
 
@@ -696,7 +768,11 @@ def test_history_route_orders_by_last_changed_then_id(tmp_path):
 def test_document_search_route_does_not_accept_arbitrary_paths(tmp_path):
     settings = _settings(tmp_path)
     (settings.documents_dir / "note.md").write_text("Project Alpha", encoding="utf-8")
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
 
     response = client.get(
         "/documents",

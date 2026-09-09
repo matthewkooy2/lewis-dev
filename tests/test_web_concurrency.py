@@ -62,7 +62,9 @@ def test_dashboard_and_chat_page_remain_responsive_during_model_call(tmp_path):
 
     async def scenario():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8787",
+            headers={"Origin": "http://127.0.0.1:8787"},
         ) as client:
             pending = asyncio.create_task(
                 client.post("/chat", json={"message": "first"})
@@ -105,7 +107,9 @@ def test_overlapping_chat_requests_share_one_agent_and_ordered_turns(
 
     async def scenario():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8787",
+            headers={"Origin": "http://127.0.0.1:8787"},
         ) as client:
             first = asyncio.create_task(client.post("/chat", json={"message": "first"}))
             second = None
@@ -147,7 +151,9 @@ def test_cancelled_request_keeps_agent_serialized_until_worker_finishes(tmp_path
 
     async def scenario():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8787",
+            headers={"Origin": "http://127.0.0.1:8787"},
         ) as client:
             first = asyncio.create_task(client.post("/chat", json={"message": "first"}))
             second = None
@@ -192,7 +198,9 @@ def test_agent_error_does_not_block_the_next_turn(tmp_path):
 
     async def scenario():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8787",
+            headers={"Origin": "http://127.0.0.1:8787"},
         ) as client:
             first = await client.post("/chat", json={"message": "first"})
             assert "Synthetic model failure" in first.json()["answer"]

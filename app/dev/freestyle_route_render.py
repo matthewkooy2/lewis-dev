@@ -81,7 +81,9 @@ def render_local_pages(
 def _render_with_client(test_client_cls, app, routes: tuple[str, ...]):
     pages: list[RenderedPage] = []
     try:
-        client = test_client_cls(app, raise_server_exceptions=False)
+        client = test_client_cls(
+            app, base_url="http://127.0.0.1", raise_server_exceptions=False
+        )
     except Exception:
         return ()
     with suppress(Exception):

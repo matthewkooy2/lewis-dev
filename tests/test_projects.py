@@ -223,13 +223,19 @@ def test_map_run_cancellation_and_restart_recovery(tmp_path: Path):
 def test_projects_web_feature_flag_and_project_workflow(tmp_path: Path):
     repo = _init_repo(tmp_path)
     disabled = TestClient(
-        create_app(_settings(tmp_path, repos=[repo], projects_enabled=False))
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(_settings(tmp_path, repos=[repo], projects_enabled=False)),
     )
     assert disabled.get("/projects").status_code == 404
     assert "/projects" not in disabled.get("/dashboard").text
 
     settings = _settings(tmp_path, repos=[repo], projects_enabled=True)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
     assert client.get("/projects").status_code == 200
     assert "/projects" in client.get("/dashboard").text
 

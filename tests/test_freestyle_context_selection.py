@@ -723,7 +723,11 @@ def test_freestyle_web_page_shows_goal_fit_warnings_before_apply_action(tmp_path
     )
     app = create_app(_web_ui_settings(tmp_path))
     app.state.freestyle_project_root = root
-    client = TestClient(app)
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
     page = client.get(f"/dev/freestyle/{job.job_id}").text
 
