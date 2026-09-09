@@ -6,27 +6,82 @@ real-world action as a pending approval item instead of executing it.
 
 ## Setup
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy .env.example .env
+Install [Git](https://git-scm.com/downloads) and uv 0.12.11 using the
+[official versioned installer](https://docs.astral.sh/uv/getting-started/installation/).
+
+macOS/Linux:
+
+```sh
+curl -LsSf https://astral.sh/uv/0.12.11/install.sh | sh
 ```
 
-Edit `.env` and set `DEEPSEEK_API_KEY`. The default model is
-`deepseek-v4-flash`, but you can change `DEEPSEEK_MODEL`.
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.12.11/install.ps1 | iex"
+```
+
+Reopen your terminal after installation so `uv` is on `PATH`. From the cloned
+repository, run these commands on any platform:
+
+```sh
+uv python install
+uv sync --locked
+```
+
+The repository pins Python 3.11.15 in `.python-version`, uv in `pyproject.toml`,
+and direct/transitive dependencies in `uv.lock`. `uv sync --locked` creates
+`.venv` with the locked development dependencies and refuses an outdated lockfile.
+No environment activation is needed with `uv run --locked`.
+
+Try the local dashboard without an API key:
+
+```sh
+uv run --locked python -m app.main web
+```
+
+Open [the local dashboard](http://127.0.0.1:8787). Chat requires a configured
+model; dashboard pages, tests, document search, and the static tracer do not.
+
+For chat, copy `.env.example` to `.env` (`cp .env.example .env` on macOS/Linux,
+or `Copy-Item .env.example .env` in PowerShell) and set `DEEPSEEK_API_KEY`.
+The default model is `deepseek-v4-flash`; change `DEEPSEEK_MODEL` as needed.
+`.env` and the local SQLite database are ignored by Git.
+
+### Existing pip-based environments
+
+`requirements.txt` is a generated, hash-pinned export of the same lockfile,
+including development tools. If you prefer pip, use Python 3.11.15:
+
+```sh
+python3.11 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.txt
+```
+
+On Windows:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements.txt
+```
+
+With pip, replace `uv run --locked python` below with `.venv/bin/python`
+(macOS/Linux) or `.\.venv\Scripts\python.exe` (Windows).
+Use a fresh virtual environment when changing dependency sets; pip does not
+remove unrelated packages already installed there.
 
 ## Run
 
 Start chat:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main chat
+```sh
+uv run --locked python -m app.main chat
 ```
 
 Start the local web dashboard:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main web
+```sh
+uv run --locked python -m app.main web
 ```
 
 Open:
@@ -43,58 +98,57 @@ contents, add login, or add any new external integrations.
 
 List approval items:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main approvals
+```sh
+uv run --locked python -m app.main approvals
 ```
 
 Approve or reject an item:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main approve <approval_id>
-.\.venv\Scripts\python.exe -m app.main reject <approval_id>
+```sh
+uv run --locked python -m app.main approve <approval_id>
+uv run --locked python -m app.main reject <approval_id>
 ```
 
 Preview execution for an approved item:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main execute-approved <approval_id>
+```sh
+uv run --locked python -m app.main execute-approved <approval_id>
 ```
 
 Summarize recent API usage:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main usage
+```sh
+uv run --locked python -m app.main usage
 ```
 
 Search local documents directly:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main search-docs "your query here"
+```sh
+uv run --locked python -m app.main search-docs "your query here"
 ```
 
-Run evals:
+## Development checks
 
-```powershell
-.\.venv\Scripts\python.exe -m app.eval_runner
+Run the same checks as CI; no `.env`, API key, or running model is required:
+
+```sh
+uv sync --locked
+uv run --locked python -m ruff check .
+uv run --locked python -m ruff format --check .
+uv run --locked python -m pytest -q -ra
+uv run --locked python -m app.eval_runner
+uv run --locked python -m app.main --help
 ```
 
-Run tests:
+The eval runner contains four deterministic component smoke checks. It does
+not measure live model accuracy. The full test suite includes real temporary
+Git repositories and subprocess checks; run it against trusted source code.
+PowerShell and Windows-junction checks skip when their platform is unavailable.
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-```
-
-Run lint:
-
-```powershell
-.\.venv\Scripts\python.exe -m ruff check .
-```
-
-Format code:
-
-```powershell
-.\.venv\Scripts\python.exe -m ruff format .
-```
+[CI](.github/workflows/ci.yml) runs on Linux, macOS, and Windows for pushes
+and pull requests, and checks that the pip export matches the lockfile.
+Use `uv run --locked python -m ruff format .` to apply formatting.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dependency updates and validation.
 
 ## Safety Model
 
@@ -145,8 +199,8 @@ automation, or other external integration is included yet.
 
 Run:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main web
+```sh
+uv run --locked python -m app.main web
 ```
 
 Then open `http://127.0.0.1:8787`.
@@ -194,8 +248,8 @@ paths are not accepted by the document search tool.
 
 Direct search:
 
-```powershell
-.\.venv\Scripts\python.exe -m app.main search-docs "your query here"
+```sh
+uv run --locked python -m app.main search-docs "your query here"
 ```
 
 Chat examples:
