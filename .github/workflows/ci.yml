@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main, feature/freestyle-thinking-loop]
   pull_request:
   workflow_dispatch:
 
