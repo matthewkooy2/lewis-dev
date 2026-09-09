@@ -160,13 +160,23 @@ _WEEKDAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _WEEKDAY_CANONICAL = {
-    "mon": "mon", "monday": "mon",
-    "tue": "tue", "tues": "tue", "tuesday": "tue",
-    "wed": "wed", "wednesday": "wed",
-    "thu": "thu", "thur": "thu", "thurs": "thu", "thursday": "thu",
-    "fri": "fri", "friday": "fri",
-    "sat": "sat", "saturday": "sat",
-    "sun": "sun", "sunday": "sun",
+    "mon": "mon",
+    "monday": "mon",
+    "tue": "tue",
+    "tues": "tue",
+    "tuesday": "tue",
+    "wed": "wed",
+    "wednesday": "wed",
+    "thu": "thu",
+    "thur": "thu",
+    "thurs": "thu",
+    "thursday": "thu",
+    "fri": "fri",
+    "friday": "fri",
+    "sat": "sat",
+    "saturday": "sat",
+    "sun": "sun",
+    "sunday": "sun",
 }
 _MIN_DISTINCT_WEEKDAYS = 4
 _MIN_LIST_ITEM_DAY_CELLS = 7
@@ -377,7 +387,9 @@ def review_ui(
     }
 
     ignored_data_classes = introduced.data_container_classes
-    ignored_data_ids = introduced.data_container_ids | (introduced.ids & js_full.data_ids)
+    ignored_data_ids = introduced.data_container_ids | (
+        introduced.ids & js_full.data_ids
+    )
     summary["ignored_data_containers"] = _sample(
         [f".{name}" for name in sorted(ignored_data_classes)]
         + [f"#{name}" for name in sorted(ignored_data_ids)],
@@ -405,18 +417,10 @@ def review_ui(
             summary,
         )
     )
-    warnings.extend(
-        _check_grid_containers(present, css_full, has_css_view, summary)
-    )
-    warnings.extend(
-        _check_js_targets(js_full, present, has_markup_view, summary)
-    )
-    warnings.extend(
-        _check_broken_calendar(present, css_full, has_css_view, summary)
-    )
-    warnings.extend(
-        _check_assets(sources, present, present_static_assets, summary)
-    )
+    warnings.extend(_check_grid_containers(present, css_full, has_css_view, summary))
+    warnings.extend(_check_js_targets(js_full, present, has_markup_view, summary))
+    warnings.extend(_check_broken_calendar(present, css_full, has_css_view, summary))
+    warnings.extend(_check_assets(sources, present, present_static_assets, summary))
 
     return UiReview(warnings=tuple(warnings[:MAX_WARNINGS]), summary=summary)
 
@@ -664,9 +668,7 @@ def _markup_facts(text: str) -> _MarkupFacts:
         tag = match.group("tag").casefold()
         attrs = _html_attrs(match.group("attrs"))
         class_names = {
-            token
-            for token in attrs.get("class", "").split()
-            if _valid_name(token)
+            token for token in attrs.get("class", "").split() if _valid_name(token)
         }
         id_name = attrs.get("id", "")
         valid_id = id_name if _valid_name(id_name) else ""
@@ -839,7 +841,10 @@ def _js_emitted_selectors(js_text: str) -> tuple[set[str], set[str]]:
         if value:
             ids.add(value)
     for match in _CLASSLIST_CALL_PATTERN.finditer(js_text):
-        values = [_js_literal_value(item) for item in _JS_LITERAL_PATTERN.finditer(match.group("args"))]
+        values = [
+            _js_literal_value(item)
+            for item in _JS_LITERAL_PATTERN.finditer(match.group("args"))
+        ]
         if match.group("method").casefold() == "replace" and len(values) > 1:
             values = values[1:]
         for value in values:
@@ -893,11 +898,7 @@ def _decode_js_literal(value: str) -> str:
 
 
 def _class_tokens(value: str) -> set[str]:
-    return {
-        token
-        for token in value.split()
-        if _valid_selector_name(token)
-    }
+    return {token for token in value.split() if _valid_selector_name(token)}
 
 
 def _selector_token(value: str) -> str:
@@ -1070,7 +1071,10 @@ def _valid_name(token: str) -> bool:
 
 
 def _valid_selector_name(token: str) -> bool:
-    return bool(_SELECTOR_NAME_PATTERN.fullmatch(token)) and len(token) <= MAX_SELECTOR_CHARS
+    return (
+        bool(_SELECTOR_NAME_PATTERN.fullmatch(token))
+        and len(token) <= MAX_SELECTOR_CHARS
+    )
 
 
 def _suffix(path: str) -> str:

@@ -58,9 +58,7 @@ class SnippetHarvest:
     omitted: tuple[dict[str, str], ...]
 
 
-def harvest_anchor_snippets(
-    relative_path: str, text: str, goal: str
-) -> SnippetHarvest:
+def harvest_anchor_snippets(relative_path: str, text: str, goal: str) -> SnippetHarvest:
     """Harvest bounded verbatim anchor snippets from one file's full text.
 
     Python route/implementation files yield multi-line import blocks and
@@ -152,14 +150,11 @@ def _import_blocks(lines: list[str]) -> list[tuple[str, str]]:
             continue
         for end in range(index + 1, len(lines)):
             if lines[end].lstrip().startswith(")"):
-                blocks.append(
-                    (match.group(1), "\n".join(lines[index : end + 1]))
-                )
+                blocks.append((match.group(1), "\n".join(lines[index : end + 1])))
                 break
     blocks.sort(key=lambda item: 0 if item[0].endswith("web_pages") else 1)
     return [
-        (f"import-block:{module}", text)
-        for module, text in blocks[:_MAX_IMPORT_BLOCKS]
+        (f"import-block:{module}", text) for module, text in blocks[:_MAX_IMPORT_BLOCKS]
     ]
 
 
@@ -206,9 +201,7 @@ def _decorated_block_end(lines: list[str], start: int, indent: int) -> int:
         if line_indent < indent:
             break
         if line_indent == indent:
-            if stripped.startswith("@") or stripped.startswith(
-                ("def ", "async def ")
-            ):
+            if stripped.startswith("@") or stripped.startswith(("def ", "async def ")):
                 if seen_def:
                     break
                 seen_def = stripped.startswith(("def ", "async def "))
@@ -227,9 +220,10 @@ def _test_function_blocks(lines: list[str], goal: str) -> list[tuple[str, str]]:
     test/tests terms are ignored, so every test does not trivially match a
     goal that merely mentions testing.
     """
-    goal_terms = frozenset(
-        _GOAL_TERM_PATTERN.findall(goal.casefold())
-    ) - {"test", "tests"}
+    goal_terms = frozenset(_GOAL_TERM_PATTERN.findall(goal.casefold())) - {
+        "test",
+        "tests",
+    }
     found: list[tuple[int, int, str, str]] = []
     for index, line in enumerate(lines):
         match = _TEST_FUNCTION_PATTERN.match(line)

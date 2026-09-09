@@ -399,7 +399,10 @@ def _build_review_artifact(
     root: Path | None = None,
     state: Path | None = None,
 ) -> dict[str, Any]:
-    if current_head["commit"] != job.base_commit or current_head["branch"] != job.branch:
+    if (
+        current_head["commit"] != job.base_commit
+        or current_head["branch"] != job.branch
+    ):
         raise FreestyleJobRefusedError(
             "Isolated worktree HEAD metadata changed during review. "
             f"{_RECOVERY_MESSAGE}"
@@ -463,9 +466,7 @@ def _build_review_artifact(
             worktree, current_head["commit"], changed, render_local=render_local
         ),
         "repo_map_review": _repo_map_review(worktree, changed, root, state),
-        "implementation_plan_review": _implementation_plan_review(
-            job, changed, state
-        ),
+        "implementation_plan_review": _implementation_plan_review(job, changed, state),
         "artifact_references": _artifact_references(job),
         "human_review_checklist": [
             "Confirm every changed file and omission aligns with the approved goal.",
@@ -524,7 +525,9 @@ def _review_changed_file(
     additions, deletions = _line_diff_counts(before_text, after_text)
     summary["additions"] = additions
     summary["deletions"] = deletions
-    snippet_text, truncated = _unified_diff(item.path, item.status, before_text, after_text)
+    snippet_text, truncated = _unified_diff(
+        item.path, item.status, before_text, after_text
+    )
     summary["diff_snippet_included"] = True
     snippet = {
         "path": item.path,
@@ -654,9 +657,7 @@ def _line_diff_counts(before: str, after: str) -> tuple[int, int]:
     return additions, deletions
 
 
-def _unified_diff(
-    path: str, status: str, before: str, after: str
-) -> tuple[str, bool]:
+def _unified_diff(path: str, status: str, before: str, after: str) -> tuple[str, bool]:
     fromfile = "/dev/null" if status == "added" else f"a/{path}"
     tofile = "/dev/null" if status == "deleted" else f"b/{path}"
     text = "".join(
@@ -709,7 +710,9 @@ def _artifact_ui_warnings(artifact: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(warnings, list):
         return ()
     return tuple(
-        str(warning)[:500] for warning in warnings if isinstance(warning, str) and warning
+        str(warning)[:500]
+        for warning in warnings
+        if isinstance(warning, str) and warning
     )
 
 
@@ -779,17 +782,13 @@ def _implementation_plan_review(
         changed_paths = [item.path for item in changed]
         base["plan_available"] = True
         base["plan_summary"] = summarize_implementation_plan(plan_artifact)
-        base["warnings"] = list(
-            plan_deviation_warnings(plan_artifact, changed_paths)
-        )
+        base["warnings"] = list(plan_deviation_warnings(plan_artifact, changed_paths))
     except Exception:
         return base
     return base
 
 
-def _read_plan_artifact(
-    job: FreestyleJob, state: Path | None
-) -> dict[str, Any] | None:
+def _read_plan_artifact(job: FreestyleJob, state: Path | None) -> dict[str, Any] | None:
     """Read the full first-class implementation-plan artifact, fail-open."""
     if state is None:
         return None
@@ -990,7 +989,13 @@ def _added_lines(before: str, after: str) -> str:
         a=before.splitlines(), b=after_lines, autojunk=False
     )
     added: list[str] = []
-    for tag, _before_start, _before_end, after_start, after_end in matcher.get_opcodes():
+    for (
+        tag,
+        _before_start,
+        _before_end,
+        after_start,
+        after_end,
+    ) in matcher.get_opcodes():
         if tag in {"insert", "replace"}:
             added.extend(after_lines[after_start:after_end])
     return "\n".join(added)
@@ -1015,9 +1020,7 @@ def _scan_static_asset_paths(
     for root_dir in _candidate_static_roots(worktree, worktree_resolved, changed):
         for dirpath, dirnames, filenames in os.walk(root_dir, followlinks=False):
             dirnames[:] = [
-                name
-                for name in dirnames
-                if not (Path(dirpath) / name).is_symlink()
+                name for name in dirnames if not (Path(dirpath) / name).is_symlink()
             ]
             for name in filenames:
                 visited += 1
@@ -1082,9 +1085,7 @@ def _safe_render_local_pages() -> tuple[Any, ...]:
         return ()
 
 
-def _write_review_artifact(
-    artifact: dict[str, Any], state: Path, job_id: str
-) -> str:
+def _write_review_artifact(artifact: dict[str, Any], state: Path, job_id: str) -> str:
     encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_REVIEW_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError("Review artifact exceeds the total size limit.")
@@ -1115,7 +1116,9 @@ def _run_review_git(
 ) -> _GitResult:
     command = tuple(args)
     if not _is_allowed_review_git_command(command, input_bytes):
-        raise FreestyleJobRefusedError("Internal error: forbidden review git operation.")
+        raise FreestyleJobRefusedError(
+            "Internal error: forbidden review git operation."
+        )
     environment = {
         # Avoid user config, external prompts, and optional index refresh writes.
         "GIT_CONFIG_NOSYSTEM": "1",

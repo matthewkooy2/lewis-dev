@@ -24,48 +24,205 @@ MAX_STRING_VALUE_CHARS = 200
 
 KEYWORDS = frozenset(
     {
-        "abstract", "any", "as", "async", "await", "boolean", "break", "case",
-        "catch", "class", "const", "continue", "debugger", "declare", "default",
-        "delete", "do", "else", "enum", "export", "extends", "false", "finally",
-        "for", "from", "function", "get", "if", "implements", "import", "in",
-        "instanceof", "interface", "is", "keyof", "let", "namespace", "new",
-        "null", "number", "of", "override", "private", "protected", "public",
-        "readonly", "return", "satisfies", "set", "static", "string", "super",
-        "switch", "this", "throw", "true", "try", "type", "typeof", "undefined",
-        "var", "void", "while", "with", "yield",
+        "abstract",
+        "any",
+        "as",
+        "async",
+        "await",
+        "boolean",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "debugger",
+        "declare",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "from",
+        "function",
+        "get",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "instanceof",
+        "interface",
+        "is",
+        "keyof",
+        "let",
+        "namespace",
+        "new",
+        "null",
+        "number",
+        "of",
+        "override",
+        "private",
+        "protected",
+        "public",
+        "readonly",
+        "return",
+        "satisfies",
+        "set",
+        "static",
+        "string",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "undefined",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
     }
 )
 
 # Longest-match punctuator table.
 _PUNCTUATORS = (
     ">>>=",
-    "...", "===", "!==", "**=", "<<=", ">>=", ">>>", "&&=", "||=", "??=",
-    "=>", "==", "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=",
-    "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>", "**",
-    "{", "}", "(", ")", "[", "]", ";", ",", "<", ">", "+", "-", "*", "/",
-    "%", "&", "|", "^", "!", "~", "?", ":", "=", ".", "@", "#",
+    "...",
+    "===",
+    "!==",
+    "**=",
+    "<<=",
+    ">>=",
+    ">>>",
+    "&&=",
+    "||=",
+    "??=",
+    "=>",
+    "==",
+    "!=",
+    "<=",
+    ">=",
+    "&&",
+    "||",
+    "??",
+    "?.",
+    "++",
+    "--",
+    "+=",
+    "-=",
+    "*=",
+    "/=",
+    "%=",
+    "&=",
+    "|=",
+    "^=",
+    "<<",
+    ">>",
+    "**",
+    "{",
+    "}",
+    "(",
+    ")",
+    "[",
+    "]",
+    ";",
+    ",",
+    "<",
+    ">",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "&",
+    "|",
+    "^",
+    "!",
+    "~",
+    "?",
+    ":",
+    "=",
+    ".",
+    "@",
+    "#",
 )
 
 # Previous significant tokens after which a `/` is a regex and a `<` may open
 # JSX (expression position).
 _EXPRESSION_POSITION_PUNCTS = frozenset(
     {
-        "(", "[", "{", ",", ";", ":", "=>", "=", "+", "-", "*", "/", "%",
-        "!", "?", "&&", "||", "??", "==", "===", "!=", "!==", "<", ">",
-        "<=", ">=", "+=", "-=", "*=", "/=", "%=", "&", "|", "^", "~",
-        "<<", ">>", ">>>", "...", "jsx_expr_open", "template_expr_open",
+        "(",
+        "[",
+        "{",
+        ",",
+        ";",
+        ":",
+        "=>",
+        "=",
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "!",
+        "?",
+        "&&",
+        "||",
+        "??",
+        "==",
+        "===",
+        "!=",
+        "!==",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "&",
+        "|",
+        "^",
+        "~",
+        "<<",
+        ">>",
+        ">>>",
+        "...",
+        "jsx_expr_open",
+        "template_expr_open",
     }
 )
 _EXPRESSION_POSITION_KEYWORDS = frozenset(
     {
-        "return", "typeof", "case", "delete", "void", "throw", "do", "else",
-        "yield", "await", "in", "of", "new", "instanceof", "default",
+        "return",
+        "typeof",
+        "case",
+        "delete",
+        "void",
+        "throw",
+        "do",
+        "else",
+        "yield",
+        "await",
+        "in",
+        "of",
+        "new",
+        "instanceof",
+        "default",
     }
 )
 
-_ID_START = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$"
-)
+_ID_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$")
 _ID_CONTINUE = _ID_START | frozenset("0123456789")
 
 
@@ -149,9 +306,7 @@ class _Lexer:
         if char in "'\"":
             self._lex_string(char)
             return
-        if char.isdigit() or (
-            char == "." and self._peek(1).isdigit()
-        ):
+        if char.isdigit() or (char == "." and self._peek(1).isdigit()):
             self._lex_number()
             return
         if char in _ID_START:
@@ -339,9 +494,7 @@ class _Lexer:
             self._emit("punct", "<")
             self.pos += 1
             return True
-        if name != "" and not (
-            char in _ID_START or char in ">/{"
-        ):
+        if name != "" and not (char in _ID_START or char in ">/{"):
             self.pos, self.line = save_pos, save_line
             self._emit("punct", "<")
             self.pos += 1

@@ -50,7 +50,7 @@ _TETRIS_GOAL = (
 # store for approval routes, but route wiring for ordinary pages happens in
 # regions that never touch approval code. Assembled with the concatenated
 # class name so this test file itself never contains the definition text.
-_ROUTES_WITH_APPROVAL_REFERENCES = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+_ROUTES_WITH_APPROVAL_REFERENCES = f"""from app.approvals import {APPROVAL_STORE_CLASS_NAME}
 from app.approval_service import approve_approval
 from app.web_pages import approvals_page, chat_page
 
@@ -71,7 +71,7 @@ def _approval_store(request):
 
 def _page(title, request, content):
     return content
-'''
+"""
 _APPROVAL_STORE_DEFINITION = (
     f"class {APPROVAL_STORE_CLASS_NAME}:\n"
     "    def __init__(self, database_path):\n"
@@ -412,9 +412,7 @@ def test_web_routes_referencing_approval_store_stays_context_eligible(tmp_path):
     assert "app/web_routes.py" in included
     assert "app/web_routes.py" in context.context_plan["included_priority_files"]
     assert "app/legacy_store.py" not in included
-    omitted = {
-        record["path"]: record["reason"] for record in context.omitted_files
-    }
+    omitted = {record["path"]: record["reason"] for record in context.omitted_files}
     assert omitted["app/legacy_store.py"] == "approval_store_definition"
     assert context.omission_counts.get("approval_store", 0) == 0
     serialized = json.dumps(context.files)
@@ -575,9 +573,7 @@ def test_goal_fit_warnings_surface_in_handoff_and_do_not_block_apply(tmp_path):
     assert GOAL_FIT_WARNING_UNWIRED_ENTRY_POINT in handoff["risks"]
     steps = handoff["human_next_steps"]
     warning_step = next(
-        index
-        for index, step in enumerate(steps)
-        if "goal-fit warnings" in step
+        index for index, step in enumerate(steps) if "goal-fit warnings" in step
     )
     apply_step = next(
         index for index, step in enumerate(steps) if step.startswith("Apply")
@@ -592,9 +588,7 @@ def test_goal_fit_warnings_surface_in_handoff_and_do_not_block_apply(tmp_path):
         job.job_id, str(bundle_path), project_root=root
     )
     assert applied.edit_apply_status == "applied"
-    assert (
-        Path(job.worktree_path) / "templates" / "shennanigans.html"
-    ).is_file()
+    assert (Path(job.worktree_path) / "templates" / "shennanigans.html").is_file()
 
 
 def test_ui_goal_whose_context_lost_every_web_file_fails_closed_before_deepseek(
@@ -633,9 +627,7 @@ def test_ui_goal_whose_context_lost_every_web_file_fails_closed_before_deepseek(
 
 def test_ui_goal_in_repo_without_web_files_warns_but_still_proposes(tmp_path):
     root = _init_plain_repo(tmp_path)
-    job = _materialized_job(
-        root, goal="Add a new page tab to the dashboard UI."
-    )
+    job = _materialized_job(root, goal="Add a new page tab to the dashboard UI.")
     client = _FakeDeepSeekClient(_proposal_content(["app/dev/sample.py"]))
 
     completed = propose_freestyle_job(
@@ -695,9 +687,7 @@ def test_non_ui_goal_gets_no_ui_guidance_and_no_goal_fit_warnings(tmp_path):
         assert "classified as web/UI work" not in system_prompt
     assert completed.edit_bundle_goal_fit_warnings == ()
     proposal_artifact = _read_state_artifact(root, proposed.proposal_artifact_path)
-    assert proposal_artifact["context_plan"]["detected_goal_categories"] == [
-        "core_app"
-    ]
+    assert proposal_artifact["context_plan"]["detected_goal_categories"] == ["core_app"]
     handoff = get_freestyle_handoff(proposed.job_id, project_root=root)
     assert handoff["goal_fit_warnings"] == []
 
@@ -740,6 +730,4 @@ def test_freestyle_web_page_shows_goal_fit_warnings_before_apply_action(tmp_path
     assert "goal-fit-warnings" in page
     assert "Goal-fit warnings" in page
     assert "only creates new files" in page
-    assert page.index("goal-fit-warnings") < page.index(
-        "Apply Latest Generated Bundle"
-    )
+    assert page.index("goal-fit-warnings") < page.index("Apply Latest Generated Bundle")

@@ -52,9 +52,7 @@ def get_freestyle_handoff(
 
     errors = _job_errors(job)
     artifacts = _artifact_references(job)
-    proposal = _read_optional_artifact(
-        artifacts["proposal"], state, "proposal", errors
-    )
+    proposal = _read_optional_artifact(artifacts["proposal"], state, "proposal", errors)
     proposal_failure = _read_optional_artifact(
         artifacts["proposal_failure"], state, "proposal failure", errors
     )
@@ -152,13 +150,9 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         if plan.get("recommended_strategy"):
             lines.append(f"- **Strategy:** {plan['recommended_strategy']}")
         if plan.get("expected_files"):
-            lines.append(
-                f"- **Expected files:** {', '.join(plan['expected_files'])}"
-            )
+            lines.append(f"- **Expected files:** {', '.join(plan['expected_files'])}")
         if plan.get("forbidden_files"):
-            lines.append(
-                f"- **Forbidden files:** {', '.join(plan['forbidden_files'])}"
-            )
+            lines.append(f"- **Forbidden files:** {', '.join(plan['forbidden_files'])}")
         if plan.get("failed_strategy_patterns"):
             lines.append(
                 "- **Failed prior strategies:** "
@@ -190,9 +184,7 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
             f"- **Count:** {changed['count'] if changed['count'] is not None else 'unknown'}",
         ]
     )
-    lines.extend(
-        f"- `{item['path']}` ({item['status']})" for item in changed["files"]
-    )
+    lines.extend(f"- `{item['path']}` ({item['status']})" for item in changed["files"])
 
     checks = handoff["checks"]
     lines.extend(
@@ -249,10 +241,13 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         lines.append("- none recorded")
 
     lines.extend(["", "## Human Next Steps", ""])
-    lines.extend(f"{index}. {step}" for index, step in enumerate(
-        handoff["human_next_steps"], start=1
-    ))
-    lines.extend(["", f"**Integration safety:** {handoff['integration_statement']}", ""])
+    lines.extend(
+        f"{index}. {step}"
+        for index, step in enumerate(handoff["human_next_steps"], start=1)
+    )
+    lines.extend(
+        ["", f"**Integration safety:** {handoff['integration_statement']}", ""]
+    )
     return "\n".join(lines)
 
 
@@ -269,9 +264,7 @@ def _implementation_plan_summary(
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
         "proposal": safe_artifact_reference(job.proposal_artifact_path),
-        "proposal_failure": safe_artifact_reference(
-            job.proposal_failure_artifact_path
-        ),
+        "proposal_failure": safe_artifact_reference(job.proposal_failure_artifact_path),
         "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
         "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
         "implementation_plan": safe_artifact_reference(
@@ -288,7 +281,9 @@ def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
 
 
 def _refinement_summary(job: FreestyleJob) -> dict[str, Any]:
-    original = job.original_artifacts if isinstance(job.original_artifacts, dict) else {}
+    original = (
+        job.original_artifacts if isinstance(job.original_artifacts, dict) else {}
+    )
     original_stages = (
         job.original_stage_statuses
         if isinstance(job.original_stage_statuses, dict)
@@ -361,9 +356,9 @@ def _proposal_failure_summary(
                     {
                         "attempt": attempt,
                         "status": status[:50],
-                        "validator_category": str(
-                            item.get("validator_category", "")
-                        )[:50],
+                        "validator_category": str(item.get("validator_category", ""))[
+                            :50
+                        ],
                     }
                 )
     statuses = ", ".join(
@@ -388,16 +383,22 @@ def _read_optional_artifact(
     path = state.joinpath(*PurePosixPath(reference).parts)
     try:
         if path.is_symlink() or not path.is_file():
-            raise FreestyleJobRefusedError(f"Latest {label} artifact is missing or unsafe.")
+            raise FreestyleJobRefusedError(
+                f"Latest {label} artifact is missing or unsafe."
+            )
         path.resolve(strict=True).relative_to(state.resolve(strict=True))
         if path.stat().st_size > MAX_HANDOFF_ARTIFACT_BYTES:
-            raise FreestyleJobRefusedError(f"Latest {label} artifact exceeds read limit.")
+            raise FreestyleJobRefusedError(
+                f"Latest {label} artifact exceeds read limit."
+            )
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise FreestyleJobRefusedError(f"Latest {label} artifact is not an object.")
         return payload
     except (OSError, ValueError, json.JSONDecodeError, FreestyleJobRefusedError) as exc:
-        errors.append(_bounded_error(str(exc), f"Could not read latest {label} artifact."))
+        errors.append(
+            _bounded_error(str(exc), f"Could not read latest {label} artifact.")
+        )
         return None
 
 
@@ -500,8 +501,16 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
         and any(marker in lowered_errors for marker in _DEEPSEEK_CONFIG_MARKERS),
         "inconsistent_edit_state": job.edit_apply_status == "inconsistent",
         "running_lock": any(
-            status in {"preparing", "materializing", "proposing", "generating",
-                       "applying", "reviewing", "running"}
+            status
+            in {
+                "preparing",
+                "materializing",
+                "proposing",
+                "generating",
+                "applying",
+                "reviewing",
+                "running",
+            }
             for status in (
                 job.status,
                 job.materialization_status,
@@ -522,7 +531,10 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
     reasons = [
         label
         for key, label in (
-            ("missing_deepseek_config", "Missing or invalid model provider configuration."),
+            (
+                "missing_deepseek_config",
+                "Missing or invalid model provider configuration.",
+            ),
             ("inconsistent_edit_state", "Edit application state is inconsistent."),
             ("running_lock", "A stage is marked running or in progress."),
             ("failed_checks", "One or more allowlisted checks failed."),
@@ -554,12 +566,8 @@ def _risk_summary(
         risks.extend(
             str(item)[:500] for item in check_warnings if isinstance(item, str)
         )
-    risks.extend(
-        str(warning)[:500] for warning in job.edit_bundle_goal_fit_warnings
-    )
-    risks.extend(
-        str(warning)[:500] for warning in job.edit_bundle_semantic_warnings
-    )
+    risks.extend(str(warning)[:500] for warning in job.edit_bundle_goal_fit_warnings)
+    risks.extend(str(warning)[:500] for warning in job.edit_bundle_semantic_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_ui_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_repo_map_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_plan_warnings)

@@ -198,9 +198,7 @@ def refine_freestyle_job(
                 project_root=root,
                 state_root=state,
             )
-            current = review_freestyle_job(
-                job_id, project_root=root, state_root=state
-            )
+            current = review_freestyle_job(job_id, project_root=root, state_root=state)
         if run_checks:
             current = run_freestyle_checks(
                 job_id,
@@ -357,19 +355,21 @@ def _require_consistent_refinement_metadata(job: FreestyleJob) -> None:
     ):
         raise FreestyleJobRefusedError("Original stage metadata is inconsistent.")
     for iteration, record in enumerate(job.refinement_history, start=1):
-        if (
-            record.get("iteration") != iteration
-            or not _is_refinement_id(record.get("refinement_id"))
+        if record.get("iteration") != iteration or not _is_refinement_id(
+            record.get("refinement_id")
         ):
-            raise FreestyleJobRefusedError("Refinement history metadata is inconsistent.")
+            raise FreestyleJobRefusedError(
+                "Refinement history metadata is inconsistent."
+            )
     if job.refinement_count == 0:
         if job.latest_refinement_id is not None:
-            raise FreestyleJobRefusedError("Latest refinement metadata is inconsistent.")
+            raise FreestyleJobRefusedError(
+                "Latest refinement metadata is inconsistent."
+            )
         return
     if (
         not _is_refinement_id(job.latest_refinement_id)
-        or job.refinement_history[-1].get("refinement_id")
-        != job.latest_refinement_id
+        or job.refinement_history[-1].get("refinement_id") != job.latest_refinement_id
     ):
         raise FreestyleJobRefusedError("Latest refinement metadata is inconsistent.")
 
@@ -399,7 +399,9 @@ def _validate_observed_ui_feedback(value: str | None) -> str | None:
     if not clean:
         return None
     if "\x00" in clean:
-        raise FreestyleJobRefusedError("Observed UI feedback must not contain NUL bytes.")
+        raise FreestyleJobRefusedError(
+            "Observed UI feedback must not contain NUL bytes."
+        )
     if len(clean) > MAX_OBSERVED_UI_FEEDBACK_CHARS:
         raise FreestyleJobRefusedError(
             "Observed UI feedback exceeds the maximum length of "
@@ -567,9 +569,7 @@ def _previous_attempt_memory(
     }
 
 
-def _previous_implementation_plan(
-    job: FreestyleJob, state: Path
-) -> dict[str, Any]:
+def _previous_implementation_plan(job: FreestyleJob, state: Path) -> dict[str, Any]:
     """Bounded summary of the previous attempt's implementation plan, if any.
 
     Read from the previous generation artifact's embedded plan summary so the
@@ -620,7 +620,7 @@ def _repo_map_connected_surfaces(
             resolve_freestyle_index,
         )
 
-        worktree = (state / "worktrees" / job.job_id)
+        worktree = state / "worktrees" / job.job_id
         index, _ = resolve_freestyle_index(worktree, root, state, refresh=False)
         if index is None:
             return {}
@@ -664,9 +664,7 @@ def _previous_proposal_likely_files(job: FreestyleJob, state: Path) -> list[str]
     ]
 
 
-def _read_state_artifact(
-    reference: str | None, state: Path
-) -> dict[str, Any] | None:
+def _read_state_artifact(reference: str | None, state: Path) -> dict[str, Any] | None:
     relative = safe_artifact_reference(reference)
     if relative is None:
         return None

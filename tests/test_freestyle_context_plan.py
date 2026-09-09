@@ -72,7 +72,12 @@ def test_classification_is_deterministic_and_canonically_ordered():
 
 
 def test_freestyle_goals_keep_freestyle_internals_undemoted():
-    assert plan_context("Refactor the freestyle proposal slice.").demote_freestyle_internals is False
+    assert (
+        plan_context(
+            "Refactor the freestyle proposal slice."
+        ).demote_freestyle_internals
+        is False
+    )
     assert plan_context("Add a settings page tab.").demote_freestyle_internals is True
 
 
@@ -343,7 +348,9 @@ def test_summarize_context_plan_makes_core_before_tests_ordering_explicit():
 
 def test_summarize_context_plan_warns_when_no_ui_candidates_exist():
     plan = plan_context(_TETRIS_GOAL)
-    summary = summarize_context_plan(plan, ["README.md"], [], priority_candidate_count=0)
+    summary = summarize_context_plan(
+        plan, ["README.md"], [], priority_candidate_count=0
+    )
     assert summary["warnings"] == [PLAN_WARNING_NO_UI_FILES]
     assert summary["priority_files_omitted_due_to_budget"] is False
 
@@ -398,4 +405,4 @@ def test_planner_module_is_pure_with_no_io_model_or_runtime_dependencies():
         "from app.",
     ):
         assert forbidden not in lowered, forbidden
-    assert "Approval" "Store" not in source
+    assert "ApprovalStore" not in source

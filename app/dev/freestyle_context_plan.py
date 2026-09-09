@@ -584,9 +584,7 @@ def _clean_named_paths(paths: Sequence[str]) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def _merge_named_paths(
-    first: Sequence[str], second: Sequence[str]
-) -> tuple[str, ...]:
+def _merge_named_paths(first: Sequence[str], second: Sequence[str]) -> tuple[str, ...]:
     return _clean_named_paths((*first, *second))
 
 
@@ -676,9 +674,7 @@ def summarize_context_plan(
     # A "content_truncated" record means the file was included with its tail
     # cut, not dropped; report it separately so omissions stay honest.
     omitted_priority = [
-        record
-        for record in priority_records
-        if record["reason"] != "content_truncated"
+        record for record in priority_records if record["reason"] != "content_truncated"
     ][:MAX_PLAN_OMISSION_RECORDS]
     truncated_priority = [
         record["path"]
@@ -922,12 +918,8 @@ def _actionable_freestyle_subsystem_clauses(text: str) -> tuple[str, ...]:
 def _freestyle_subsystem_keys_from_clause(clause: str) -> tuple[str, ...]:
     terms = _classification_terms_from_text(clause)
     keys: list[str] = []
-    if (
-        "ui_review_" in clause
-        or (
-            {"ui", "review"} <= terms
-            and ("freestyle" in terms or "rendered" in terms)
-        )
+    if "ui_review_" in clause or (
+        {"ui", "review"} <= terms and ("freestyle" in terms or "rendered" in terms)
     ):
         keys.append("ui_review")
     if {"route", "render"} <= terms or {"route", "renderer"} <= terms:

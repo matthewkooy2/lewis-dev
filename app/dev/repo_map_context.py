@@ -124,7 +124,10 @@ def resolve_freestyle_index(
             worktree_index = _safe_load(worktree, state)
     else:
         worktree_index = _safe_load(worktree, state)
-    if worktree_index is not None and worktree_index.manifest.get("scope") == "worktree":
+    if (
+        worktree_index is not None
+        and worktree_index.manifest.get("scope") == "worktree"
+    ):
         return worktree_index, _provenance(worktree_index, stale=False, fallback=False)
 
     host_index = load_host_index(state)
@@ -215,18 +218,14 @@ class _Graph:
     def _build(self) -> None:
         css_files = [p for p, r in self.role.items() if r == _STATIC_CSS]
         js_files = [p for p, r in self.role.items() if r == _STATIC_JS]
-        page_files = [
-            p for p, r in self.role.items() if r in {_WEB_ROUTE, _WEB_PAGE}
-        ]
+        page_files = [p for p, r in self.role.items() if r in {_WEB_ROUTE, _WEB_PAGE}]
         # Page <-> referenced static asset (and the shared global stylesheet).
         asset_index = {p.casefold(): p for p in (*css_files, *js_files)}
         for route in self.index.routes:
             for asset in route.get("referenced_assets", []) or []:
                 resolved = _resolve_asset(str(asset), asset_index)
                 if resolved:
-                    self._connect(
-                        str(route["path"]), resolved, "page references asset"
-                    )
+                    self._connect(str(route["path"]), resolved, "page references asset")
         # Page-builder markup that references a static asset (page_to_asset
         # relationship edges carry the source file before any ``:symbol`` part).
         for edge in self.index.relationships:
@@ -531,9 +530,7 @@ def repo_map_review_warnings(
     changed = {_normalize(p) for p in changed_paths}
     warnings: list[str] = []
     asset_index = {
-        p.casefold(): p
-        for p, r in graph.role.items()
-        if r in {_STATIC_CSS, _STATIC_JS}
+        p.casefold(): p for p, r in graph.role.items() if r in {_STATIC_CSS, _STATIC_JS}
     }
     for path in sorted(changed):
         role = graph.role.get(path)

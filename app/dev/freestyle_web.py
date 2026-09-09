@@ -118,9 +118,7 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
         return _redirect(job_id, message="Materialized the isolated worktree.")
 
     @app.post("/dev/freestyle/{job_id}/run")
-    async def run_freestyle_job_web(
-        request: Request, job_id: str
-    ) -> RedirectResponse:
+    async def run_freestyle_job_web(request: Request, job_id: str) -> RedirectResponse:
         if await _request_fields(request):
             return _redirect(job_id, error="Default run accepts no input fields.")
         try:
@@ -290,7 +288,8 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
             )
         if fields.get("confirm_recover") != "recover":
             return _redirect(
-                job_id, error="Explicit confirmation is required to recover stale state."
+                job_id,
+                error="Explicit confirmation is required to recover stale state.",
             )
         inconsistent = fields.get("confirm_inconsistent")
         if inconsistent is not None and inconsistent != "verified-inconsistent":
@@ -367,7 +366,9 @@ def _page_response(
 
 
 def _project_root(request: Request) -> Path:
-    return Path(getattr(request.app.state, "freestyle_project_root", ROOT_DIR)).resolve()
+    return Path(
+        getattr(request.app.state, "freestyle_project_root", ROOT_DIR)
+    ).resolve()
 
 
 def _deepseek_config(request: Request) -> DeepSeekProposalConfig:
@@ -406,7 +407,9 @@ async def _request_fields(request: Request) -> dict[str, object]:
             data = json.loads(raw_body)
         except (UnicodeError, json.JSONDecodeError):
             return {"invalid_request_body": "malformed_json"}
-        return data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
+        return (
+            data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
+        )
     decoded_body = raw_body.decode("utf-8", errors="ignore")
     return {
         key: values[0] if len(values) == 1 else tuple(values)
@@ -419,11 +422,12 @@ def _selected_check_ids(value: object) -> tuple[str, ...]:
     allowed = ", ".join(definition.check_id for definition in CHECK_REGISTRY)
     if not values or values == (None,):
         raise ValueError(f"Select at least one static backend check ID: {allowed}.")
-    if (
-        any(not isinstance(item, str) or item not in CHECKS_BY_ID for item in values)
-        or len(set(values)) != len(values)
-    ):
-        raise ValueError(f"Run checks accepts only static backend check IDs: {allowed}.")
+    if any(
+        not isinstance(item, str) or item not in CHECKS_BY_ID for item in values
+    ) or len(set(values)) != len(values):
+        raise ValueError(
+            f"Run checks accepts only static backend check IDs: {allowed}."
+        )
     return tuple(values)
 
 
@@ -458,9 +462,7 @@ def freestyle_page(
     )
 
 
-def read_artifact_previews(
-    handoff: dict[str, Any], state_root: Path
-) -> dict[str, str]:
+def read_artifact_previews(handoff: dict[str, Any], state_root: Path) -> dict[str, str]:
     previews: dict[str, str] = {}
     for label, reference in handoff.get("artifacts", {}).items():
         if label == "proposal_failure":
@@ -714,8 +716,7 @@ def _refinement_status(handoff: dict[str, Any]) -> str:
     original_stages = refinement.get("original_stages", {})
     history = refinement.get("history", [])
     rows = "".join(
-        field(label.replace("_", " "), path or "none")
-        for label, path in latest.items()
+        field(label.replace("_", " "), path or "none") for label, path in latest.items()
     )
     original_rows = "".join(
         field(f"original {label.replace('_', ' ')}", path or "none")
@@ -823,9 +824,7 @@ def _implementation_plan_block(handoff: dict[str, Any]) -> str:
         ):
             value = plan.get(key)
             if value:
-                rows.append(
-                    f"<li><strong>{label}:</strong> {escape(str(value))}</li>"
-                )
+                rows.append(f"<li><strong>{label}:</strong> {escape(str(value))}</li>")
         for label, key in (
             ("Expected files", "expected_files"),
             ("Forbidden files", "forbidden_files"),
@@ -841,7 +840,9 @@ def _implementation_plan_block(handoff: dict[str, Any]) -> str:
             rows.append(f"<li><strong>Validation tests:</strong> {escape(joined)}</li>")
         for warning in plan.get("warnings") or []:
             if isinstance(warning, str) and warning:
-                rows.append(f"<li><strong>Plan warning:</strong> {escape(warning)}</li>")
+                rows.append(
+                    f"<li><strong>Plan warning:</strong> {escape(warning)}</li>"
+                )
         if rows:
             parts.append("<ul class='plan-summary'>" + "".join(rows) + "</ul>")
         parts.append(
@@ -863,9 +864,7 @@ def _implementation_plan_block(handoff: dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def _confirmation(
-    name: str, value: str, label: str, *, required: bool = True
-) -> str:
+def _confirmation(name: str, value: str, label: str, *, required: bool = True) -> str:
     required_attribute = " required" if required else ""
     return (
         "<label class='approval-check action-confirm'>"

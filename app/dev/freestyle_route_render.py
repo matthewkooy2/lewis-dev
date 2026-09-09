@@ -114,10 +114,6 @@ def _validated_routes(routes: Sequence[str] | None) -> tuple[str, ...]:
     candidates = SAFE_RENDER_ROUTES if routes is None else routes
     safe: list[str] = []
     for route in candidates:
-        if (
-            isinstance(route, str)
-            and route in SAFE_RENDER_ROUTES
-            and route not in safe
-        ):
+        if isinstance(route, str) and route in SAFE_RENDER_ROUTES and route not in safe:
             safe.append(route)
     return tuple(safe[:MAX_RENDER_ROUTES])

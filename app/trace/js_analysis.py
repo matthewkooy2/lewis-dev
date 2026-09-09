@@ -73,11 +73,41 @@ MODIFIER_TOKENS = {
 # Contextual keywords such as get/set/from/type are legal identifiers and are
 # accepted; `this`/`super` are legal call heads.
 NON_CALL_HEAD_KEYWORDS = {
-    "async", "break", "case", "catch", "class", "const", "continue",
-    "debugger", "default", "delete", "do", "else", "export", "extends",
-    "finally", "for", "function", "if", "import", "in", "instanceof", "let",
-    "new", "of", "return", "switch", "throw", "try", "typeof", "var", "void",
-    "while", "with", "yield", "await",
+    "async",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "export",
+    "extends",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "of",
+    "return",
+    "switch",
+    "throw",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "await",
 }
 
 # Import specifier roots mapped to the side-effect category their calls imply.
@@ -353,7 +383,10 @@ class _Analyzer:
         if value in {"const", "let", "var"}:
             self._handle_declaration(token)
             return
-        if value in {"interface", "enum", "namespace"} and self.language == LANGUAGE_TYPESCRIPT:
+        if (
+            value in {"interface", "enum", "namespace"}
+            and self.language == LANGUAGE_TYPESCRIPT
+        ):
             self._handle_type_declaration(token)
             return
         if value == "type" and self.language == LANGUAGE_TYPESCRIPT:
@@ -433,7 +466,9 @@ class _Analyzer:
             value = self.tokens[value_index]
             if value.type == "id":
                 self.exports.append(
-                    ExportBinding("default", value.value, None, None, "commonjs", token.line)
+                    ExportBinding(
+                        "default", value.value, None, None, "commonjs", token.line
+                    )
                 )
                 return
             if value.type == "punct" and value.value == "{":
@@ -592,18 +627,27 @@ class _Analyzer:
 
     def _open_brace(self, token: Token) -> None:
         pending = None
-        if self.pending_scopes and self.pending_scopes[-1].paren_depth == self.paren_depth:
+        if (
+            self.pending_scopes
+            and self.pending_scopes[-1].paren_depth == self.paren_depth
+        ):
             pending = self.pending_scopes.pop()
         if pending is not None and pending.kind == "function":
-            frame = _Frame("function", self._def_qualname(pending.def_index),
-                          def_index=pending.def_index)
+            frame = _Frame(
+                "function",
+                self._def_qualname(pending.def_index),
+                def_index=pending.def_index,
+            )
             frame.local_bindings.update(pending.param_bindings)
             self.frames.append(frame)
             self.braces.append(_Brace("function_body", pops_frame=True))
             return
         if pending is not None and pending.kind == "class":
-            frame = _Frame("class", self._def_qualname(pending.def_index),
-                          def_index=pending.def_index)
+            frame = _Frame(
+                "class",
+                self._def_qualname(pending.def_index),
+                def_index=pending.def_index,
+            )
             self.frames.append(frame)
             self.braces.append(_Brace("class_body", pops_frame=True))
             return
@@ -623,9 +667,22 @@ class _Analyzer:
             return
         previous = self._previous_significant_index(self.i)
         prev_token = self.tokens[previous] if previous is not None else None
-        if prev_token is not None and prev_token.type == "punct" and prev_token.value in {
-            "=", "(", ",", "[", ":", "??", "||", "&&", "=>",
-        }:
+        if (
+            prev_token is not None
+            and prev_token.type == "punct"
+            and prev_token.value
+            in {
+                "=",
+                "(",
+                ",",
+                "[",
+                ":",
+                "??",
+                "||",
+                "&&",
+                "=>",
+            }
+        ):
             if prev_token.value == "=>":
                 self.braces.append(_Brace("block", pops_frame=False))
                 return
@@ -633,14 +690,25 @@ class _Analyzer:
             self.frames.append(frame)
             self.braces.append(_Brace("object", pops_frame=True))
             return
-        if prev_token is not None and prev_token.type == "keyword" and prev_token.value == "return":
+        if (
+            prev_token is not None
+            and prev_token.type == "keyword"
+            and prev_token.value == "return"
+        ):
             frame = _Frame("object", None)
             self.frames.append(frame)
             self.braces.append(_Brace("object", pops_frame=True))
             return
-        if prev_token is not None and prev_token.type == "keyword" and prev_token.value in {
-            "const", "let", "var",
-        }:
+        if (
+            prev_token is not None
+            and prev_token.type == "keyword"
+            and prev_token.value
+            in {
+                "const",
+                "let",
+                "var",
+            }
+        ):
             self.braces.append(_Brace("pattern", pops_frame=False))
             return
         self.braces.append(_Brace("block", pops_frame=False))
@@ -699,7 +767,9 @@ class _Analyzer:
             frame = self.frames[-1]
             if not frame.expr_arrow or self.special_depth >= frame.snapshot[2]:
                 return
-            self._pop_frame(self.tokens[self.i].line if self.i < len(self.tokens) else 0)
+            self._pop_frame(
+                self.tokens[self.i].line if self.i < len(self.tokens) else 0
+            )
 
     # ---- imports / exports ---------------------------------------------------
 
@@ -742,7 +812,11 @@ class _Analyzer:
             )
             self.i = j
             return
-        if j < end and self.tokens[j].type == "keyword" and self.tokens[j].value == "type":
+        if (
+            j < end
+            and self.tokens[j].type == "keyword"
+            and self.tokens[j].value == "type"
+        ):
             j += 1  # TS `import type { ... }` — bindings are types only.
         default_name: str | None = None
         namespace_name: str | None = None
@@ -756,7 +830,12 @@ class _Analyzer:
                 )
                 self.i = j
                 return
-            if item.type == "id" and default_name is None and not named and namespace_name is None:
+            if (
+                item.type == "id"
+                and default_name is None
+                and not named
+                and namespace_name is None
+            ):
                 default_name = item.value
             elif item.type == "punct" and item.value == "*":
                 if j + 2 < end and self.tokens[j + 1].value == "as":
@@ -768,7 +847,10 @@ class _Analyzer:
                     self.tokens[j].type == "punct" and self.tokens[j].value == "}"
                 ):
                     spec = self.tokens[j]
-                    if spec.type in {"id", "keyword"} and spec.value not in {"as", "type"}:
+                    if spec.type in {"id", "keyword"} and spec.value not in {
+                        "as",
+                        "type",
+                    }:
                         original = spec.value
                         local = original
                         if (
@@ -807,9 +889,7 @@ class _Analyzer:
             if category:
                 self._effect_import_categories[namespace_name] = category
         for original, local in named:
-            self.imports.append(
-                ImportBinding(local, source, original, "named", line)
-            )
+            self.imports.append(ImportBinding(local, source, original, "named", line))
             if category:
                 self._effect_import_categories[local] = category
         if not default_name and not namespace_name and not named:
@@ -817,18 +897,29 @@ class _Analyzer:
 
     def _handle_export(self, token: Token) -> None:
         next_type = self._peek_type(1)
-        next_value = self.tokens[self.i + 1].value if self.i + 1 < len(self.tokens) else ""
+        next_value = (
+            self.tokens[self.i + 1].value if self.i + 1 < len(self.tokens) else ""
+        )
         if next_type == "keyword" and next_value == "default":
             after = self.tokens[self.i + 2] if self.i + 2 < len(self.tokens) else None
-            if after is not None and after.type == "keyword" and after.value in {
-                "function", "class", "async",
-            }:
+            if (
+                after is not None
+                and after.type == "keyword"
+                and after.value
+                in {
+                    "function",
+                    "class",
+                    "async",
+                }
+            ):
                 self._export_next_definition = ["default"]
                 self.i += 1
                 return
             if after is not None and after.type == "id":
                 self.exports.append(
-                    ExportBinding("default", after.value, None, None, "default", token.line)
+                    ExportBinding(
+                        "default", after.value, None, None, "default", token.line
+                    )
                 )
                 self.i += 2
                 return
@@ -862,8 +953,15 @@ class _Analyzer:
             self.i = j
             return
         if next_type == "keyword" and next_value in {
-            "function", "class", "const", "let", "var", "async",
-            "interface", "type", "enum",
+            "function",
+            "class",
+            "const",
+            "let",
+            "var",
+            "async",
+            "interface",
+            "type",
+            "enum",
         }:
             self._export_next_definition = ["named"]
             return
@@ -1074,10 +1172,7 @@ class _Analyzer:
                             and self.tokens[j + 2].value == "require"
                             and self.tokens[j + 3].value == "("
                         ):
-                            if (
-                                j + 4 < end
-                                and self.tokens[j + 4].type == "string"
-                            ):
+                            if j + 4 < end and self.tokens[j + 4].type == "string":
                                 require_source = self.tokens[j + 4].value
                         break
                 elif item.value == ";":
@@ -1091,9 +1186,7 @@ class _Analyzer:
             # an injected/dynamic callback, not a module-level reference.
             for frame in reversed(self.frames):
                 if frame.kind == "function":
-                    frame.local_bindings.update(
-                        self._collect_binding_names(self.i + 1)
-                    )
+                    frame.local_bindings.update(self._collect_binding_names(self.i + 1))
                     break
                 if frame.kind == "module":
                     break
@@ -1118,7 +1211,11 @@ class _Analyzer:
             and self.tokens[previous].value == "async"
         )
         j = self.i + 1
-        if j < len(self.tokens) and self.tokens[j].type == "punct" and self.tokens[j].value == "*":
+        if (
+            j < len(self.tokens)
+            and self.tokens[j].type == "punct"
+            and self.tokens[j].value == "*"
+        ):
             j += 1
         name = name_hint
         if j < len(self.tokens) and self.tokens[j].type == "id":
@@ -1223,7 +1320,11 @@ class _Analyzer:
             item = self.tokens[j]
             if item.type in {"id", "keyword"} and item.value in MODIFIER_TOKENS:
                 next_item = self.tokens[j + 1] if j + 1 < len(self.tokens) else None
-                if next_item is not None and next_item.type == "punct" and next_item.value == "(":
+                if (
+                    next_item is not None
+                    and next_item.type == "punct"
+                    and next_item.value == "("
+                ):
                     break  # modifier word is actually the method name
                 if item.value == "async":
                     is_async = True
@@ -1314,9 +1415,7 @@ class _Analyzer:
         if after is not None and after.type == "punct" and after.value == ":":
             brace.expect_member = False
             value_index = j + 2
-            value = (
-                self.tokens[value_index] if value_index < len(self.tokens) else None
-            )
+            value = self.tokens[value_index] if value_index < len(self.tokens) else None
             if value is None:
                 return
             if value.type == "keyword" and value.value in {"async", "function"}:
@@ -1349,9 +1448,7 @@ class _Analyzer:
                 return
             if value.type == "punct" and value.value == "{":
                 pending = _Pending("object_value", None, self.paren_depth)
-                pending.object_name = (
-                    f"{container}.{name}" if container else name
-                )
+                pending.object_name = f"{container}.{name}" if container else name
                 self.pending_scopes.append(pending)
                 self.i = j + 1
                 return
@@ -1367,7 +1464,11 @@ class _Analyzer:
         if def_index is None:
             return  # anonymous arrow: calls attribute to the enclosing scope
         qualname = self._def_qualname(def_index)
-        if next_token is not None and next_token.type == "punct" and next_token.value == "{":
+        if (
+            next_token is not None
+            and next_token.type == "punct"
+            and next_token.value == "{"
+        ):
             frame = _Frame("function", qualname, def_index=def_index)
             frame.awaiting_body_brace = True
             frame.local_bindings.update(params or {})
@@ -1432,10 +1533,24 @@ class _Analyzer:
                         break
                 elif item.value == ";" and depth == 0:
                     break
-            elif item.type == "keyword" and depth == 0 and item.value in {
-                "const", "let", "var", "function", "class", "export",
-                "import", "interface", "type", "enum", "return",
-            }:
+            elif (
+                item.type == "keyword"
+                and depth == 0
+                and item.value
+                in {
+                    "const",
+                    "let",
+                    "var",
+                    "function",
+                    "class",
+                    "export",
+                    "import",
+                    "interface",
+                    "type",
+                    "enum",
+                    "return",
+                }
+            ):
                 j -= 1
                 break
             j += 1
@@ -1449,7 +1564,11 @@ class _Analyzer:
         j = self.i + 1
         if j < len(self.tokens):
             item = self.tokens[j]
-            if item.type == "keyword" and item.value == "new" and j + 1 < len(self.tokens):
+            if (
+                item.type == "keyword"
+                and item.value == "new"
+                and j + 1 < len(self.tokens)
+            ):
                 label = self._chain_text_forward(j + 1) or "throw new"
             elif item.type == "id":
                 label = item.value
@@ -1507,7 +1626,11 @@ class _Analyzer:
             j = self.i + 3
             if j < len(self.tokens) and self.tokens[j].value == ".":
                 j += 2
-            if j < len(self.tokens) and self.tokens[j].type == "punct" and self.tokens[j].value == "=":
+            if (
+                j < len(self.tokens)
+                and self.tokens[j].type == "punct"
+                and self.tokens[j].value == "="
+            ):
                 is_write = True
             if is_write:
                 self._add_effect(
@@ -1555,9 +1678,7 @@ class _Analyzer:
         is_local, local_default_line = (
             self._lookup_local_binding(head) if head else (False, None)
         )
-        next_token = (
-            self.tokens[self.i + 1] if self.i + 1 < len(self.tokens) else None
-        )
+        next_token = self.tokens[self.i + 1] if self.i + 1 < len(self.tokens) else None
         has_arguments = not (
             next_token is not None
             and next_token.type == "punct"
@@ -1683,7 +1804,11 @@ class _Analyzer:
                 prev_token = self.tokens[j - 1]
                 next_token = self.tokens[j + 1] if j + 1 < len(self.tokens) else None
                 prev_ok = prev_token.type == "punct" and prev_token.value in {"(", ","}
-                next_ok = next_token is not None and next_token.type == "punct" and next_token.value in {",", ")"}
+                next_ok = (
+                    next_token is not None
+                    and next_token.type == "punct"
+                    and next_token.value in {",", ")"}
+                )
                 if prev_ok and next_ok:
                     names.append(token.value)
                     if len(names) >= MAX_ARGUMENT_NAMES:
@@ -1691,7 +1816,9 @@ class _Analyzer:
             j += 1
         return tuple(names)
 
-    def _object_literal_callback_args(self, paren_index: int) -> tuple[tuple[str, str], ...]:
+    def _object_literal_callback_args(
+        self, paren_index: int
+    ) -> tuple[tuple[str, str], ...]:
         """Identifier-valued properties of object literals passed as arguments.
 
         Supports the common options-object pattern: for
@@ -1713,7 +1840,11 @@ class _Analyzer:
                     depth += 1
                 elif token.value in {")", "]", "}"}:
                     depth -= 1
-                    if token.value == "}" and object_level is not None and depth < object_level:
+                    if (
+                        token.value == "}"
+                        and object_level is not None
+                        and depth < object_level
+                    ):
                         object_level = None
                     if depth == 0:
                         break
@@ -1833,7 +1964,11 @@ class _Analyzer:
                 resolution=RESOLUTION_INFERRED,
             )
             return
-        if len(chain) >= 2 and chain[-2] == "classList" and chain[-1] in CLASSLIST_METHODS:
+        if (
+            len(chain) >= 2
+            and chain[-2] == "classList"
+            and chain[-1] in CLASSLIST_METHODS
+        ):
             self._add_effect(
                 EFFECT_DOM_STORAGE,
                 call.callee_text,
@@ -1843,9 +1978,7 @@ class _Analyzer:
             )
             return
         if head == "addEventListener" and not chain:
-            self._add_effect(
-                EFFECT_DOM_STORAGE, "addEventListener()", line, qualname
-            )
+            self._add_effect(EFFECT_DOM_STORAGE, "addEventListener()", line, qualname)
 
     def _maybe_global_state_write(self, token: Token) -> None:
         previous = self._previous_significant_index(self.i)
@@ -1859,10 +1992,18 @@ class _Analyzer:
         if self._caller_qualname() is None:
             return
         before = self._previous_significant_index(previous)
-        if before is not None and self.tokens[before].type == "punct" and self.tokens[before].value in {".", "?."}:
+        if (
+            before is not None
+            and self.tokens[before].type == "punct"
+            and self.tokens[before].value in {".", "?."}
+        ):
             return
         next_token = self.tokens[self.i + 1] if self.i + 1 < len(self.tokens) else None
-        if next_token is not None and next_token.type == "punct" and next_token.value == "=":
+        if (
+            next_token is not None
+            and next_token.type == "punct"
+            and next_token.value == "="
+        ):
             return  # `==` handled as comparison
         self._add_effect(
             EFFECT_GLOBAL_STATE,
@@ -1879,7 +2020,11 @@ class _Analyzer:
         target = self.tokens[previous]
         if target.type == "id" and target.value in {"innerHTML", "outerHTML"}:
             before = self._previous_significant_index(previous)
-            if before is not None and self.tokens[before].type == "punct" and self.tokens[before].value in {".", "?."}:
+            if (
+                before is not None
+                and self.tokens[before].type == "punct"
+                and self.tokens[before].value in {".", "?."}
+            ):
                 self._add_effect(
                     EFFECT_DOM_STORAGE,
                     f"{target.value} assignment",
@@ -1944,9 +2089,7 @@ class _Analyzer:
                 ExportBinding("default", name, None, None, "default", line)
             )
         elif exported and parent is None:
-            self.exports.append(
-                ExportBinding(name, name, None, None, "named", line)
-            )
+            self.exports.append(ExportBinding(name, name, None, None, "named", line))
         return index
 
     def _def_qualname(self, def_index: int | None) -> str | None:
@@ -1996,7 +2139,11 @@ class _Analyzer:
             first = self.tokens[j]
         if first.type == "id":
             next_token = self.tokens[j + 1] if j + 1 < len(self.tokens) else None
-            if next_token is not None and next_token.type == "punct" and next_token.value == "=>":
+            if (
+                next_token is not None
+                and next_token.type == "punct"
+                and next_token.value == "=>"
+            ):
                 return j + 1
             return None
         if first.type == "punct" and first.value == "(":
@@ -2012,7 +2159,11 @@ class _Analyzer:
                         if depth == 0:
                             k = j + 1
                             # Skip a TS return-type annotation `: Type`.
-                            if k < end and self.tokens[k].type == "punct" and self.tokens[k].value == ":":
+                            if (
+                                k < end
+                                and self.tokens[k].type == "punct"
+                                and self.tokens[k].value == ":"
+                            ):
                                 k += 1
                                 type_depth = 0
                                 while k < end:
@@ -2026,11 +2177,18 @@ class _Analyzer:
                                                 return None
                                         elif entry.value == "=>" and type_depth == 0:
                                             return k
-                                        elif entry.value in {";", ","} and type_depth == 0:
+                                        elif (
+                                            entry.value in {";", ","}
+                                            and type_depth == 0
+                                        ):
                                             return None
                                     k += 1
                                 return None
-                            if k < end and self.tokens[k].type == "punct" and self.tokens[k].value == "=>":
+                            if (
+                                k < end
+                                and self.tokens[k].type == "punct"
+                                and self.tokens[k].value == "=>"
+                            ):
                                 return k
                             return None
                 j += 1
@@ -2132,7 +2290,10 @@ class _Analyzer:
             inner += 1
             if inner >= len(self.tokens):
                 return None
-        if self.tokens[inner].type == "keyword" and self.tokens[inner].value == "function":
+        if (
+            self.tokens[inner].type == "keyword"
+            and self.tokens[inner].value == "function"
+        ):
             return token.line
         if self._find_arrow(value_index) is not None:
             return token.line

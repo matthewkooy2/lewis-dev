@@ -291,7 +291,9 @@ def build_implementation_plan(
     inspection = _inspection_requirements(task_type, failed, surfaces, forbidden, mem)
     recommended, steps = _strategy(task_type, failed, surfaces, intake)
     context_recommendations = _context_recommendations(
-        expected, inspection_paths=_surface_inspection_paths(surfaces), forbidden=forbidden
+        expected,
+        inspection_paths=_surface_inspection_paths(surfaces),
+        forbidden=forbidden,
     )
     review_signals = _review_signals(mem, feedback)
     warnings = _plan_warnings(task_type, failed, provenance, mem)
@@ -843,9 +845,13 @@ def _plan_warnings(
     if isinstance(prior_plan, Mapping):
         prior_failed = _bounded_strings(prior_plan.get("failed_strategy_patterns"))
         prior_strategy = _clip(prior_plan.get("recommended_strategy"))
-        if FAILED_CSS_ONLY_PATCH in failed and prior_strategy and (
-            "css-only" in prior_strategy.casefold()
-            or "wiring" in prior_strategy.casefold()
+        if (
+            FAILED_CSS_ONLY_PATCH in failed
+            and prior_strategy
+            and (
+                "css-only" in prior_strategy.casefold()
+                or "wiring" in prior_strategy.casefold()
+            )
         ):
             warnings.append(
                 "A prior plan already recommended a non-CSS repair but the bundle "
@@ -963,7 +969,9 @@ def _strategy_mentions_wiring(strategy: object) -> bool:
     return "wiring" in lowered or ("dom" in lowered and "css" in lowered)
 
 
-def _exact_freestyle_priority_paths(context_plan: ContextPlan | None) -> tuple[str, ...]:
+def _exact_freestyle_priority_paths(
+    context_plan: ContextPlan | None,
+) -> tuple[str, ...]:
     if context_plan is None:
         return ()
     paths = [

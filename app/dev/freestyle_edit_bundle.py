@@ -573,7 +573,11 @@ def _parse_bundle(bundle_bytes: bytes, job_id: str) -> dict[str, Any]:
             f"Edit bundle operations must contain 1..{MAX_BUNDLE_OPERATIONS} items."
         )
     count = payload["operation_count"]
-    if isinstance(count, bool) or not isinstance(count, int) or count != len(operations):
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != len(operations)
+    ):
         raise FreestyleJobRefusedError(
             "Edit bundle operation_count does not match its operations."
         )
@@ -586,9 +590,7 @@ def _parse_bundle(bundle_bytes: bytes, job_id: str) -> dict[str, Any]:
                 or len(value) > MAX_PROVENANCE_TEXT_CHARS
                 or any(ord(character) < 32 for character in value)
             ):
-                raise FreestyleJobRefusedError(
-                    f"Edit bundle {field_name} is invalid."
-                )
+                raise FreestyleJobRefusedError(f"Edit bundle {field_name} is invalid.")
     return payload
 
 
@@ -604,8 +606,7 @@ def _plan_operations(
     planned = _grouped_planned_edits(operations)
     _require_non_conflicting_edit_paths([item.path for item in planned])
     total_content_bytes = sum(
-        len(item.original_bytes or b"") + len(item.new_bytes or b"")
-        for item in planned
+        len(item.original_bytes or b"") + len(item.new_bytes or b"") for item in planned
     )
     if total_content_bytes > MAX_BUNDLE_TOTAL_CONTENT_BYTES:
         raise FreestyleJobRefusedError(
@@ -745,9 +746,7 @@ def _combined_text_edit(group: list[_OperationPlan], path: str) -> PlannedEdit:
                 "refusing an ambiguous multi-edit."
             )
     result = text
-    for replacement in sorted(
-        replacements, key=lambda item: item.start, reverse=True
-    ):
+    for replacement in sorted(replacements, key=lambda item: item.start, reverse=True):
         result = (
             result[: replacement.start]
             + replacement.new_text
@@ -756,8 +755,7 @@ def _combined_text_edit(group: list[_OperationPlan], path: str) -> PlannedEdit:
     new_bytes = result.encode("utf-8")
     if len(new_bytes) > MAX_EDIT_FILE_BYTES:
         raise FreestyleJobRefusedError(
-            f"Edit bundle replace_text result for {path!r} exceeds the edit "
-            "size limit."
+            f"Edit bundle replace_text result for {path!r} exceeds the edit size limit."
         )
     return PlannedEdit(
         op="replace_text",
@@ -936,8 +934,7 @@ def _require_fresh_expected_sha256(
         or _EXPECTED_SHA256_PATTERN.fullmatch(expected) is None
     ):
         raise FreestyleJobRefusedError(
-            f"Edit bundle {label} expected_sha256 must be 64 lowercase "
-            "hex characters."
+            f"Edit bundle {label} expected_sha256 must be 64 lowercase hex characters."
         )
     actual = hashlib.sha256(original_bytes).hexdigest()
     if actual != expected:
@@ -1053,9 +1050,7 @@ def _require_no_approval_sensitive_text(
                 f"Edit bundle {label} {reason} in {path!r}; "
                 "approval-related code is only changed by a human."
             )
-        if contains_sensitive_content(old_text) or contains_sensitive_content(
-            new_text
-        ):
+        if contains_sensitive_content(old_text) or contains_sensitive_content(new_text):
             raise FreestyleJobRefusedError(
                 f"Edit bundle {label} touches sensitive secret content in "
                 f"{path!r}; secrets are only changed by a human."
@@ -1064,9 +1059,7 @@ def _require_no_approval_sensitive_text(
     if kind == "create_file":
         scanned = [("content", str(raw_operation.get("content", "")))]
     else:
-        scanned = [
-            ("current target content", (original_bytes or b"").decode("utf-8"))
-        ]
+        scanned = [("current target content", (original_bytes or b"").decode("utf-8"))]
         if kind == "replace_file":
             scanned.append(("content", str(raw_operation.get("content", ""))))
     fixture_allowed = approval_fixture_allowed_for_path(path)

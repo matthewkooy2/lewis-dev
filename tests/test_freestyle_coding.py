@@ -102,9 +102,7 @@ class _FakeCompletions:
             raise self.error
         return SimpleNamespace(
             model="deepseek-test-code",
-            choices=[
-                SimpleNamespace(message=SimpleNamespace(content=self.content))
-            ],
+            choices=[SimpleNamespace(message=SimpleNamespace(content=self.content))],
             usage=SimpleNamespace(
                 prompt_tokens=100,
                 completion_tokens=50,
@@ -131,9 +129,7 @@ class _SequenceCompletions:
         content = self.contents[min(len(self.calls) - 1, len(self.contents) - 1)]
         return SimpleNamespace(
             model="deepseek-test-code",
-            choices=[
-                SimpleNamespace(message=SimpleNamespace(content=content))
-            ],
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
             usage=SimpleNamespace(
                 prompt_tokens=100,
                 completion_tokens=50,
@@ -210,7 +206,9 @@ def test_creation_requires_explicit_developer_approval(tmp_path):
     assert _git(root, "branch", "--list", "lewis/freestyle-*") == ""
 
 
-def test_creates_unique_branch_and_no_checkout_worktree_from_current_clean_head(tmp_path):
+def test_creates_unique_branch_and_no_checkout_worktree_from_current_clean_head(
+    tmp_path,
+):
     root = _init_repo(tmp_path)
     head = _git(root, "rev-parse", "HEAD")
 
@@ -441,18 +439,17 @@ def test_reapprove_requires_explicit_flag_and_only_updates_job_metadata(
     assert approved.approval_state == "approved"
     assert (root / "tracked.txt").read_bytes() == source_before
     assert metadata_path.read_bytes() != metadata_before
-    assert json.loads(metadata_path.read_text(encoding="utf-8"))[
-        "developer_approved"
-    ] is True
+    assert (
+        json.loads(metadata_path.read_text(encoding="utf-8"))["developer_approved"]
+        is True
+    )
     repository_after = _repository_file_snapshot(root)
     changed_paths = {
         path
         for path in repository_before.keys() | repository_after.keys()
         if repository_before.get(path) != repository_after.get(path)
     }
-    assert changed_paths == {
-        f"{freestyle.DEV_STATE_DIR_NAME}/jobs/{job.job_id}.json"
-    }
+    assert changed_paths == {f"{freestyle.DEV_STATE_DIR_NAME}/jobs/{job.job_id}.json"}
 
 
 def test_materializes_only_valid_existing_job_worktree(tmp_path, monkeypatch):
@@ -516,9 +513,7 @@ def test_materialization_rejects_tampered_or_dirty_job_worktree_paths(tmp_path):
         developer_approved=True,
         project_root=root,
     )
-    metadata_path = (
-        root / freestyle.DEV_STATE_DIR_NAME / "jobs" / f"{job.job_id}.json"
-    )
+    metadata_path = root / freestyle.DEV_STATE_DIR_NAME / "jobs" / f"{job.job_id}.json"
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     payload["worktree_path"] = str(root)
     metadata_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -535,7 +530,9 @@ def test_materialization_rejects_tampered_or_dirty_job_worktree_paths(tmp_path):
         developer_approved=True,
         project_root=root,
     )
-    (Path(second.worktree_path) / "unexpected.txt").write_text("dirty\n", encoding="utf-8")
+    (Path(second.worktree_path) / "unexpected.txt").write_text(
+        "dirty\n", encoding="utf-8"
+    )
     with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
         materialize_freestyle_job(second.job_id, project_root=root)
     dirty_failed = get_freestyle_job(second.job_id, project_root=root)
@@ -560,7 +557,9 @@ def test_materialization_blocks_malicious_archive_members(
         project_root=root,
     )
     malicious = _tar_bytes(entry)
-    monkeypatch.setattr(freestyle, "_archive_snapshot", lambda blobs, root: (malicious,))
+    monkeypatch.setattr(
+        freestyle, "_archive_snapshot", lambda blobs, root: (malicious,)
+    )
     with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
         materialize_freestyle_job(job.job_id, project_root=root)
 
@@ -941,9 +940,7 @@ def test_proposal_excludes_secret_git_dev_state_db_cache_and_approval_store_path
         "DEV_STATE_MARKER\n", encoding="utf-8"
     )
     (worktree / "data").mkdir()
-    (worktree / "data" / "runtime.sqlite3").write_text(
-        "DB_MARKER\n", encoding="utf-8"
-    )
+    (worktree / "data" / "runtime.sqlite3").write_text("DB_MARKER\n", encoding="utf-8")
     (worktree / "__pycache__").mkdir()
     (worktree / "__pycache__" / "cached.py").write_text(
         "CACHE_MARKER\n", encoding="utf-8"
@@ -1066,7 +1063,10 @@ def test_proposal_uses_deepseek_only_path_and_persists_artifact_metadata(
     assert artifact["proposed_implementation_steps"]
     assert artifact["likely_files_to_edit"]
     assert artifact["risks_unknowns"]
-    assert artifact["suggested_allowlisted_checks"] == ["pytest-freestyle", "ruff-check"]
+    assert artifact["suggested_allowlisted_checks"] == [
+        "pytest-freestyle",
+        "ruff-check",
+    ]
     assert artifact["suggested_check_warnings"] == []
     assert artifact["model_metadata"]["provider"] == "deepseek"
     assert artifact["model_metadata"]["usage"]["total_tokens"] == 150
@@ -1185,7 +1185,9 @@ def test_rejected_path_diagnostics_are_redacted_escaped_and_capped(
 
     assert detail["validator_category"] == category
     assert detail["rejected_path_preview"] == expected_preview
-    assert len(detail["rejected_path_preview"]) <= proposal.MAX_REJECTED_PATH_PREVIEW_CHARS
+    assert (
+        len(detail["rejected_path_preview"]) <= proposal.MAX_REJECTED_PATH_PREVIEW_CHARS
+    )
 
 
 def test_model_output_preview_redacts_sensitive_relative_paths_and_controls():
@@ -1435,7 +1437,8 @@ def test_proposal_keeps_forbidden_shell_git_and_runtime_operations_unavailable(
     assert all(call[0][0] == "git" for call in calls)
     assert all(call[1]["shell"] is False for call in calls)
     assert all(
-        call[0][:3] in (
+        call[0][:3]
+        in (
             ["git", "rev-parse", "--show-toplevel"],
             ["git", "rev-parse", "HEAD"],
             ["git", "rev-parse", "--abbrev-ref"],

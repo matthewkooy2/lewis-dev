@@ -290,7 +290,9 @@ def test_plan_critic_prose_missing_context_is_advisory_when_file_included(tmp_pa
         {
             "approved": False,
             "blocking_issues": ["Review sample.py before editing."],
-            "missing_context": ["Implementation details in sample.py are not provided."],
+            "missing_context": [
+                "Implementation details in sample.py are not provided."
+            ],
             "assumptions": [],
             "revised_focus": ["Use the included sample.py source."],
             "next_action": "Review sample.py.",
@@ -596,9 +598,7 @@ def test_loop_recovers_from_recoverable_bundle_failure(tmp_path):
         if record["stage"] == "implementer" and record["status"] == "failed"
     )
     assert failed_stage["failure_category"] == "create_existing_file"
-    recovery_payload = json.loads(
-        client.completions.calls[3]["messages"][1]["content"]
-    )
+    recovery_payload = json.loads(client.completions.calls[3]["messages"][1]["content"])
     failure_context = recovery_payload["stage_context"]["previous_generation_failure"]
     assert failure_context["category"] == "create_existing_file"
     assert len(failure_context["current_file_sha256"]) == 64

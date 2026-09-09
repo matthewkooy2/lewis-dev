@@ -46,9 +46,7 @@ def page_html(
 </html>"""
 
 
-def nav_group(
-    active_path: str, label: str, links: tuple[tuple[str, str], ...]
-) -> str:
+def nav_group(active_path: str, label: str, links: tuple[tuple[str, str], ...]) -> str:
     items = "".join(nav_link(active_path, path, text) for path, text in links)
     return (
         "<div class='nav-group'>"
@@ -619,7 +617,9 @@ def type_badge(action_type: object) -> str:
 
 
 def flash(message: str) -> str:
-    return f"<div class='flash' role='status'>{escape(message)}</div>" if message else ""
+    return (
+        f"<div class='flash' role='status'>{escape(message)}</div>" if message else ""
+    )
 
 
 def payload_value(payload: dict[str, object], *keys: str) -> object | None:

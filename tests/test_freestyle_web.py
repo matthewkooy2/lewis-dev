@@ -271,9 +271,7 @@ def test_default_run_uses_only_non_mutating_orchestration_flags(tmp_path, monkey
     monkeypatch.setattr(freestyle_web, "run_freestyle_job", fake_run)
     client = _client(tmp_path, root)
 
-    response = client.post(
-        f"/dev/freestyle/{job.job_id}/run", follow_redirects=False
-    )
+    response = client.post(f"/dev/freestyle/{job.job_id}/run", follow_redirects=False)
 
     assert response.status_code == 303
     assert calls == [
@@ -311,9 +309,7 @@ def test_materialize_route_uses_existing_isolated_operation_only(tmp_path):
     job = _job(root)
     source_before = _source_snapshot(root)
 
-    response = _client(tmp_path, root).post(
-        f"/dev/freestyle/{job.job_id}/materialize"
-    )
+    response = _client(tmp_path, root).post(f"/dev/freestyle/{job.job_id}/materialize")
 
     updated = freestyle.get_freestyle_job(job.job_id, project_root=root)
     assert response.status_code == 200
@@ -345,7 +341,15 @@ def test_actions_reject_arbitrary_fields_before_backend_calls(tmp_path, monkeypa
         monkeypatch.setattr(freestyle_web, name, forbidden)
     client = _client(tmp_path, root)
 
-    for suffix in ("run", "apply", "refine", "review", "run-checks", "cleanup", "recover"):
+    for suffix in (
+        "run",
+        "apply",
+        "refine",
+        "review",
+        "run-checks",
+        "cleanup",
+        "recover",
+    ):
         rejected = client.post(
             f"/dev/freestyle/{job.job_id}/{suffix}",
             data={
@@ -404,7 +408,10 @@ def test_refine_web_requires_goal_and_approval_and_uses_safe_defaults(
         f"/dev/freestyle/{job.job_id}/refine",
         data={"goal": "Wire route.", "developer_approved": "approved"},
     )
-    assert "Generated a refinement bundle from the current isolated worktree" in response.text
+    assert (
+        "Generated a refinement bundle from the current isolated worktree"
+        in response.text
+    )
     assert calls == [
         {
             "job_id": job.job_id,
@@ -422,9 +429,7 @@ def test_detail_renders_original_and_latest_refinement_state(tmp_path):
     job = _job(root)
     freestyle.materialize_freestyle_job(job.job_id, project_root=root)
     refinement_id = "1" * 16
-    reference = (
-        f"refinements/{job.job_id}/refinement-{refinement_id}-0001.json"
-    )
+    reference = f"refinements/{job.job_id}/refinement-{refinement_id}-0001.json"
     artifact = root / freestyle.DEV_STATE_DIR_NAME / reference
     artifact.parent.mkdir(parents=True)
     artifact.write_text("{}\n", encoding="utf-8")
@@ -544,9 +549,7 @@ def test_review_calls_deterministic_reviewer_only(tmp_path, monkeypatch):
     monkeypatch.setattr(freestyle_web, "review_freestyle_job", fake_review)
     monkeypatch.setattr(freestyle_web, "run_freestyle_job", forbidden)
 
-    response = _client(tmp_path, root).post(
-        f"/dev/freestyle/{job.job_id}/review"
-    )
+    response = _client(tmp_path, root).post(f"/dev/freestyle/{job.job_id}/review")
 
     assert "Created a deterministic review" in response.text
     assert calls == [(job.job_id, root)]
@@ -580,10 +583,10 @@ def test_run_checks_accepts_only_static_backend_ids_before_execution(
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
 
-    assert "Completed allowlisted checks: pytest-freestyle, ruff-check." in response.text
-    assert calls == [
-        (job.job_id, ("pytest-freestyle", "ruff-check"), root)
-    ]
+    assert (
+        "Completed allowlisted checks: pytest-freestyle, ruff-check." in response.text
+    )
+    assert calls == [(job.job_id, ("pytest-freestyle", "ruff-check"), root)]
 
 
 def test_cleanup_requires_confirmation_and_separate_discard_confirmation(

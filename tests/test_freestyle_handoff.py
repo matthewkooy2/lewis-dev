@@ -170,7 +170,9 @@ def test_status_after_materialize_apply_review_and_checks_surfaces_artifacts_and
     ]
     assert status["checks"]["overall_status"] == "passed"
     assert status["checks"]["passed"] == 1
-    assert any("Manually merge outside Lewis" in step for step in status["human_next_steps"])
+    assert any(
+        "Manually merge outside Lewis" in step for step in status["human_next_steps"]
+    )
 
     _set_metadata(
         root,
@@ -252,7 +254,9 @@ def test_status_and_handoff_surface_bounded_proposal_failure_diagnostics(
     status = get_freestyle_handoff(job.job_id, project_root=root)
     markdown = handoff.render_freestyle_handoff_markdown(status)
     assert status["proposal_failure_diagnostics"]["artifact_path"] == reference
-    assert "attempt 1: empty_response" in status["proposal_failure_diagnostics"]["summary"]
+    assert (
+        "attempt 1: empty_response" in status["proposal_failure_diagnostics"]["summary"]
+    )
     assert "Proposal Failure Diagnostics" in markdown
     assert "Inspect proposal diagnostics before retrying." in markdown
 
@@ -260,7 +264,10 @@ def test_status_and_handoff_surface_bounded_proposal_failure_diagnostics(
     cli_status = json.loads(capsys.readouterr().out)
     assert cli_status["proposal_failure_diagnostics"]["artifact_path"] == reference
     assert freestyle.main(["show", job.job_id]) == 0
-    assert json.loads(capsys.readouterr().out)["proposal_failure_artifact_path"] == reference
+    assert (
+        json.loads(capsys.readouterr().out)["proposal_failure_artifact_path"]
+        == reference
+    )
 
 
 @pytest.mark.parametrize(
@@ -269,7 +276,9 @@ def test_status_and_handoff_surface_bounded_proposal_failure_diagnostics(
         (
             {
                 "proposal_status": "error",
-                "proposal_errors": ["DEEPSEEK_API_KEY must be set in the process environment."],
+                "proposal_errors": [
+                    "DEEPSEEK_API_KEY must be set in the process environment."
+                ],
             },
             "missing_deepseek_config",
             "DEEPSEEK_API_KEY",
@@ -338,7 +347,9 @@ def test_status_only_reads_dev_state_and_constrained_isolated_git_status(
         return real_review_run(args, **kwargs)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("status must not call model, apply, review, checks, or run")
+        raise AssertionError(
+            "status must not call model, apply, review, checks, or run"
+        )
 
     monkeypatch.setattr(freestyle.subprocess, "run", record_freestyle)
     monkeypatch.setattr(review.subprocess, "run", record_review)

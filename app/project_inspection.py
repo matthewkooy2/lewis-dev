@@ -196,9 +196,7 @@ class ProjectInspector:
             )
 
     def _reject_runtime_data_paths(self, normalized_path: str) -> None:
-        parts = tuple(
-            part.lower() for part in PurePosixPath(normalized_path).parts
-        )
+        parts = tuple(part.lower() for part in PurePosixPath(normalized_path).parts)
         if any(part in RUNTIME_DATA_PARTS for part in parts):
             raise ValueError(f"{PROJECT_INSPECTION_PATH_LABEL} include runtime files.")
 

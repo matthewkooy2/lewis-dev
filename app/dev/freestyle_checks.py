@@ -93,7 +93,7 @@ _FORBIDDEN_CHECK_TOKENS = frozenset(
         "zsh",
     }
 )
-_SHELL_METACHARACTERS = ';|&$`<>*?(){}[]"\'\\\n\r\t '
+_SHELL_METACHARACTERS = ";|&$`<>*?(){}[]\"'\\\n\r\t "
 _SAFE_PATH = "/usr/bin:/bin" if os.name == "posix" else os.defpath
 # Constructed from scratch on purpose: filtering the parent environment is
 # fail-open, so no parent process key or value is ever forwarded to a check.
@@ -205,9 +205,7 @@ def _require_safe_registry() -> None:
         if not 0 < definition.timeout_seconds <= MAX_CHECK_TIMEOUT_SECONDS:
             raise RuntimeError("Freestyle check registry timeout is out of bounds.")
         if not 0 < definition.max_output_bytes <= MAX_CHECK_OUTPUT_BYTES_LIMIT:
-            raise RuntimeError(
-                "Freestyle check registry output cap is out of bounds."
-            )
+            raise RuntimeError("Freestyle check registry output cap is out of bounds.")
 
 
 _require_safe_registry()
@@ -332,9 +330,7 @@ def _validated_check_selection(
                 "No allowlisted checks are available in this environment."
             )
         return available, "all_available"
-    if isinstance(check_ids, (str, bytes)) or not isinstance(
-        check_ids, (list, tuple)
-    ):
+    if isinstance(check_ids, (str, bytes)) or not isinstance(check_ids, (list, tuple)):
         raise FreestyleJobRefusedError(
             "Check selection must be a list of allowlisted check ids."
         )
@@ -365,17 +361,13 @@ def _validated_check_selection(
 
 
 def _sanitized_check_id(candidate: str) -> str:
-    printable = "".join(
-        character for character in candidate if character.isprintable()
-    )
+    printable = "".join(character for character in candidate if character.isprintable())
     return printable[:80]
 
 
 def _module_available(module_name: str) -> bool:
     if module_name not in _ALLOWED_CHECK_MODULES:
-        raise FreestyleJobRefusedError(
-            "Internal error: forbidden check requirement."
-        )
+        raise FreestyleJobRefusedError("Internal error: forbidden check requirement.")
     return importlib.util.find_spec(module_name) is not None
 
 
@@ -564,9 +556,7 @@ def _build_checks_artifact(
         "timeout": statuses.count("timeout"),
         "infra_error": statuses.count("infra_error"),
         "overall_status": (
-            "passed"
-            if all(status == "passed" for status in statuses)
-            else "failed"
+            "passed" if all(status == "passed" for status in statuses) else "failed"
         ),
     }
     artifact = {
@@ -587,9 +577,7 @@ def _build_checks_artifact(
             "requested_check_ids": (
                 None if requested_check_ids is None else list(requested_check_ids)
             ),
-            "selected_check_ids": [
-                definition.check_id for definition in selected
-            ],
+            "selected_check_ids": [definition.check_id for definition in selected],
             "selection_mode": selection_mode,
         },
         "checks": results,
@@ -615,9 +603,7 @@ def _build_checks_artifact(
     return artifact
 
 
-def _write_checks_artifact(
-    artifact: dict[str, Any], state: Path, job_id: str
-) -> str:
+def _write_checks_artifact(artifact: dict[str, Any], state: Path, job_id: str) -> str:
     encoded = encode_json_artifact(artifact)
     if len(encoded) > MAX_CHECKS_ARTIFACT_BYTES:
         raise FreestyleJobRefusedError(

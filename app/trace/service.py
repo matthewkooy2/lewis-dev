@@ -59,8 +59,7 @@ class CodeTracer:
                 mode=normalized_mode,
                 ok=False,
                 error=(
-                    f"Unknown mode {mode!r}; expected one of "
-                    f"{', '.join(TRACE_MODES)}."
+                    f"Unknown mode {mode!r}; expected one of {', '.join(TRACE_MODES)}."
                 ),
             )
             return TraceOutcome(result, render_result(result, self.limits))
