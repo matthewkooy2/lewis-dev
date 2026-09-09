@@ -742,3 +742,113 @@ textarea { resize: vertical; }
   .chat-log { max-height: none; }
   .bubble { max-width: 100%; }
 }
+
+/* ---------- projects workspace ---------- */
+
+.project-filter-form,
+.project-form,
+.project-validate-form {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.project-filter-form {
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 180px) minmax(130px, 180px) auto;
+  align-items: end;
+}
+
+.project-grid,
+.project-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+.project-card h3 a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.project-card h3 a:hover { color: var(--accent-strong); }
+
+.project-tabs { margin-bottom: var(--sp-4); }
+
+.project-map-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+.project-map-rail,
+.project-map-detail { min-width: 0; }
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.compact-check {
+  width: auto;
+  padding: 0;
+  background: transparent;
+}
+
+.note-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+.project-note .memory-content p { margin: 0 0 var(--sp-2); }
+.project-note .memory-content p:last-child { margin-bottom: 0; }
+
+.project-diagram .diagram-nodes {
+  margin-top: var(--sp-3);
+  max-height: 150px;
+  overflow: auto;
+}
+
+.project-diagram code,
+.project-map-detail code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.status-not-indexed,
+.status-paused,
+.status-partial,
+.status-running,
+.status-queued {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.status-failed,
+.status-cancelled,
+.status-archived {
+  border-color: var(--bad-line);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.status-completed,
+.status-deterministic {
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+@media (max-width: 900px) {
+  .project-map-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 700px) {
+  .project-filter-form { grid-template-columns: 1fr; }
+  .inline-form { display: grid; align-items: stretch; }
+}
