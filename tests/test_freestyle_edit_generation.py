@@ -37,18 +37,22 @@ def _git(root: Path, *args: str) -> str:
     return completed.stdout.decode().strip()
 
 
-def _init_repo(tmp_path: Path) -> Path:
+def _init_repo(tmp_path: Path, *, newline: str = "\n") -> Path:
     root = tmp_path / "project"
     root.mkdir()
     (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
     (root / "app" / "dev").mkdir(parents=True)
     (root / "tests").mkdir()
-    (root / "app" / "dev" / "sample.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # Exact anchors and hashes must use the same bytes on every platform.
+    (root / "app" / "dev" / "sample.py").write_text(
+        "VALUE = 1\n", encoding="utf-8", newline=newline
+    )
     (root / "tests" / "test_sample.py").write_text(
-        "def test_value():\n    assert True\n", encoding="utf-8"
+        "def test_value():\n    assert True\n", encoding="utf-8", newline=newline
     )
     (root / "README.md").write_text("Sample project\n", encoding="utf-8")
     _git(root, "init", "-b", "main")
+    _git(root, "config", "core.autocrlf", "false")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test User")
     _git(root, "add", ".")
@@ -1078,8 +1082,11 @@ def _stale_anchor_bundle(job_id: str) -> str:
     )
 
 
-def test_prompt_includes_exact_anchor_snippets_and_anchor_instructions(tmp_path):
-    root = _init_repo(tmp_path)
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_prompt_includes_exact_anchor_snippets_and_anchor_instructions(
+    tmp_path, newline
+):
+    root = _init_repo(tmp_path, newline=newline)
     job = _proposed_job(root)
     client = _FakeDeepSeekClient(_bundle_content(job.job_id))
 
@@ -1101,7 +1108,7 @@ def test_prompt_includes_exact_anchor_snippets_and_anchor_instructions(tmp_path)
     assert {"app/dev/sample.py", "tests/test_sample.py"} <= snippet_paths
     worktree = Path(completed.worktree_path)
     for item in snippets:
-        content = (worktree / Path(item["path"])).read_text(encoding="utf-8")
+        content = (worktree / Path(item["path"])).read_bytes().decode("utf-8")
         assert item["exact_text"] in content
     labels = {item["label"] for item in snippets}
     assert "test:test_value" in labels
@@ -1330,7 +1337,9 @@ def test_truncated_high_priority_file_still_gets_exact_anchor_snippets(tmp_path)
     )
     routes_text = header + filler + late_routes
     assert len(routes_text) > proposal.MAX_CONTEXT_CHARS_PER_FILE
-    (root / "app" / "web_routes.py").write_text(routes_text, encoding="utf-8")
+    (root / "app" / "web_routes.py").write_text(
+        routes_text, encoding="utf-8", newline="\n"
+    )
     subprocess.run(["git", "-C", str(root), "add", "."], check=True, shell=False)
     subprocess.run(
         ["git", "-C", str(root), "commit", "-m", "routes"],
@@ -1552,8 +1561,11 @@ def test_syntax_preflight_never_persists_or_applies_a_broken_bundle(tmp_path):
     assert _source_snapshot(Path(job.worktree_path)) == worktree_before
 
 
-def test_anchor_repair_includes_current_content_and_replace_file_fallback(tmp_path):
-    root = _init_repo(tmp_path)
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_anchor_repair_includes_current_content_and_replace_file_fallback(
+    tmp_path, newline
+):
+    root = _init_repo(tmp_path, newline=newline)
     job = _proposed_job(root)
     client = _SequenceDeepSeekClient(
         [_stale_anchor_bundle(job.job_id), _bundle_content(job.job_id)]
@@ -1567,17 +1579,31 @@ def test_anchor_repair_includes_current_content_and_replace_file_fallback(tmp_pa
     )
 
     repair_payload = json.loads(client.completions.calls[1]["messages"][-1]["content"])
-    assert repair_payload["current_file_content"] == "VALUE = 1\n"
-    assert len(repair_payload["current_file_sha256"]) == 64
+    expected_bytes = f"VALUE = 1{newline}".encode("utf-8")
+    expected_sha256 = hashlib.sha256(expected_bytes).hexdigest()
+    assert repair_payload["current_file_content"].encode("utf-8") == expected_bytes
+    assert repair_payload["current_file_sha256"] == expected_sha256
     assert "replace_file" in repair_payload["instruction"]
     assert "current_file_sha256" in repair_payload["instruction"]
     artifact = _generation_artifact(root, completed)
     retry = artifact["anchor_snippets"]["retry"]
     assert retry["full_current_content_included"] is True
-    assert len(retry["current_file_sha256"]) == 64
+    assert retry["current_file_sha256"] == expected_sha256
     analysis = retry["stale_anchor_analysis"]
     assert analysis["anchor_in_prompt_context"] is False
     assert analysis["anchor_source"] == "invented"
+
+    # Apply the repaired bundle and verify untouched line endings remain exact.
+    bundle_path = root / freestyle.DEV_STATE_DIR_NAME / completed.edit_bundle_path
+    applied = freestyle.apply_freestyle_edit_bundle(
+        job.job_id, str(bundle_path), project_root=root
+    )
+    assert applied.edit_apply_status == "applied"
+    worktree = Path(applied.worktree_path)
+    assert (worktree / "app" / "dev" / "sample.py").read_bytes() == (
+        f"VALUE = 2{newline}".encode("utf-8")
+    )
+    assert (root / "app" / "dev" / "sample.py").read_bytes() == expected_bytes
 
 
 def test_recoverable_operation_failures_classify_without_generation_retry(tmp_path):

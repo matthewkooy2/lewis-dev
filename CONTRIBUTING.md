@@ -31,6 +31,12 @@ run two suites concurrently with that same directory; pass distinct
 `--basetemp` paths if parallel local runs are necessary. Runtime fixture
 repositories are excluded from ordinary pytest and Ruff discovery.
 
+For fixtures that compare exact edit anchors or SHA-256 hashes, write explicit
+line endings (`Path.write_text(..., newline="\n")` or `Path.write_bytes(...)`).
+Python otherwise translates newlines on Windows even when Git's `core.autocrlf`
+is disabled. Use `read_bytes()` for byte-preservation assertions; `read_text()`
+normalizes CRLF. Keep explicit LF and CRLF cases when testing edit preservation.
+
 ## Dependency changes
 
 `pyproject.toml` defines runtime dependencies and the `dev` dependency group.

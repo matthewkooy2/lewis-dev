@@ -384,15 +384,18 @@ def _init_tetris_repo(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     (root / "app" / "static").mkdir(parents=True)
     (root / "tests").mkdir()
-    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
-    (root / "app" / "web_routes.py").write_text(_TETRIS_ROUTES, encoding="utf-8")
+    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8", newline="\n")
+    (root / "app" / "web_routes.py").write_text(
+        _TETRIS_ROUTES, encoding="utf-8", newline="\n"
+    )
     (root / "app" / "web_pages.py").write_text(
-        'def chat_page():\n    return "<p>chat</p>"\n', encoding="utf-8"
+        'def chat_page():\n    return "<p>chat</p>"\n', encoding="utf-8", newline="\n"
     )
     (root / "tests" / "test_routes.py").write_text(
-        "def test_routes():\n    assert True\n", encoding="utf-8"
+        "def test_routes():\n    assert True\n", encoding="utf-8", newline="\n"
     )
     _git(root, "init", "-b", "main")
+    _git(root, "config", "core.autocrlf", "false")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test User")
     _git(root, "add", ".")
