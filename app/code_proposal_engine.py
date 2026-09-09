@@ -771,7 +771,6 @@ def _generic_feature_queries(requested_goal: str) -> list[str]:
             "project_search",
             "search_project_files",
             "code_proposal_engine",
-            "search_first_code_proposal",
         ):
             _append_unique_term(surface_terms, term)
 
