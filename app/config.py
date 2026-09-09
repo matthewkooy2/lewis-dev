@@ -242,9 +242,7 @@ def get_settings() -> Settings:
         project_map_max_file_bytes=_env_int(
             "LEWIS_PROJECT_MAP_MAX_FILE_BYTES", 512 * 1024
         ),
-        project_map_timeout_seconds=_env_int(
-            "LEWIS_PROJECT_MAP_TIMEOUT_SECONDS", 900
-        ),
+        project_map_timeout_seconds=_env_int("LEWIS_PROJECT_MAP_TIMEOUT_SECONDS", 900),
         project_map_max_model_calls=_env_int("LEWIS_PROJECT_MAP_MAX_MODEL_CALLS", 0),
         project_map_model_summaries=_env_bool("LEWIS_PROJECT_MAP_MODEL_SUMMARIES"),
         project_map_ignored_directories=_env_text_tuple(

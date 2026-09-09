@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -63,7 +63,9 @@ class FakeService:
 
     def provider_statuses(self):
         return {
-            "codex": ProviderStatus("codex", installed=True, executable_path="codex.exe"),
+            "codex": ProviderStatus(
+                "codex", installed=True, executable_path="codex.exe"
+            ),
             "claude": ProviderStatus("claude", installed=False),
         }
 
@@ -200,7 +202,9 @@ def test_status_refresh_and_stop_require_bounded_forms(tmp_path):
         LaunchRequest(repository_id="repo1", provider="codex", goal="Existing job")
     )
 
-    rejected_status = client.post("/dev/coding-agents/status", data={"command": "claude auth status"})
+    rejected_status = client.post(
+        "/dev/coding-agents/status", data={"command": "claude auth status"}
+    )
     assert "only its confirmation field" in rejected_status.text
     assert fake.refreshed == 0
 

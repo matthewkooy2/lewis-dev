@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -22,7 +22,9 @@ from app.dev.coding_agents import (
 )
 
 
-def _settings(tmp_path: Path, *, repos=(), codex_path=None, claude_path=None) -> Settings:
+def _settings(
+    tmp_path: Path, *, repos=(), codex_path=None, claude_path=None
+) -> Settings:
     documents = tmp_path / "documents"
     documents.mkdir(exist_ok=True)
     return Settings(
@@ -81,7 +83,9 @@ class StubRunner:
         self.result = result or ProcessResult(returncode=0, duration_seconds=0.01)
         self.invocations: list[AgentInvocation] = []
 
-    def run(self, invocation, *, on_stdout_line, on_stderr_line=None, cancel_event=None):
+    def run(
+        self, invocation, *, on_stdout_line, on_stderr_line=None, cancel_event=None
+    ):
         self.invocations.append(invocation)
         for line in self.lines:
             try:
@@ -109,12 +113,27 @@ def test_codex_jsonl_normalization_and_invocation(tmp_path):
     settings = _settings(tmp_path, repos=[repo])
     runner = StubRunner(
         [
-            json.dumps({"type": "thread.started", "thread_id": "codex-thread-1"}) + "\n",
+            json.dumps({"type": "thread.started", "thread_id": "codex-thread-1"})
+            + "\n",
             json.dumps({"type": "agent_message", "message": "Read the repo."}) + "\n",
             json.dumps({"type": "command.started", "command": ["rg", "TODO"]}) + "\n",
-            json.dumps({"type": "command.finished", "command": "rg TODO", "exit_code": 0}) + "\n",
+            json.dumps(
+                {"type": "command.finished", "command": "rg TODO", "exit_code": 0}
+            )
+            + "\n",
             json.dumps({"type": "file.read", "path": "README.md"}) + "\n",
-            json.dumps({"type": "usage", "usage": {"input_tokens": 10, "cached_input_tokens": 3, "output_tokens": 4, "output_tokens_details": {"reasoning_tokens": 2}}}) + "\n",
+            json.dumps(
+                {
+                    "type": "usage",
+                    "usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 3,
+                        "output_tokens": 4,
+                        "output_tokens_details": {"reasoning_tokens": 2},
+                    },
+                }
+            )
+            + "\n",
         ]
     )
     service = CodingAgentService(
@@ -141,13 +160,27 @@ def test_codex_jsonl_normalization_and_invocation(tmp_path):
     assert job.reasoning_tokens == 2
     assert job.token_usage_source == "reported"
     invocation = runner.invocations[0]
-    assert invocation.args[:5] == ("codex.exe", "exec", "--json", "--sandbox", "read-only")
+    assert invocation.args[:5] == (
+        "codex.exe",
+        "exec",
+        "--json",
+        "--sandbox",
+        "read-only",
+    )
     assert "--ask-for-approval" not in invocation.args
     assert "workspace-write" not in invocation.args
     assert "danger-full-access" not in invocation.args
     assert invocation.cwd == repo.resolve()
     event_types = [event.event_type for event in service.store.list_events(created.id)]
-    assert {"job_started", "agent_message", "command_started", "command_finished", "file_observed", "usage_updated", "job_completed"} <= set(event_types)
+    assert {
+        "job_started",
+        "agent_message",
+        "command_started",
+        "command_finished",
+        "file_observed",
+        "usage_updated",
+        "job_completed",
+    } <= set(event_types)
 
 
 def test_claude_stream_normalization_and_invocation(tmp_path):
@@ -155,9 +188,49 @@ def test_claude_stream_normalization_and_invocation(tmp_path):
     settings = _settings(tmp_path, repos=[repo])
     runner = StubRunner(
         [
-            json.dumps({"type": "system", "subtype": "init", "session_id": "00000000-0000-4000-8000-000000000001", "model": "claude-fable-5"}) + "\n",
-            json.dumps({"type": "assistant", "session_id": "00000000-0000-4000-8000-000000000001", "message": {"content": [{"type": "text", "text": "I can inspect this."}, {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "README.md"}}], "usage": {"input_tokens": 5, "cache_read_input_tokens": 7, "output_tokens": 3}}}) + "\n",
-            json.dumps({"type": "result", "subtype": "success", "session_id": "00000000-0000-4000-8000-000000000001", "duration_ms": 1200, "total_cost_usd": 0.01, "result": "Done."}) + "\n",
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "00000000-0000-4000-8000-000000000001",
+                    "model": "claude-fable-5",
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "session_id": "00000000-0000-4000-8000-000000000001",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "I can inspect this."},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "Read",
+                                "input": {"file_path": "README.md"},
+                            },
+                        ],
+                        "usage": {
+                            "input_tokens": 5,
+                            "cache_read_input_tokens": 7,
+                            "output_tokens": 3,
+                        },
+                    },
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "00000000-0000-4000-8000-000000000001",
+                    "duration_ms": 1200,
+                    "total_cost_usd": 0.01,
+                    "result": "Done.",
+                }
+            )
+            + "\n",
         ]
     )
     service = CodingAgentService(
@@ -204,7 +277,11 @@ def test_malformed_output_fails_job_without_real_model_call(tmp_path):
     )
 
     created = service.launch(
-        LaunchRequest(repository_id=_repo_option(settings).repo_id, provider="codex", goal="Analyze.")
+        LaunchRequest(
+            repository_id=_repo_option(settings).repo_id,
+            provider="codex",
+            goal="Analyze.",
+        )
     )
     job = _wait_job(service.store, created.id)
 
@@ -246,7 +323,12 @@ def test_usage_persistence_preserves_reported_values_only(tmp_path):
         last_error=None,
     )
     store.create_job(job)
-    store.update_usage("1" * 32, agents.UsageValues(input_tokens=1, output_tokens=2, token_usage_source="reported"))
+    store.update_usage(
+        "1" * 32,
+        agents.UsageValues(
+            input_tokens=1, output_tokens=2, token_usage_source="reported"
+        ),
+    )
 
     saved = store.get_job("1" * 32)
     assert saved is not None
@@ -272,7 +354,9 @@ def test_repository_allowlist_enforcement(tmp_path):
         generated_nested = repo / generated_name / "fixtures" / "nested"
         generated_nested.mkdir(parents=True)
         (generated_nested / ".git").mkdir()
-        assert agents.repository_by_id(settings, selected.repo_id).root == repo.resolve()
+        assert (
+            agents.repository_by_id(settings, selected.repo_id).root == repo.resolve()
+        )
 
     nested = repo / "nested"
     nested.mkdir()
@@ -292,13 +376,24 @@ def test_provider_status_uses_documented_fixed_commands(tmp_path):
         calls.append(list(args))
         command = list(args)
         if command[0] == str(codex) and command[1:] == ["--version"]:
-            return subprocess.CompletedProcess(command, 0, stdout=b"codex-cli 0.test\n", stderr=b"")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=b"codex-cli 0.test\n", stderr=b""
+            )
         if command[0] == str(codex) and command[1:] == ["login", "status"]:
-            return subprocess.CompletedProcess(command, 0, stdout=b"Logged in using ChatGPT\n", stderr=b"")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=b"Logged in using ChatGPT\n", stderr=b""
+            )
         if command[0] == str(claude) and command[1:] == ["--version"]:
-            return subprocess.CompletedProcess(command, 0, stdout=b"2.test (Claude Code)\n", stderr=b"")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=b"2.test (Claude Code)\n", stderr=b""
+            )
         if command[0] == str(claude) and command[1:] == ["auth", "status", "--json"]:
-            return subprocess.CompletedProcess(command, 0, stdout=b'{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "pro"}', stderr=b"")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=b'{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "pro"}',
+                stderr=b"",
+            )
         raise AssertionError(command)
 
     settings = _settings(tmp_path, codex_path=codex, claude_path=claude)
@@ -320,14 +415,36 @@ def test_provider_status_uses_documented_fixed_commands(tmp_path):
 
 def test_safe_invocation_rejects_write_capable_modes(tmp_path):
     with pytest.raises(CodingAgentError):
-        agents._assert_safe_invocation("codex", ("codex", "exec", "--json", "--sandbox", "workspace-write"))
+        agents._assert_safe_invocation(
+            "codex", ("codex", "exec", "--json", "--sandbox", "workspace-write")
+        )
     with pytest.raises(CodingAgentError):
-        agents._assert_safe_invocation("codex", ("codex", "exec", "--json", "--sandbox", "danger-full-access"))
+        agents._assert_safe_invocation(
+            "codex", ("codex", "exec", "--json", "--sandbox", "danger-full-access")
+        )
     with pytest.raises(CodingAgentError):
-        agents._assert_safe_invocation("claude", ("claude", "-p", "--output-format", "stream-json", "--permission-mode", "bypassPermissions", "--tools", "default"))
+        agents._assert_safe_invocation(
+            "claude",
+            (
+                "claude",
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--permission-mode",
+                "bypassPermissions",
+                "--tools",
+                "default",
+            ),
+        )
     with pytest.raises(CodingAgentError):
         agents._validated_launch_request(
-            LaunchRequest(repository_id="x", provider="claude", goal="g", model="bad model; rm", effort="high"),
+            LaunchRequest(
+                repository_id="x",
+                provider="claude",
+                goal="g",
+                model="bad model; rm",
+                effort="high",
+            ),
             _settings(tmp_path),
         )
 
@@ -336,7 +453,7 @@ def test_process_timeout_cancellation_and_output_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(agents, "_assert_safe_invocation", lambda provider, args: None)
     script = tmp_path / "slow.py"
     script.write_text(
-        "import sys, time\nprint('{\\\"type\\\":\\\"agent_message\\\",\\\"message\\\":\\\"start\\\"}', flush=True)\ntime.sleep(5)\n",
+        'import sys, time\nprint(\'{\\"type\\":\\"agent_message\\",\\"message\\":\\"start\\"}\', flush=True)\ntime.sleep(5)\n',
         encoding="utf-8",
     )
     runner = SafeProcessRunner()
@@ -354,15 +471,23 @@ def test_process_timeout_cancellation_and_output_limit(tmp_path, monkeypatch):
 
     cancel_event = agents.threading.Event()
     script.write_text("import time\ntime.sleep(5)\n", encoding="utf-8")
-    invocation = AgentInvocation("codex", (sys.executable, str(script)), tmp_path, "", 10)
+    invocation = AgentInvocation(
+        "codex", (sys.executable, str(script)), tmp_path, "", 10
+    )
+
     def cancel_soon():
         time.sleep(0.2)
         cancel_event.set()
+
     agents.threading.Thread(target=cancel_soon).start()
-    result = runner.run(invocation, on_stdout_line=lambda line: None, cancel_event=cancel_event)
+    result = runner.run(
+        invocation, on_stdout_line=lambda line: None, cancel_event=cancel_event
+    )
     assert result.cancelled is True
 
     script.write_text("print('x' * 10000)\n", encoding="utf-8")
-    invocation = AgentInvocation("codex", (sys.executable, str(script)), tmp_path, "", 10, max_output_bytes=100)
+    invocation = AgentInvocation(
+        "codex", (sys.executable, str(script)), tmp_path, "", 10, max_output_bytes=100
+    )
     result = runner.run(invocation, on_stdout_line=lambda line: None)
     assert result.output_limited is True

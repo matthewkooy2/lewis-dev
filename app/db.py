@@ -220,7 +220,6 @@ def _coding_agents_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-
 def _projects_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -474,14 +473,30 @@ def _projects_schema(conn: sqlite3.Connection) -> None:
     }
     if "project_id" not in columns:
         conn.execute("ALTER TABLE coding_agent_jobs ADD COLUMN project_id TEXT")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status, updated_at DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_notes_project_status ON project_notes(project_id, status, updated_at DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_map_runs_project_status ON project_map_runs(project_id, status, updated_at DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_indexed_files_project_path ON project_indexed_files(project_id, path)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_indexed_symbols_project_name ON project_indexed_symbols(project_id, name)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_relationships_project_source ON project_relationships(project_id, source_path)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_activity_project_created ON project_activity(project_id, created_at DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_coding_agent_jobs_project ON coding_agent_jobs(project_id, updated_at DESC)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_notes_project_status ON project_notes(project_id, status, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_map_runs_project_status ON project_map_runs(project_id, status, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_indexed_files_project_path ON project_indexed_files(project_id, path)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_indexed_symbols_project_name ON project_indexed_symbols(project_id, name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_relationships_project_source ON project_relationships(project_id, source_path)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_activity_project_created ON project_activity(project_id, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_coding_agent_jobs_project ON coding_agent_jobs(project_id, updated_at DESC)"
+    )
 
 
 MIGRATIONS = (
