@@ -32,7 +32,7 @@ def _settings(tmp_path: Path) -> Settings:
 
 
 def run_case(case: dict[str, object]) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         settings = _settings(tmp_path)
         settings.documents_dir.mkdir(parents=True)

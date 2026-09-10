@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -247,7 +248,7 @@ def register_web_routes(app: FastAPI) -> None:
 
     @app.get("/chat", response_class=HTMLResponse)
     def chat(request: Request) -> HTMLResponse:
-        return _page("Chat", request, chat_page(request.app.state.chat_messages))
+        return _page("Chat", request, chat_page(list(request.app.state.chat_messages)))
 
     @app.post("/chat")
     async def chat_message(request: Request) -> JSONResponse:
@@ -255,26 +256,37 @@ def register_web_routes(app: FastAPI) -> None:
         message = str(fields.get("message", "")).strip()
         if not message:
             return JSONResponse({"ok": False, "answer": "Enter a message first."})
-        settings = _settings(request)
-        request.app.state.chat_messages.append({"role": "user", "content": message})
+        return await run_in_threadpool(_run_chat_turn, request.app, message)
+
+
+def _run_chat_turn(app: FastAPI, message: str) -> JSONResponse:
+    # The worker owns the lock until the model finishes, even if its HTTP
+    # request is cancelled. Agent initialization and conversation mutations
+    # must be serialized together; the agent is shared by this local app.
+    with app.state.chat_lock:
+        settings = app.state.settings
         memory_context_count = 0
         if not settings.has_api_key:
             answer = MISSING_API_KEY_MESSAGE
         else:
             try:
-                if request.app.state.chat_agent is None:
-                    request.app.state.chat_agent = build_agent(settings)
-                run = request.app.state.chat_agent.run(message)
+                if app.state.chat_agent is None:
+                    app.state.chat_agent = build_agent(settings)
+                run = app.state.chat_agent.run(message)
                 answer = run.answer
                 memory_context_count = run.memory_context_count
             except Exception as exc:
                 answer = f"Sorry, I hit an error: {exc}"
-        request.app.state.chat_messages.append(
-            {
-                "role": "assistant",
-                "content": answer,
-                "memory_context_count": memory_context_count,
-            }
+        # Publish both messages together so readers only see complete turns.
+        app.state.chat_messages.extend(
+            [
+                {"role": "user", "content": message},
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "memory_context_count": memory_context_count,
+                },
+            ]
         )
         return JSONResponse(
             {
@@ -308,7 +320,9 @@ def _page(
             title,
             request.url.path,
             content,
-            show_dev_navigation=_settings(request).debug,
+            show_dev_navigation=_settings(request).freestyle_ui_enabled,
+            show_coding_agents_navigation=_settings(request).coding_agents_ui_enabled,
+            show_projects_navigation=_settings(request).projects_ui_enabled,
         ),
         status_code=status_code,
     )

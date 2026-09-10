@@ -185,9 +185,7 @@ def resolve_index_scope(root: Path, state: Path) -> IndexScope:
         )
     job_id = parts[0]
     if not resolved.is_dir() or resolved.is_symlink():
-        raise FreestyleJobRefusedError(
-            "Repo index worktree root is missing or unsafe."
-        )
+        raise FreestyleJobRefusedError("Repo index worktree root is missing or unsafe.")
     return IndexScope(
         scope="worktree",
         scope_id=job_id,
@@ -388,7 +386,10 @@ def _read_indexable_text(
 
 def _is_approval_sensitive(relative: str, name: str, text: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", name.casefold())
-    if name.casefold() in APPROVAL_STORE_PATH_NAMES or APPROVAL_STORE_TOKEN in normalized:
+    if (
+        name.casefold() in APPROVAL_STORE_PATH_NAMES
+        or APPROVAL_STORE_TOKEN in normalized
+    ):
         return True
     return defines_approval_store(text)
 

@@ -117,9 +117,7 @@ def test_host_fallback_is_marked_stale(tmp_path: Path, monkeypatch) -> None:
 
     # A worktree that does not exist forces the stale host fallback.
     missing_worktree = state / "worktrees" / JOB_ID
-    index, provenance = ctx.resolve_freestyle_index(
-        missing_worktree, host_root, state
-    )
+    index, provenance = ctx.resolve_freestyle_index(missing_worktree, host_root, state)
     assert index is not None
     assert provenance["scope"] == "host"
     assert provenance["stale"] is True
@@ -158,8 +156,9 @@ def test_calendar_goal_selects_connected_surface(tmp_path: Path) -> None:
     assert "app/static/chat.js" not in connected
     assert "app/code_proposal_engine.py" not in connected
     assert "app/unrelated_thing.py" not in connected
-    assert "named target from goal" in (
-        selection["selection_reasons"]["app/static/lewis.css"]
+    assert (
+        "named target from goal"
+        in (selection["selection_reasons"]["app/static/lewis.css"])
     )
 
 
@@ -195,9 +194,10 @@ def test_calendar_goal_with_process_language_stays_calendar_focused(
 
     included = list(context.inspected_paths)
     assert "freestyle_internal" not in context.context_plan["detected_goal_categories"]
-    assert "app/code_proposal_engine.py" not in context.context_plan[
-        "named_target_files"
-    ]["named_target_paths"]
+    assert (
+        "app/code_proposal_engine.py"
+        not in context.context_plan["named_target_files"]["named_target_paths"]
+    )
     for path in (
         "app/web_pages.py",
         "app/static/lewis.css",
@@ -339,9 +339,7 @@ def test_build_proposal_context_without_repo_map_is_empty_section(
     tmp_path: Path,
 ) -> None:
     _, _, worktree = _worktree(tmp_path)
-    context = build_proposal_context(
-        worktree, "Fix the calendar layout", repo_map=None
-    )
+    context = build_proposal_context(worktree, "Fix the calendar layout", repo_map=None)
     section = context.context_plan["repo_map"]
     assert section["connected_files"] == []
     assert section["provenance"]["available"] is False

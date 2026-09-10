@@ -12,7 +12,24 @@ if (
     $lewisPid -and
     (Get-Process -Id ([int]$lewisPid) -ErrorAction SilentlyContinue)
 ) {
-    Stop-Process -Id ([int]$lewisPid) -Force
+    try {
+        Stop-Process -Id ([int]$lewisPid) -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Could not stop Lewis process ${lewisPid}: $($_.Exception.Message)"
+    }
+
+    Start-Sleep -Milliseconds 500
+
+    if (Get-Process -Id ([int]$lewisPid) -ErrorAction SilentlyContinue) {
+        # Never delete the PID file while its process is still alive: the
+        # tracking must keep pointing at the process that survived.
+        Write-Host "Lewis process $lewisPid is still running; keeping the PID file."
+        Write-Host "If it was started elevated, run this script from an elevated"
+        Write-Host "console or use request-lewis-restart.ps1 instead."
+        exit 1
+    }
+
     Write-Host "Lewis process $lewisPid was stopped."
 }
 else {

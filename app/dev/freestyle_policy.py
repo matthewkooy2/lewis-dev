@@ -43,7 +43,7 @@ APPROVAL_STORE_PATH_NAMES = frozenset(
 )
 # Concatenated so content scans for the class name never match the policy
 # module's own source text.
-APPROVAL_STORE_CLASS_NAME = "Approval" "Store"
+APPROVAL_STORE_CLASS_NAME = "ApprovalStore"
 APPROVAL_STORE_TOKEN = "approvalstore"
 
 # A file that *defines* the approval-store class is part of the approval
@@ -217,12 +217,8 @@ def approval_edit_refusal(old_text: str, new_text: str) -> str | None:
     )
     if hard_labels:
         return f"approval-sensitive region touched ({', '.join(hard_labels)})"
-    old_references = sorted(
-        APPROVAL_STORE_HELPER_REFERENCE_PATTERN.findall(old_text)
-    )
-    new_references = sorted(
-        APPROVAL_STORE_HELPER_REFERENCE_PATTERN.findall(new_text)
-    )
+    old_references = sorted(APPROVAL_STORE_HELPER_REFERENCE_PATTERN.findall(old_text))
+    new_references = sorted(APPROVAL_STORE_HELPER_REFERENCE_PATTERN.findall(new_text))
     if old_references != new_references:
         return "approval-store helper reference changed"
     return None
@@ -284,9 +280,7 @@ def approval_test_fixture_refusal(text: str) -> str | None:
 
 def recovery_message(action: str) -> str:
     """Build the standard stale/unsafe-state recovery instruction."""
-    return (
-        f"Recover or verify the isolated worktree and job metadata before {action}."
-    )
+    return f"Recover or verify the isolated worktree and job metadata before {action}."
 
 
 def is_job_id(value: str) -> bool:

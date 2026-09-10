@@ -17,7 +17,7 @@ def test_python_definitions_imports_exports_and_signatures():
         "from app.tools import ToolRegistry as Registry\n"
         "import subprocess\n"
         "\n"
-        "__all__ = [\"Agent\"]\n"
+        '__all__ = ["Agent"]\n'
         "\n"
         "MAX_SIZE = 10\n"
         "\n"
@@ -26,7 +26,7 @@ def test_python_definitions_imports_exports_and_signatures():
         "        self.registry = registry\n"
         "\n"
         "    async def run(self, text: str) -> str:\n"
-        "        subprocess.run([\"echo\"])\n"
+        '        subprocess.run(["echo"])\n'
         "        return self.registry.execute(text)\n"
         "\n"
         "def _private_helper():\n"
@@ -77,13 +77,13 @@ def test_python_side_effects_error_handling_and_globals():
         "\n"
         "def worker(path):\n"
         "    global STATE\n"
-        "    os.environ[\"MODE\"] = \"on\"\n"
-        "    subprocess.run([\"ls\"])\n"
+        '    os.environ["MODE"] = "on"\n'
+        '    subprocess.run(["ls"])\n'
         "    try:\n"
         "        open(path).read()\n"
         "    except Exception:\n"
         "        pass\n"
-        "    raise ValueError(\"bad\")\n"
+        '    raise ValueError("bad")\n'
     )
     index = analyze_python_file("app/worker.py", source)
     categories = {(e.category, e.qualname) for e in index.side_effects}
@@ -173,7 +173,7 @@ def test_lexer_reports_unclosed_template():
 
 def test_js_definitions_components_hooks_and_exports():
     source = (
-        "import React, { useState } from \"react\";\n"
+        'import React, { useState } from "react";\n'
         "export function useCounter() {\n"
         "  const [n, setN] = useState(0);\n"
         "  return n;\n"
@@ -217,12 +217,12 @@ def test_js_class_methods_object_methods_and_end_lines():
 
 def test_js_imports_requires_reexports_and_commonjs_exports():
     source = (
-        "import def, { a as b, c } from \"./mod\";\n"
-        "import * as ns from \"../other\";\n"
-        "const fs = require(\"fs\");\n"
-        "const { readFile } = require(\"node:fs\");\n"
-        "export { x as y } from \"./impl\";\n"
-        "export * from \"./wide\";\n"
+        'import def, { a as b, c } from "./mod";\n'
+        'import * as ns from "../other";\n'
+        'const fs = require("fs");\n'
+        'const { readFile } = require("node:fs");\n'
+        'export { x as y } from "./impl";\n'
+        'export * from "./wide";\n'
         "module.exports = { thing, alias: local };\n"
         "exports.extra = extraLocal;\n"
     )
@@ -246,7 +246,7 @@ def test_js_calls_track_await_new_chains_and_keyword_properties():
         "async function go(api) {\n"
         "  await api.delete(1);\n"
         "  const client = new HttpClient();\n"
-        "  fetch(\"/x\").then((r) => r.json());\n"
+        '  fetch("/x").then((r) => r.json());\n'
         "}\n"
     )
     index = analyze_js_file("src/go.ts", source, LANGUAGE_TYPESCRIPT)
@@ -259,16 +259,16 @@ def test_js_calls_track_await_new_chains_and_keyword_properties():
 
 def test_js_side_effects_and_error_handling():
     source = (
-        "const fs = require(\"fs\");\n"
+        'const fs = require("fs");\n'
         "function work(path) {\n"
-        "  fs.writeFileSync(path, \"data\");\n"
-        "  localStorage.setItem(\"k\", \"v\");\n"
-        "  console.log(\"done\");\n"
+        '  fs.writeFileSync(path, "data");\n'
+        '  localStorage.setItem("k", "v");\n'
+        '  console.log("done");\n'
         "  try {\n"
         "    risky();\n"
         "  } catch (err) {\n"
         "  }\n"
-        "  throw new CustomError(\"boom\");\n"
+        '  throw new CustomError("boom");\n'
         "}\n"
     )
     index = analyze_js_file("src/work.js", source, LANGUAGE_JAVASCRIPT)
@@ -283,10 +283,10 @@ def test_js_side_effects_and_error_handling():
 
 def test_js_jsx_component_usage_and_callback_references():
     source = (
-        "import { Button } from \"./Button\";\n"
+        'import { Button } from "./Button";\n'
         "export default function Bar({ onSave }) {\n"
         "  const handle = () => onSave(1);\n"
-        "  return <Button onClick={handle} label=\"go\" />;\n"
+        '  return <Button onClick={handle} label="go" />;\n'
         "}\n"
     )
     index = analyze_js_file("src/Bar.jsx", source, LANGUAGE_JAVASCRIPT)

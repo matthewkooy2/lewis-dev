@@ -1,5 +1,10 @@
 # Code Proposal Replacement: Stage 1 Deletion and Bypass Map
 
+Historical migration plan. September 2026: the unreachable legacy chat fallback
+and `app/search_first_code_proposal.py` have been retired. The replacement
+engine and existing end-to-end proposal contracts remain. Other entries below
+are historical targets, not evidence that every migration has been completed.
+
 Stage 1 adds replacement-contract tests and this map. It adds no production
 implementation and deletes no production files.
 

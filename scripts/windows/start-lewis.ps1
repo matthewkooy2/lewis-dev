@@ -8,6 +8,7 @@ $Model = "qwen2.5-coder-7b-instruct"
 $RuntimeDir = "$Repo\runtime"
 $LogDir = "$Repo\logs"
 $PidFile = "$RuntimeDir\lewis-web.pid"
+$RestartMarker = "$RuntimeDir\lewis-restart-requested"
 $StdoutLog = "$LogDir\lewis-web.log"
 $StderrLog = "$LogDir\lewis-web-error.log"
 
@@ -39,6 +40,67 @@ function Test-LewisWeb {
     }
     catch {
         return $false
+    }
+}
+
+# A restart marker (written by request-lewis-restart.ps1) asks this elevated
+# run to replace the current Lewis process. The tracked process is stopped
+# first; the marker is removed only after the replacement is healthy, so a
+# failed restart is retried on the next scheduled run and stays visible.
+$RestartRequested = Test-Path $RestartMarker
+
+if ($RestartRequested) {
+    Write-Host "Restart marker found; replacing the running Lewis process..."
+
+    if (Test-Path $PidFile) {
+        $trackedPid = Get-Content $PidFile -ErrorAction SilentlyContinue
+
+        if (
+            $trackedPid -and
+            (Get-Process -Id ([int]$trackedPid) -ErrorAction SilentlyContinue)
+        ) {
+            try {
+                Stop-Process -Id ([int]$trackedPid) -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Could not stop Lewis process ${trackedPid}: $($_.Exception.Message)"
+            }
+
+            # Wait briefly for the process to exit and port 8787 to close.
+            for ($i = 0; $i -lt 15; $i++) {
+                if (
+                    -not (Get-Process -Id ([int]$trackedPid) -ErrorAction SilentlyContinue) -and
+                    -not (Test-LewisWeb)
+                ) {
+                    break
+                }
+
+                Start-Sleep -Seconds 1
+            }
+
+            if (Get-Process -Id ([int]$trackedPid) -ErrorAction SilentlyContinue) {
+                # Keep both the PID file and the marker: the tracked process
+                # is still alive, so nothing may pretend the restart happened.
+                throw (
+                    "Restart was requested but Lewis process $trackedPid " +
+                    "could not be stopped; keeping the PID file and the " +
+                    "restart marker for the next attempt."
+                )
+            }
+        }
+
+        # The tracked process is gone; the PID file is stale by definition.
+        Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if (Test-LewisWeb) {
+        # Something untracked is still serving port 8787; a blind start here
+        # would either duplicate Lewis or mask the failed restart.
+        throw (
+            "Restart was requested but an untracked process still responds " +
+            "on port 8787; keeping the restart marker. Stop that process " +
+            "manually before the next scheduled run."
+        )
     }
 }
 
@@ -199,7 +261,15 @@ if (-not $lewisReady) {
         -Force `
         -ErrorAction SilentlyContinue
 
+    # A pending restart marker is intentionally preserved here so the next
+    # scheduled run retries and the failure stays observable.
     throw "Lewis failed to start. Check: $StderrLog"
+}
+
+if ($RestartRequested) {
+    # Only a healthy replacement clears the request.
+    Remove-Item $RestartMarker -Force -ErrorAction SilentlyContinue
+    Write-Host "Restart request completed; marker removed."
 }
 
 Write-Host ""

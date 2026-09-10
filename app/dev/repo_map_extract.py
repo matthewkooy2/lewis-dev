@@ -442,7 +442,9 @@ def _routes(path: str, text: str) -> list[dict[str, object]]:
     return routes
 
 
-def _route_handler_after(lines: Sequence[str], start_line: int) -> tuple[str | None, int]:
+def _route_handler_after(
+    lines: Sequence[str], start_line: int
+) -> tuple[str | None, int]:
     for offset in range(start_line, min(start_line + 6, len(lines)) + 1):
         candidate = lines[offset - 1] if offset - 1 < len(lines) else ""
         match = re.match(r"\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(", candidate)
@@ -483,9 +485,9 @@ def _css_selectors(path: str, text: str) -> list[dict[str, object]]:
 
 def _js_asset(path: str, text: str) -> list[dict[str, object]]:
     lookup_ids = _bounded_unique(_JS_LOOKUP_ID.findall(text), MAX_JS_TARGETS_PER_FILE)
-    lookup_classes = list(
-        dict.fromkeys(_JS_LOOKUP_CLASS.findall(text))
-    )[:MAX_JS_TARGETS_PER_FILE]
+    lookup_classes = list(dict.fromkeys(_JS_LOOKUP_CLASS.findall(text)))[
+        :MAX_JS_TARGETS_PER_FILE
+    ]
     query_tokens: list[str] = []
     for selector in _JS_QUERY.findall(text):
         query_tokens.extend(_SIMPLE_SELECTOR_TOKEN.findall(selector))
@@ -576,13 +578,29 @@ def _chunks(
 
     if language == "python":
         for symbol in symbols:
-            if symbol["kind"] in {"class", "function", "test_function", "route_handler"}:
+            if symbol["kind"] in {
+                "class",
+                "function",
+                "test_function",
+                "route_handler",
+            }:
                 start = int(symbol.get("line", 0) or 0)
                 end = int(symbol.get("end_line", start) or start)
-                kind = "test" if symbol["kind"] == "test_function" else (
-                    "route" if symbol["kind"] == "route_handler" else str(symbol["kind"])
+                kind = (
+                    "test"
+                    if symbol["kind"] == "test_function"
+                    else (
+                        "route"
+                        if symbol["kind"] == "route_handler"
+                        else str(symbol["kind"])
+                    )
                 )
-                add(start, min(end, start + MAX_CHUNK_LINES), kind, f"{symbol['kind']} {symbol['name']}")
+                add(
+                    start,
+                    min(end, start + MAX_CHUNK_LINES),
+                    kind,
+                    f"{symbol['kind']} {symbol['name']}",
+                )
     elif language == "css":
         for selector in selectors:
             line = int(selector.get("line", 0) or 0)
@@ -592,7 +610,12 @@ def _chunks(
             line = int(symbol.get("line", 0) or 0)
             add(line, line + MAX_CHUNK_LINES, "js_function", f"js {symbol['name']}")
     if not chunks:
-        add(1, min(len(lines), MAX_CHUNK_LINES), "generic", f"{role} {PurePosixPath(path).name}")
+        add(
+            1,
+            min(len(lines), MAX_CHUNK_LINES),
+            "generic",
+            f"{role} {PurePosixPath(path).name}",
+        )
     return chunks
 
 
@@ -672,18 +695,21 @@ def _responsibility_summary(path: str, role: str, text: str, language: str) -> s
     if role == ROLE_WEB_ROUTE:
         routes = [match.group("path") for match in _ROUTE_DECORATOR.finditer(text)]
         joined = ", ".join(dict.fromkeys(routes))[:120]
-        return (f"Defines web route handlers ({joined})." if joined
-                else "Defines web route handlers.")[:MAX_SUMMARY_CHARS]
+        return (
+            f"Defines web route handlers ({joined})."
+            if joined
+            else "Defines web route handlers."
+        )[:MAX_SUMMARY_CHARS]
     if role == ROLE_WEB_PAGE:
         return f"Builds rendered web page markup ({name})."[:MAX_SUMMARY_CHARS]
     if role == ROLE_STATIC_CSS:
-        return (
-            f"Static stylesheet defining UI and layout selectors ({name})."
-        )[:MAX_SUMMARY_CHARS]
+        return (f"Static stylesheet defining UI and layout selectors ({name}).")[
+            :MAX_SUMMARY_CHARS
+        ]
     if role == ROLE_STATIC_JS:
-        return (
-            f"Static client script managing DOM targets and behavior ({name})."
-        )[:MAX_SUMMARY_CHARS]
+        return (f"Static client script managing DOM targets and behavior ({name}).")[
+            :MAX_SUMMARY_CHARS
+        ]
     if role == ROLE_FREESTYLE_MACHINERY:
         return f"Freestyle pipeline machinery ({name})."[:MAX_SUMMARY_CHARS]
     summary = _module_docstring_summary(text, language)

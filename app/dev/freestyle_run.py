@@ -170,10 +170,14 @@ def run_freestyle_job(
             )
             apply_completed = not was_applied
         else:
-            stages.append(_skipped_stage("apply_edits", "explicit_confirmation_required"))
+            stages.append(
+                _skipped_stage("apply_edits", "explicit_confirmation_required")
+            )
 
         if current.edit_apply_status == "applied":
-            review_was_current = current.review_status == "reviewed" and not apply_completed
+            review_was_current = (
+                current.review_status == "reviewed" and not apply_completed
+            )
             current = _run_or_skip(
                 "review",
                 current,
@@ -189,7 +193,9 @@ def run_freestyle_job(
             stages.append(_skipped_stage("review", "edits_not_applied"))
 
         if run_checks:
-            checks_were_current = _checks_are_current(current, check_ids, apply_completed)
+            checks_were_current = _checks_are_current(
+                current, check_ids, apply_completed
+            )
             current = _run_or_skip(
                 "run_checks",
                 current,
@@ -408,12 +414,8 @@ def _persist_run_result(
         "completed_stages": list(completed_stages),
         "artifact_references": _artifact_references(job),
         "generated_bundle_validation_status": job.edit_bundle_validation_status,
-        "generated_bundle_goal_fit_warnings": list(
-            job.edit_bundle_goal_fit_warnings
-        ),
-        "generated_bundle_semantic_warnings": list(
-            job.edit_bundle_semantic_warnings
-        ),
+        "generated_bundle_goal_fit_warnings": list(job.edit_bundle_goal_fit_warnings),
+        "generated_bundle_semantic_warnings": list(job.edit_bundle_semantic_warnings),
         "edits_applied": job.edit_apply_status == "applied",
         "edits_applied_by_run": edits_applied_by_run,
         "final_edit_apply_status": job.edit_apply_status,
@@ -519,9 +521,7 @@ def _has_proposal(job: FreestyleJob) -> bool:
 
 
 def _has_valid_generated_bundle(job: FreestyleJob, state: Path) -> bool:
-    bundle_id = _generated_reference_id(
-        job.edit_bundle_path, "bundle-", job.job_id
-    )
+    bundle_id = _generated_reference_id(job.edit_bundle_path, "bundle-", job.job_id)
     artifact_id = _generated_reference_id(
         job.edit_generation_artifact_path, "generation-", job.job_id
     )
@@ -543,9 +543,7 @@ def _required_bundle_path(job: FreestyleJob, state: Path) -> Path:
     return state.joinpath(*PurePosixPath(job.edit_bundle_path).parts)
 
 
-def _generated_reference_id(
-    value: Any, prefix: str, job_id: str
-) -> str | None:
+def _generated_reference_id(value: Any, prefix: str, job_id: str) -> str | None:
     safe = safe_artifact_reference(value)
     if safe is None:
         return None
@@ -570,10 +568,7 @@ def _is_safe_generated_file(value: Any, state: Path) -> bool:
     relative = PurePosixPath(safe)
     path = state.joinpath(*relative.parts)
     parents = (state / "edit-bundles", state / "edit-bundles" / relative.parts[1])
-    if any(
-        parent.is_symlink() or not parent.is_dir()
-        for parent in parents
-    ):
+    if any(parent.is_symlink() or not parent.is_dir() for parent in parents):
         return False
     if path.is_symlink() or not path.is_file():
         return False

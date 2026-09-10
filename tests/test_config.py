@@ -68,12 +68,42 @@ def test_documents_dir_ignores_environment_override(monkeypatch, tmp_path):
 
 def test_settings_default_code_model_profile(monkeypatch):
     monkeypatch.setattr("app.config.load_dotenv", lambda: None)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.delenv("DEEPSEEK_CODE_MODEL", raising=False)
 
     settings = get_settings()
 
     assert settings.deepseek_model == "deepseek-v4-flash"
     assert settings.deepseek_code_model == "deepseek-v4-pro"
+
+
+def test_freestyle_ui_env_flag_enables_ui_without_debug(monkeypatch):
+    monkeypatch.setattr("app.config.load_dotenv", lambda: None)
+    monkeypatch.setenv("LEWIS_FREESTYLE_UI", "true")
+    monkeypatch.delenv("LEWIS_DEBUG", raising=False)
+
+    settings = get_settings()
+
+    assert settings.debug is False
+    assert settings.freestyle_web_ui is True
+    assert settings.freestyle_ui_enabled is True
+
+
+def test_freestyle_ui_defaults_off_and_debug_still_enables_it(monkeypatch):
+    monkeypatch.setattr("app.config.load_dotenv", lambda: None)
+    monkeypatch.delenv("LEWIS_FREESTYLE_UI", raising=False)
+    monkeypatch.delenv("LEWIS_DEBUG", raising=False)
+
+    settings = get_settings()
+
+    assert settings.freestyle_web_ui is False
+    assert settings.freestyle_ui_enabled is False
+
+    monkeypatch.setenv("LEWIS_DEBUG", "true")
+    debug_settings = get_settings()
+
+    assert debug_settings.freestyle_web_ui is False
+    assert debug_settings.freestyle_ui_enabled is True
 
 
 def test_blank_code_model_profile_falls_back_to_default(tmp_path):

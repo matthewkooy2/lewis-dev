@@ -28,6 +28,16 @@ from app.dev.freestyle_coding import FreestyleJobRefusedError
 DEEPSEEK_PROVIDER = "deepseek"
 LOCAL_OPENAI_PROVIDER = "local-openai"
 KNOWN_PROVIDERS = frozenset({DEEPSEEK_PROVIDER, LOCAL_OPENAI_PROVIDER})
+STRUCTURED_OUTPUT_TEXT = "text"
+STRUCTURED_OUTPUT_JSON_OBJECT = "json_object"
+STRUCTURED_OUTPUT_JSON_SCHEMA = "json_schema"
+STRUCTURED_OUTPUT_MODES = frozenset(
+    {
+        STRUCTURED_OUTPUT_TEXT,
+        STRUCTURED_OUTPUT_JSON_OBJECT,
+        STRUCTURED_OUTPUT_JSON_SCHEMA,
+    }
+)
 _LOCAL_PROVIDER_ALIASES = frozenset(
     {"local", "local-openai", "lmstudio", "lm-studio", "openai-local"}
 )
@@ -74,6 +84,29 @@ class ProviderProposalConfig:
     provider: str = DEEPSEEK_PROVIDER
     local_only: bool = False
     supports_json_response_format: bool = True
+    structured_output_mode: str | None = None
+    # Optional deterministic sampling seed passed through to OpenAI-compatible
+    # endpoints that support it (LM Studio, vLLM). None omits the parameter.
+    sampling_seed: int | None = None
+
+    def __post_init__(self) -> None:
+        mode = self.structured_output_mode
+        if mode is None:
+            if self.supports_json_response_format:
+                mode = (
+                    STRUCTURED_OUTPUT_JSON_SCHEMA
+                    if self.provider == LOCAL_OPENAI_PROVIDER
+                    else STRUCTURED_OUTPUT_JSON_OBJECT
+                )
+            else:
+                mode = STRUCTURED_OUTPUT_TEXT
+        mode = str(mode).strip().casefold()
+        object.__setattr__(self, "structured_output_mode", mode)
+        object.__setattr__(
+            self,
+            "supports_json_response_format",
+            mode != STRUCTURED_OUTPUT_TEXT,
+        )
 
     @classmethod
     def from_process_environment(cls) -> ProviderProposalConfig:
@@ -90,6 +123,12 @@ class ProviderProposalConfig:
                 # back to a remote endpoint regardless of the env flag.
                 local_only=True,
                 supports_json_response_format=_env_flag("LEWIS_LOCAL_JSON_MODE"),
+                structured_output_mode=(
+                    STRUCTURED_OUTPUT_JSON_SCHEMA
+                    if _env_flag("LEWIS_LOCAL_JSON_MODE")
+                    else STRUCTURED_OUTPUT_TEXT
+                ),
+                sampling_seed=_env_seed("LEWIS_LOCAL_SEED"),
             )
         if provider == DEEPSEEK_PROVIDER:
             return cls(
@@ -117,6 +156,9 @@ class ProviderContextLimits:
     max_context_files: int
     max_context_total_chars: int
     max_context_chars_per_file: int
+    proposal_total_context_tokens: int | None
+    proposal_reserved_output_tokens: int | None
+    max_proposal_input_tokens: int | None
     max_proposal_output_tokens: int
     max_edit_output_tokens: int
     max_edit_prompt_chars: int
@@ -126,6 +168,9 @@ _DEEPSEEK_LIMITS = ProviderContextLimits(
     max_context_files=12,
     max_context_total_chars=48_000,
     max_context_chars_per_file=8_000,
+    proposal_total_context_tokens=None,
+    proposal_reserved_output_tokens=None,
+    max_proposal_input_tokens=None,
     max_proposal_output_tokens=10_000,
     max_edit_output_tokens=16_000,
     max_edit_prompt_chars=80_000,
@@ -134,20 +179,60 @@ _LOCAL_LIMITS = ProviderContextLimits(
     max_context_files=8,
     max_context_total_chars=24_000,
     max_context_chars_per_file=6_000,
-    max_proposal_output_tokens=4_000,
+    proposal_total_context_tokens=8_192,
+    proposal_reserved_output_tokens=2_048,
+    # Keep the estimated input under an explicit safe ceiling for 8k-context
+    # loopback models; if a tighter explicit value exists, it wins.
+    max_proposal_input_tokens=3_680,
+    max_proposal_output_tokens=2_048,
     max_edit_output_tokens=8_000,
     max_edit_prompt_chars=40_000,
 )
 
 
 def context_limits_for(config: Any) -> ProviderContextLimits:
-    if is_local_provider(config):
+    if is_local_provider(config) or uses_loopback_context_limits(config):
         return _LOCAL_LIMITS
     return _DEEPSEEK_LIMITS
 
 
 def is_local_provider(config: Any) -> bool:
     return getattr(config, "provider", None) == LOCAL_OPENAI_PROVIDER
+
+
+def uses_loopback_context_limits(config: Any) -> bool:
+    """Return True when the configured endpoint is an explicit loopback server.
+
+    Lewis permits LM Studio-compatible loopback endpoints both through the
+    explicit local provider and through a DeepSeek-shaped config that points at
+    localhost. Those requests need the same bounded small-context budgets.
+    """
+    base_url = getattr(config, "base_url", None)
+    if not isinstance(base_url, str) or not base_url:
+        return False
+    return _is_explicit_loopback_endpoint(urlparse(base_url))
+
+
+def proposal_input_budget_tokens_for(config: Any) -> int | None:
+    """Return the effective proposal input budget for one provider config."""
+    limits = context_limits_for(config)
+    explicit_budget = getattr(limits, "max_proposal_input_tokens", None)
+    total_context = getattr(limits, "proposal_total_context_tokens", None)
+    reserved_output = getattr(limits, "proposal_reserved_output_tokens", None)
+    candidates: list[int] = []
+    if isinstance(explicit_budget, int) and explicit_budget > 0:
+        candidates.append(explicit_budget)
+    if (
+        isinstance(total_context, int)
+        and total_context > 0
+        and isinstance(reserved_output, int)
+        and reserved_output >= 0
+    ):
+        candidates.append(max(0, total_context - reserved_output))
+        candidates.append(5_500)
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def effective_api_key(config: Any) -> str:
@@ -171,6 +256,7 @@ def provider_metadata(config: Any) -> dict[str, Any]:
         metadata["endpoint"] = base_url[:200]
     if getattr(config, "local_only", False):
         metadata["local_only"] = True
+    metadata["structured_output_mode"] = structured_output_mode_for(config)
     return metadata
 
 
@@ -190,11 +276,13 @@ def validate_provider_config(config: Any) -> None:
     if not isinstance(config, ProviderProposalConfig):
         raise FreestyleJobRefusedError("DeepSeek proposal configuration is invalid.")
     if config.provider == DEEPSEEK_PROVIDER:
+        _validate_structured_output_mode(config)
         if config.local_only:
             raise FreestyleJobRefusedError(LOCAL_ONLY_REMOTE_REFUSAL)
         _validate_deepseek_fields(config)
         return
     if config.provider == LOCAL_OPENAI_PROVIDER:
+        _validate_structured_output_mode(config)
         _validate_local_fields(config)
         return
     raise FreestyleJobRefusedError(UNKNOWN_PROVIDER_MESSAGE)
@@ -220,18 +308,24 @@ def _validate_deepseek_fields(config: ProviderProposalConfig) -> None:
         raise FreestyleJobRefusedError(
             "DEEPSEEK_CODE_MODEL must be set in the process environment."
         )
-    if (
-        len(model) > 120
-        or model != config.model
-        or re.fullmatch(r"deepseek-[A-Za-z0-9._-]+", model, re.IGNORECASE) is None
-    ):
-        raise FreestyleJobRefusedError("DEEPSEEK_CODE_MODEL must name a DeepSeek model.")
     if not isinstance(config.base_url, str):
         raise FreestyleJobRefusedError(
             "DEEPSEEK_BASE_URL must use the official DeepSeek API endpoint."
         )
     parsed = urlparse(config.base_url)
+    loopback_endpoint = _is_explicit_loopback_endpoint(parsed)
     if (
+        len(model) > 120
+        or model != config.model
+        or (
+            not loopback_endpoint
+            and re.fullmatch(r"deepseek-[A-Za-z0-9._-]+", model, re.IGNORECASE) is None
+        )
+    ):
+        raise FreestyleJobRefusedError(
+            "DEEPSEEK_CODE_MODEL must name a DeepSeek model."
+        )
+    if not loopback_endpoint and (
         parsed.scheme != "https"
         or parsed.hostname != "api.deepseek.com"
         or parsed.port not in {None, 443}
@@ -266,16 +360,20 @@ def _validate_local_fields(config: ProviderProposalConfig) -> None:
     if not isinstance(config.base_url, str):
         raise FreestyleJobRefusedError(LOCAL_BASE_URL_MESSAGE)
     parsed = urlparse(config.base_url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.hostname not in _LOOPBACK_HOSTNAMES
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path.rstrip("/") not in {"", "/v1"}
-    ):
+    if not _is_explicit_loopback_endpoint(parsed):
         raise FreestyleJobRefusedError(LOCAL_BASE_URL_MESSAGE)
+
+
+def _is_explicit_loopback_endpoint(parsed) -> bool:
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname in _LOOPBACK_HOSTNAMES
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path.rstrip("/") in {"", "/v1"}
+    )
 
 
 def provider_config_from_settings(settings: Any) -> ProviderProposalConfig:
@@ -289,9 +387,7 @@ def provider_config_from_settings(settings: Any) -> ProviderProposalConfig:
     if provider in _LOCAL_PROVIDER_ALIASES:
         return ProviderProposalConfig(
             api_key=str(getattr(settings, "local_llm_api_key", "") or ""),
-            model=str(
-                getattr(settings, "local_llm_model", "") or DEFAULT_LOCAL_MODEL
-            ),
+            model=str(getattr(settings, "local_llm_model", "") or DEFAULT_LOCAL_MODEL),
             base_url=str(
                 getattr(settings, "local_llm_base_url", "") or DEFAULT_LOCAL_BASE_URL
             ),
@@ -299,6 +395,11 @@ def provider_config_from_settings(settings: Any) -> ProviderProposalConfig:
             local_only=True,
             supports_json_response_format=bool(
                 getattr(settings, "local_llm_json_mode", False)
+            ),
+            structured_output_mode=(
+                STRUCTURED_OUTPUT_JSON_SCHEMA
+                if bool(getattr(settings, "local_llm_json_mode", False))
+                else STRUCTURED_OUTPUT_TEXT
             ),
         )
     if provider == DEEPSEEK_PROVIDER:
@@ -325,3 +426,121 @@ def _env_flag(name: str) -> bool:
     if value is None:
         return False
     return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_seed(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
+def sampling_parameters_for(
+    config: Any, *, temperature: float | None = None
+) -> dict[str, Any]:
+    """Sampling parameters for one generation request.
+
+    Temperature 0 by default for deterministic first attempts; a bounded
+    override (clamped to [0, 1]) lets recovery attempts escape a temperature-0
+    attractor that would otherwise re-emit the identical failed output. A
+    configured seed is passed only for the local provider, where
+    OpenAI-compatible servers (LM Studio, vLLM) accept it.
+    """
+    value: float | int = 0
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        value = min(1.0, max(0.0, float(temperature)))
+    parameters: dict[str, Any] = {"temperature": value}
+    seed = getattr(config, "sampling_seed", None)
+    if (
+        is_local_provider(config)
+        and isinstance(seed, int)
+        and not isinstance(seed, bool)
+    ):
+        parameters["seed"] = seed
+    return parameters
+
+
+def structured_output_mode_for(config: Any) -> str:
+    """Return the explicit structured-output mode for one provider config."""
+    mode = getattr(config, "structured_output_mode", None)
+    if isinstance(mode, str) and mode.strip().casefold() in STRUCTURED_OUTPUT_MODES:
+        resolved = mode.strip().casefold()
+    elif getattr(config, "supports_json_response_format", False):
+        if is_local_provider(config):
+            resolved = STRUCTURED_OUTPUT_JSON_SCHEMA
+        else:
+            resolved = STRUCTURED_OUTPUT_JSON_OBJECT
+    else:
+        resolved = STRUCTURED_OUTPUT_TEXT
+    if (
+        resolved == STRUCTURED_OUTPUT_JSON_OBJECT
+        and _uses_loopback_json_schema_response_format(config)
+    ):
+        return STRUCTURED_OUTPUT_JSON_SCHEMA
+    return resolved
+
+
+def response_format_for_schema(
+    config: Any,
+    *,
+    name: str,
+    schema: dict[str, Any],
+    strict: bool = True,
+) -> dict[str, Any] | None:
+    """Build the provider-specific response_format payload for a JSON stage.
+
+    ``None`` means explicit text mode. Local LM Studio-compatible endpoints use
+    the JSON Schema form when strict structured output is enabled; DeepSeek keeps
+    the original json_object shape unless configured otherwise.
+    """
+    mode = structured_output_mode_for(config)
+    if mode == STRUCTURED_OUTPUT_TEXT:
+        return None
+    if mode == STRUCTURED_OUTPUT_JSON_OBJECT:
+        return {"type": STRUCTURED_OUTPUT_JSON_OBJECT}
+    if mode == STRUCTURED_OUTPUT_JSON_SCHEMA:
+        return {
+            "type": STRUCTURED_OUTPUT_JSON_SCHEMA,
+            "json_schema": {
+                "name": _safe_schema_name(name),
+                "strict": bool(strict),
+                "schema": schema,
+            },
+        }
+    raise FreestyleJobRefusedError(
+        f"Unsupported structured output mode {mode!r} for freestyle provider."
+    )
+
+
+def _safe_schema_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name).strip())[:64]
+    return cleaned or "freestyle_stage"
+
+
+def _uses_loopback_json_schema_response_format(config: Any) -> bool:
+    """LM Studio-compatible loopback endpoints require json_schema, not json_object."""
+    base_url = getattr(config, "base_url", None)
+    if not isinstance(base_url, str) or not base_url:
+        return False
+    parsed = urlparse(base_url)
+    return _is_explicit_loopback_endpoint(parsed)
+
+
+def _validate_structured_output_mode(config: ProviderProposalConfig) -> None:
+    mode = structured_output_mode_for(config)
+    if mode not in STRUCTURED_OUTPUT_MODES:
+        raise FreestyleJobRefusedError(
+            "Freestyle structured output mode must be text, json_object, or "
+            "json_schema."
+        )
+    if (
+        config.provider == LOCAL_OPENAI_PROVIDER
+        and mode == STRUCTURED_OUTPUT_JSON_OBJECT
+    ):
+        raise FreestyleJobRefusedError(
+            "The local-openai provider does not use json_object strict output; "
+            "set LEWIS_LOCAL_JSON_MODE for json_schema or leave it disabled for text."
+        )

@@ -22,7 +22,7 @@ LOGIC_JS = (
     "\n"
     "export const fromParts = (y, m, d) => new Date(y, m - 1, d);\n"
     "\n"
-    "export const eligibleRow = (row) => row?.status !== \"paid\";\n"
+    'export const eligibleRow = (row) => row?.status !== "paid";\n'
     "\n"
     "export const pickNext = (rows, options = {}) => {\n"
     "  const {\n"
@@ -41,7 +41,7 @@ LOGIC_JS = (
 )
 
 PAGE_A_JS = (
-    "import { pickNext, eligibleRow } from \"../utils/logic\";\n"
+    'import { pickNext, eligibleRow } from "../utils/logic";\n'
     "\n"
     "const getDue = (row) => row?.due;\n"
     "\n"
@@ -52,7 +52,7 @@ PAGE_A_JS = (
 )
 
 PAGE_B_JS = (
-    "import { pickNext } from \"../utils/logic\";\n"
+    'import { pickNext } from "../utils/logic";\n'
     "\n"
     "const getDue = (row) => row?.dueDate;\n"
     "\n"
@@ -61,8 +61,8 @@ PAGE_B_JS = (
 
 # Same-name definitions that must never be matched to the injected bindings.
 DECOY_JS = (
-    "export const getDue = (row) => \"decoy\";\n"
-    "export const isEligible = (row) => \"decoy\";\n"
+    'export const getDue = (row) => "decoy";\n'
+    'export const isEligible = (row) => "decoy";\n'
 )
 
 
@@ -112,7 +112,7 @@ def test_parameters_are_local_bindings_but_local_arrows_still_resolve(tmp_path):
         "  handler(1);\n"
         "  return helper(2);\n"
         "};\n"
-        "export const handler = () => \"module-level decoy\";\n",
+        'export const handler = () => "module-level decoy";\n',
     )
     tracer = CodeTracer(root)
     result = tracer.trace("outer", mode="quick").result

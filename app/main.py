@@ -466,9 +466,7 @@ def print_project_file_search(search: ProjectFileSearch, query: str) -> None:
         print(f"  {item.snippet}")
 
 
-def run_trace_command(
-    symbol: str, file: str | None, mode: str, as_json: bool
-) -> int:
+def run_trace_command(symbol: str, file: str | None, mode: str, as_json: bool) -> int:
     import json
 
     from app.trace.model import TraceResult

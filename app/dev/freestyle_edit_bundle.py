@@ -140,6 +140,37 @@ _OPERATION_FIELDS = {
 }
 
 
+class EditBundleRecoverableOperationError(FreestyleJobRefusedError):
+    """One operation failed a deterministic freshness or shape check.
+
+    Raised with the exact same refusal message as before so every existing
+    caller still fails closed unchanged; it additionally carries a stable
+    ``category`` plus the failed path so orchestration layers can classify the
+    failure and attempt bounded, recorded recovery with fresh evidence. Never
+    raised for path, content, approval-sensitive, or secret safety failures,
+    which stay plain refusals that must never trigger any retry.
+
+    Categories: ``create_existing_file``, ``missing_target_file``,
+    ``stale_expected_sha256``, ``identical_replacement``,
+    ``ambiguous_replacement``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str,
+        path: str,
+        old_text: str | None = None,
+        new_text: str | None = None,
+    ):
+        super().__init__(message)
+        self.category = category
+        self.path = path
+        self.old_text = old_text
+        self.new_text = new_text
+
+
 class EditBundleExactMatchError(FreestyleJobRefusedError):
     """One replace_text old_text matched the current file exactly zero times.
 
@@ -393,6 +424,58 @@ def edit_bundle_schema_for_prompt() -> dict[str, Any]:
     }
 
 
+def edit_bundle_json_schema() -> dict[str, Any]:
+    """JSON Schema for the lean model-emitted edit bundle.
+
+    Trusted provenance fields are intentionally absent: the model emits only
+    ``schema_version`` and ``operations`` and local code injects the rest before
+    deterministic validation.
+    """
+    path = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_EDIT_PATH_LENGTH,
+    }
+    content = {"type": "string"}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "operations"],
+        "properties": {
+            "schema_version": {"type": "integer"},
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_BUNDLE_OPERATIONS,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op", "path"],
+                    "properties": {
+                        "op": {
+                            "type": "string",
+                            "enum": [
+                                "create_file",
+                                "replace_file",
+                                "delete_file",
+                                "replace_text",
+                            ],
+                        },
+                        "path": path,
+                        "content": content,
+                        "expected_sha256": {"type": "string", "maxLength": 64},
+                        "old_text": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "new_text": content,
+                    },
+                },
+            },
+        },
+    }
+
+
 def validate_edit_bundle_bytes(
     job_id: str, bundle_bytes: bytes, worktree: Path
 ) -> EditBundleValidation:
@@ -490,7 +573,11 @@ def _parse_bundle(bundle_bytes: bytes, job_id: str) -> dict[str, Any]:
             f"Edit bundle operations must contain 1..{MAX_BUNDLE_OPERATIONS} items."
         )
     count = payload["operation_count"]
-    if isinstance(count, bool) or not isinstance(count, int) or count != len(operations):
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != len(operations)
+    ):
         raise FreestyleJobRefusedError(
             "Edit bundle operation_count does not match its operations."
         )
@@ -503,9 +590,7 @@ def _parse_bundle(bundle_bytes: bytes, job_id: str) -> dict[str, Any]:
                 or len(value) > MAX_PROVENANCE_TEXT_CHARS
                 or any(ord(character) < 32 for character in value)
             ):
-                raise FreestyleJobRefusedError(
-                    f"Edit bundle {field_name} is invalid."
-                )
+                raise FreestyleJobRefusedError(f"Edit bundle {field_name} is invalid.")
     return payload
 
 
@@ -521,8 +606,7 @@ def _plan_operations(
     planned = _grouped_planned_edits(operations)
     _require_non_conflicting_edit_paths([item.path for item in planned])
     total_content_bytes = sum(
-        len(item.original_bytes or b"") + len(item.new_bytes or b"")
-        for item in planned
+        len(item.original_bytes or b"") + len(item.new_bytes or b"") for item in planned
     )
     if total_content_bytes > MAX_BUNDLE_TOTAL_CONTENT_BYTES:
         raise FreestyleJobRefusedError(
@@ -662,9 +746,7 @@ def _combined_text_edit(group: list[_OperationPlan], path: str) -> PlannedEdit:
                 "refusing an ambiguous multi-edit."
             )
     result = text
-    for replacement in sorted(
-        replacements, key=lambda item: item.start, reverse=True
-    ):
+    for replacement in sorted(replacements, key=lambda item: item.start, reverse=True):
         result = (
             result[: replacement.start]
             + replacement.new_text
@@ -673,8 +755,7 @@ def _combined_text_edit(group: list[_OperationPlan], path: str) -> PlannedEdit:
     new_bytes = result.encode("utf-8")
     if len(new_bytes) > MAX_EDIT_FILE_BYTES:
         raise FreestyleJobRefusedError(
-            f"Edit bundle replace_text result for {path!r} exceeds the edit "
-            "size limit."
+            f"Edit bundle replace_text result for {path!r} exceeds the edit size limit."
         )
     return PlannedEdit(
         op="replace_text",
@@ -778,14 +859,18 @@ def _validated_edit_target(
         )
     if expect_file:
         if not target.is_file():
-            raise FreestyleJobRefusedError(
+            raise EditBundleRecoverableOperationError(
                 f"Edit bundle {label} target {safe_path!r} is missing or not "
-                "a regular file."
+                "a regular file.",
+                category="missing_target_file",
+                path=safe_path,
             )
         _require_inside_worktree(target, resolved_worktree, label)
     elif target.exists():
-        raise FreestyleJobRefusedError(
-            f"Edit bundle {label} create_file target {safe_path!r} already exists."
+        raise EditBundleRecoverableOperationError(
+            f"Edit bundle {label} create_file target {safe_path!r} already exists.",
+            category="create_existing_file",
+            path=safe_path,
         )
     return target
 
@@ -849,14 +934,15 @@ def _require_fresh_expected_sha256(
         or _EXPECTED_SHA256_PATTERN.fullmatch(expected) is None
     ):
         raise FreestyleJobRefusedError(
-            f"Edit bundle {label} expected_sha256 must be 64 lowercase "
-            "hex characters."
+            f"Edit bundle {label} expected_sha256 must be 64 lowercase hex characters."
         )
     actual = hashlib.sha256(original_bytes).hexdigest()
     if actual != expected:
-        raise FreestyleJobRefusedError(
+        raise EditBundleRecoverableOperationError(
             f"Edit bundle {label} expected_sha256 is stale for {path!r}: "
-            f"the bundle expects {expected} but the current file is {actual}."
+            f"the bundle expects {expected} but the current file is {actual}.",
+            category="stale_expected_sha256",
+            path=path,
         )
 
 
@@ -886,8 +972,12 @@ def _located_replacement(
                 f"Edit bundle {label} {field_name} exceeds the edit size limit."
             )
     if old_text == new_text:
-        raise FreestyleJobRefusedError(
-            f"Edit bundle {label} old_text and new_text are identical."
+        raise EditBundleRecoverableOperationError(
+            f"Edit bundle {label} old_text and new_text are identical.",
+            category="identical_replacement",
+            path=path,
+            old_text=old_text,
+            new_text=new_text,
         )
     occurrences = text.count(old_text)
     if occurrences == 0:
@@ -899,9 +989,13 @@ def _located_replacement(
             new_text=new_text,
         )
     if occurrences > 1:
-        raise FreestyleJobRefusedError(
+        raise EditBundleRecoverableOperationError(
             f"Edit bundle {label} replace_text matched {occurrences} times in "
-            f"{path!r}; refusing an ambiguous replacement."
+            f"{path!r}; refusing an ambiguous replacement.",
+            category="ambiguous_replacement",
+            path=path,
+            old_text=old_text,
+            new_text=new_text,
         )
     start = text.index(old_text)
     return _LocatedReplacement(
@@ -956,9 +1050,7 @@ def _require_no_approval_sensitive_text(
                 f"Edit bundle {label} {reason} in {path!r}; "
                 "approval-related code is only changed by a human."
             )
-        if contains_sensitive_content(old_text) or contains_sensitive_content(
-            new_text
-        ):
+        if contains_sensitive_content(old_text) or contains_sensitive_content(new_text):
             raise FreestyleJobRefusedError(
                 f"Edit bundle {label} touches sensitive secret content in "
                 f"{path!r}; secrets are only changed by a human."
@@ -967,9 +1059,7 @@ def _require_no_approval_sensitive_text(
     if kind == "create_file":
         scanned = [("content", str(raw_operation.get("content", "")))]
     else:
-        scanned = [
-            ("current target content", (original_bytes or b"").decode("utf-8"))
-        ]
+        scanned = [("current target content", (original_bytes or b"").decode("utf-8"))]
         if kind == "replace_file":
             scanned.append(("content", str(raw_operation.get("content", ""))))
     fixture_allowed = approval_fixture_allowed_for_path(path)

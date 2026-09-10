@@ -36,7 +36,16 @@ from app.dev.freestyle_provider import (
     effective_api_key,
     provider_config_from_settings,
     provider_metadata,
+    proposal_input_budget_tokens_for,
     validate_provider_config,
+)
+from app.dev.freestyle_context_plan import plan_context
+from app.dev.freestyle_proposal import (
+    ProposalContext,
+    _build_artifact,
+    _call_deepseek,
+    _build_proposal_request,
+    proposal_json_schema,
 )
 from app.dev.freestyle_run import run_freestyle_job
 
@@ -168,6 +177,8 @@ def test_environment_defaults_to_deepseek_provider(monkeypatch):
         "LEWIS_LOCAL_BASE_URL",
         "LEWIS_LOCAL_CODE_MODEL",
         "LEWIS_LOCAL_API_KEY",
+        "DEEPSEEK_MODEL",
+        "DEEPSEEK_BASE_URL",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "remote-key")
@@ -186,7 +197,11 @@ def test_environment_defaults_to_deepseek_provider(monkeypatch):
 @pytest.mark.parametrize("alias", ["local-openai", "local", "lmstudio", "LM-Studio"])
 def test_environment_selects_local_provider_with_defaults(monkeypatch, alias):
     monkeypatch.setenv("LEWIS_FREESTYLE_PROVIDER", alias)
-    for name in ("LEWIS_LOCAL_BASE_URL", "LEWIS_LOCAL_CODE_MODEL", "LEWIS_LOCAL_API_KEY"):
+    for name in (
+        "LEWIS_LOCAL_BASE_URL",
+        "LEWIS_LOCAL_CODE_MODEL",
+        "LEWIS_LOCAL_API_KEY",
+    ):
         monkeypatch.delenv(name, raising=False)
 
     config = ProviderProposalConfig.from_process_environment()
@@ -204,7 +219,9 @@ def test_environment_unknown_provider_fails_closed(monkeypatch):
 
     config = ProviderProposalConfig.from_process_environment()
 
-    with pytest.raises(FreestyleJobRefusedError, match="Unknown freestyle model provider"):
+    with pytest.raises(
+        FreestyleJobRefusedError, match="Unknown freestyle model provider"
+    ):
         validate_provider_config(config)
 
 
@@ -287,14 +304,26 @@ def test_deepseek_provider_validation_is_preserved():
                 api_key="remote-key", model="qwen2.5-coder-7b-instruct"
             )
         )
-    with pytest.raises(FreestyleJobRefusedError, match="official DeepSeek API endpoint"):
+    with pytest.raises(
+        FreestyleJobRefusedError, match="official DeepSeek API endpoint"
+    ):
         validate_provider_config(
             ProviderProposalConfig(
                 api_key="remote-key",
                 model="deepseek-test-code",
-                base_url="http://127.0.0.1:1234/v1",
+                base_url="https://example.com/v1",
             )
         )
+
+
+def test_deepseek_provider_accepts_loopback_lm_studio_endpoint():
+    validate_provider_config(
+        ProviderProposalConfig(
+            api_key="remote-key",
+            model="qwen2.5-coder-7b-instruct",
+            base_url="http://localhost:1234/v1",
+        )
+    )
 
 
 def test_local_only_mode_refuses_remote_deepseek_provider():
@@ -319,6 +348,10 @@ def test_local_provider_context_limits_are_reduced():
     assert local.max_context_files < remote.max_context_files
     assert local.max_context_total_chars < remote.max_context_total_chars
     assert local.max_context_chars_per_file < remote.max_context_chars_per_file
+    assert local.proposal_total_context_tokens == 8192
+    assert local.proposal_reserved_output_tokens == 2048
+    assert proposal_input_budget_tokens_for(_local_config()) == 3680
+    assert remote.max_proposal_input_tokens is None
     assert local.max_proposal_output_tokens < remote.max_proposal_output_tokens
     assert local.max_edit_output_tokens < remote.max_edit_output_tokens
     assert local.max_edit_prompt_chars < remote.max_edit_prompt_chars
@@ -336,6 +369,207 @@ def test_provider_display_is_secret_free():
     assert metadata["endpoint"] == "http://127.0.0.1:1234/v1"
     assert metadata["local_only"] is True
     assert "topsecret" not in json.dumps(metadata)
+
+
+def test_local_proposal_request_is_fit_under_input_budget_and_preserves_required_sections(
+    tmp_path,
+):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    config = ProviderProposalConfig(
+        api_key="",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://127.0.0.1:1234/v1",
+        provider=LOCAL_OPENAI_PROVIDER,
+        local_only=True,
+        supports_json_response_format=True,
+    )
+    plan = plan_context(job.goal)
+    files = tuple(
+        {
+            "path": f"app/dev/large_{index}.py",
+            "content": f"# large file {index}\n" + ("VALUE = 1\n" * 500),
+            "truncated": False,
+            "sha256": str(index),
+        }
+        for index in range(6)
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=sum(len(item["content"]) for item in files),
+        scanned_file_count=len(files),
+    )
+
+    request, fitted = _build_proposal_request(config, job, context, plan)
+
+    assert fitted.proposal_input_budget_tokens == proposal_input_budget_tokens_for(
+        config
+    )
+    assert fitted.estimated_request_input_tokens is not None
+    assert fitted.estimated_request_input_tokens <= fitted.proposal_input_budget_tokens
+    assert fitted.estimated_request_input_tokens <= 5500
+    assert fitted.configured_total_context_tokens == 8192
+    assert fitted.reserved_output_tokens == 2048
+    assert fitted.budget_removed_sections
+    assert len(fitted.files) < len(context.files)
+    assert len(fitted.files) >= 1
+    assert "Return one JSON object" in request["messages"][0]["content"]
+    assert json.loads(request["messages"][1]["content"])["goal"] == job.goal
+    assert request["response_format"]["json_schema"]["schema"] == proposal_json_schema()
+
+
+def test_local_proposal_budget_removals_are_recorded_in_artifact(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    config = ProviderProposalConfig(
+        api_key="",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://127.0.0.1:1234/v1",
+        provider=LOCAL_OPENAI_PROVIDER,
+        local_only=True,
+        supports_json_response_format=True,
+    )
+    plan = plan_context(job.goal)
+    files = tuple(
+        {
+            "path": f"app/dev/large_{index}.py",
+            "content": f"# large file {index}\n" + ("VALUE = 1\n" * 500),
+            "truncated": False,
+            "sha256": str(index),
+        }
+        for index in range(6)
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=sum(len(item["content"]) for item in files),
+        scanned_file_count=len(files),
+    )
+    _, fitted = _build_proposal_request(config, job, context, plan)
+    response = _FakeLocalClient(_proposal_content()).chat.completions.create()
+
+    artifact = _build_artifact(
+        job,
+        config,
+        fitted,
+        json.loads(_proposal_content()),
+        response,
+        "2026-07-07T00:00:00Z",
+        [],
+    )
+
+    summary = artifact["context_summary"]
+    assert summary["budget_removed_sections"] == list(fitted.budget_removed_sections)
+    assert summary["budget_removed_sections"]
+    assert summary["configured_total_context_tokens"] == 8192
+    assert summary["reserved_output_tokens"] == 2048
+    assert (
+        summary["estimated_request_input_tokens"]
+        == fitted.estimated_request_input_tokens
+    )
+
+
+def test_small_local_proposal_request_is_unchanged(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    config = ProviderProposalConfig(
+        api_key="",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://127.0.0.1:1234/v1",
+        provider=LOCAL_OPENAI_PROVIDER,
+        local_only=True,
+        supports_json_response_format=True,
+    )
+    plan = plan_context(job.goal)
+    files = (
+        {
+            "path": "app/dev/sample.py",
+            "content": "VALUE = 1\n",
+            "truncated": False,
+            "sha256": "sample",
+        },
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=len(files[0]["content"]),
+        scanned_file_count=1,
+    )
+
+    request, fitted = _build_proposal_request(config, job, context, plan)
+
+    assert fitted.files == context.files
+    assert fitted.budget_removed_sections == ()
+    assert json.loads(request["messages"][1]["content"])["safe_files"] == list(files)
+
+
+def test_loopback_deepseek_endpoint_uses_local_proposal_budget(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    plan = plan_context(job.goal)
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://localhost:1234/v1",
+    )
+    files = tuple(
+        {
+            "path": f"app/dev/large_{index}.py",
+            "content": f"# large file {index}\n" + ("VALUE = 1\n" * 500),
+            "truncated": False,
+            "sha256": str(index),
+        }
+        for index in range(6)
+    )
+    context = ProposalContext(
+        files=files,
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=sum(len(item["content"]) for item in files),
+        scanned_file_count=len(files),
+    )
+
+    request, fitted = _build_proposal_request(config, job, context, plan)
+
+    assert proposal_input_budget_tokens_for(config) == 3680
+    assert fitted.estimated_request_input_tokens is not None
+    assert fitted.estimated_request_input_tokens <= 5500
+    assert request["max_tokens"] == 2048
+    assert request["response_format"]["type"] == "json_schema"
+
+
+def test_irreducible_local_proposal_request_stops_before_provider_call(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    plan = plan_context(job.goal)
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://localhost:1234/v1",
+    )
+    file = {
+        "path": "app/dev/large.py",
+        "content": "VALUE = 1\n" * 5000,
+        "truncated": False,
+        "sha256": "large",
+    }
+    context = ProposalContext(
+        files=(file,),
+        omitted_files=(),
+        omission_counts={},
+        included_char_count=len(file["content"]),
+        scanned_file_count=1,
+    )
+    client = _FakeLocalClient(_proposal_content())
+
+    with pytest.raises(FreestyleJobRefusedError, match="proposal_context_too_large"):
+        _call_deepseek(client, config, job, context, plan)
+
+    assert client.completions.calls == []
 
 
 # --- generation through the local provider --------------------------------------
@@ -358,12 +592,13 @@ def test_local_proposal_records_provider_metadata_and_reduced_output_budget(tmp_
     assert artifact["model_metadata"]["provider"] == LOCAL_OPENAI_PROVIDER
     assert artifact["model_metadata"]["endpoint"] == "http://127.0.0.1:1234/v1"
     assert artifact["model_metadata"]["local_only"] is True
-    assert (
-        artifact["model_metadata"]["requested_model"] == "qwen2.5-coder-7b-instruct"
-    )
+    assert artifact["model_metadata"]["requested_model"] == "qwen2.5-coder-7b-instruct"
     call = client.completions.calls[0]
     assert call["model"] == "qwen2.5-coder-7b-instruct"
-    assert call["max_tokens"] == context_limits_for(_local_config()).max_proposal_output_tokens
+    assert (
+        call["max_tokens"]
+        == context_limits_for(_local_config()).max_proposal_output_tokens
+    )
 
 
 def test_local_edit_generation_omits_json_mode_unless_enabled(tmp_path):
@@ -388,7 +623,9 @@ def test_local_edit_generation_omits_json_mode_unless_enabled(tmp_path):
     assert generated.edit_bundle_validation_status == "valid"
     call = client.completions.calls[0]
     assert "response_format" not in call
-    assert call["max_tokens"] == context_limits_for(_local_config()).max_edit_output_tokens
+    assert (
+        call["max_tokens"] == context_limits_for(_local_config()).max_edit_output_tokens
+    )
     artifact = _read_artifact(root, generated.edit_generation_artifact_path)
     assert artifact["model_metadata"]["provider"] == LOCAL_OPENAI_PROVIDER
     # The trusted-pipeline provenance gate accepted a local-provider proposal.
@@ -421,6 +658,67 @@ def test_local_edit_generation_sends_json_mode_when_capability_enabled(tmp_path)
         deepseek_client=client,
     )
 
+    response_format = client.completions.calls[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "freestyle_edit_bundle"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert schema["required"] == ["schema_version", "operations"]
+    operation_schema = schema["properties"]["operations"]["items"]
+    assert operation_schema["required"] == ["op", "path"]
+    assert operation_schema["properties"]["op"]["enum"] == [
+        "create_file",
+        "replace_file",
+        "delete_file",
+        "replace_text",
+    ]
+
+
+def test_loopback_proposal_uses_json_schema_response_format(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _FakeLocalClient(_proposal_content())
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="qwen2.5-coder-7b-instruct",
+        base_url="http://localhost:1234/v1",
+    )
+
+    proposed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=config,
+        deepseek_client=client,
+    )
+
+    assert proposed.proposal_status == "proposed"
+    response_format = client.completions.calls[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "freestyle_proposal"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == proposal_json_schema()
+    artifact = _read_artifact(root, proposed.proposal_artifact_path)
+    assert artifact["model_metadata"]["structured_output_mode"] == "json_schema"
+
+
+def test_remote_deepseek_proposal_keeps_json_object_response_format(tmp_path):
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    client = _FakeLocalClient(_proposal_content())
+    config = ProviderProposalConfig(
+        api_key="remote-key",
+        model="deepseek-test-code",
+        base_url=DEEPSEEK_API_BASE_URL,
+    )
+
+    proposed = propose_freestyle_job(
+        job.job_id,
+        project_root=root,
+        deepseek_config=config,
+        deepseek_client=client,
+    )
+
+    assert proposed.proposal_status == "proposed"
     assert client.completions.calls[0]["response_format"] == {"type": "json_object"}
 
 
@@ -462,9 +760,7 @@ def test_local_malformed_json_gets_one_repair_retry_then_fails(tmp_path):
         return SimpleNamespace(
             model="qwen2.5-coder-7b-instruct",
             choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content=client_contents[index])
-                )
+                SimpleNamespace(message=SimpleNamespace(content=client_contents[index]))
             ],
             usage=SimpleNamespace(
                 prompt_tokens=100, completion_tokens=20, total_tokens=120
@@ -503,9 +799,7 @@ def test_default_local_run_stops_before_apply(tmp_path):
         index = min(len(client.completions.calls) - 1, len(contents) - 1)
         return SimpleNamespace(
             model="qwen2.5-coder-7b-instruct",
-            choices=[
-                SimpleNamespace(message=SimpleNamespace(content=contents[index]))
-            ],
+            choices=[SimpleNamespace(message=SimpleNamespace(content=contents[index]))],
             usage=SimpleNamespace(
                 prompt_tokens=100, completion_tokens=50, total_tokens=150
             ),

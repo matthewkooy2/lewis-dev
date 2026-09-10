@@ -144,8 +144,12 @@ def test_days_rendered_as_plain_list_items_are_flagged():
         "</section>"
     )
     css = ".calendar-grid { display: grid; } .weekday-row { display: flex; }"
-    review = review_ui([UiSource("page.html", "html", html), UiSource("a.css", "css", css)])
-    broken = [w for w in review.warnings if w.startswith(UI_WARNING_BROKEN_CALENDAR_LAYOUT)]
+    review = review_ui(
+        [UiSource("page.html", "html", html), UiSource("a.css", "css", css)]
+    )
+    broken = [
+        w for w in review.warnings if w.startswith(UI_WARNING_BROKEN_CALENDAR_LAYOUT)
+    ]
     assert broken
     assert "list items" in broken[0]
 
@@ -158,8 +162,12 @@ def test_weekday_labels_without_grid_container_are_flagged():
         "</div>"
     )
     css = ".week { color: #000; }"  # no grid/flex anywhere
-    review = review_ui([UiSource("p.html", "html", html), UiSource("a.css", "css", css)])
-    broken = [w for w in review.warnings if w.startswith(UI_WARNING_BROKEN_CALENDAR_LAYOUT)]
+    review = review_ui(
+        [UiSource("p.html", "html", html), UiSource("a.css", "css", css)]
+    )
+    broken = [
+        w for w in review.warnings if w.startswith(UI_WARNING_BROKEN_CALENDAR_LAYOUT)
+    ]
     assert broken
     assert "without any grid/flex container" in broken[0]
 
@@ -175,17 +183,16 @@ def test_css_selector_typo_not_matching_markup_is_an_orphan():
             ),
         ]
     )
-    orphan = [w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)]
+    orphan = [
+        w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)
+    ]
     assert orphan
     assert ".clander-grid" in orphan[0]
     assert ".calendar-grid" not in orphan[0]
 
 
 def test_js_referencing_missing_ids_and_classes_is_flagged():
-    html = (
-        "<div id='present' class='shown'></div>"
-        "<script src='/static/s.js'></script>"
-    )
+    html = "<div id='present' class='shown'></div><script src='/static/s.js'></script>"
     js = (
         "document.getElementById('missing-panel');"
         "document.querySelector('.absent-row');"
@@ -194,7 +201,9 @@ def test_js_referencing_missing_ids_and_classes_is_flagged():
     review = review_ui(
         [UiSource("p.html", "html", html), UiSource("app/static/s.js", "js", js)]
     )
-    missing = [w for w in review.warnings if w.startswith(UI_WARNING_JS_MISSING_TARGETS)]
+    missing = [
+        w for w in review.warnings if w.startswith(UI_WARNING_JS_MISSING_TARGETS)
+    ]
     assert missing
     assert "#missing-panel" in missing[0]
     assert ".absent-row" in missing[0]
@@ -208,7 +217,11 @@ def test_grid_container_without_layout_rule_is_flagged():
             UiSource("a.css", "css", ".calendar-grid { color: navy; }"),
         ]
     )
-    grid = [w for w in review.warnings if w.startswith(UI_WARNING_GRID_CONTAINER_WITHOUT_LAYOUT)]
+    grid = [
+        w
+        for w in review.warnings
+        if w.startswith(UI_WARNING_GRID_CONTAINER_WITHOUT_LAYOUT)
+    ]
     assert grid
     assert ".calendar-grid" in grid[0]
 
@@ -265,14 +278,19 @@ chip.setAttribute("class", "event-chip");
 """
 
     review = review_ui(
-        [UiSource("p.html", "html", html), UiSource("app/static/lewis.css", "css", css)],
+        [
+            UiSource("p.html", "html", html),
+            UiSource("app/static/lewis.css", "css", css),
+        ],
         present_static_assets=frozenset({"app/static/calendar.js"}),
         referenced_js_assets=(
             ReferencedJsAsset("app/static/calendar.js", "/static/calendar.js", js),
         ),
     )
 
-    assert not any(w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS) for w in review.warnings)
+    assert not any(
+        w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS) for w in review.warnings
+    )
     runtime = set(review.summary["runtime_emitted_css_selectors"])
     assert {".cal-day", ".day-number", ".event-chip"} <= runtime
     emitted = set(
@@ -294,7 +312,9 @@ def test_unreferenced_js_does_not_suppress_orphan_css_warning():
         ]
     )
 
-    orphan = [w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)]
+    orphan = [
+        w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)
+    ]
     assert orphan
     assert ".chat-message" in orphan[0]
 
@@ -312,7 +332,9 @@ def test_referenced_js_missing_target_warns():
         present_static_assets=frozenset({"app/static/calendar.js"}),
     )
 
-    missing = [w for w in review.warnings if w.startswith(UI_WARNING_JS_MISSING_TARGETS)]
+    missing = [
+        w for w in review.warnings if w.startswith(UI_WARNING_JS_MISSING_TARGETS)
+    ]
     assert missing
     assert "#cal-grid" in missing[0]
     assert review.summary["missing_js_targets"] == ["#cal-grid"]
@@ -362,7 +384,9 @@ def test_visible_unstyled_container_still_warns():
         ]
     )
 
-    unstyled = [w for w in review.warnings if w.startswith(UI_WARNING_UNSTYLED_SELECTORS)]
+    unstyled = [
+        w for w in review.warnings if w.startswith(UI_WARNING_UNSTYLED_SELECTORS)
+    ]
     assert unstyled
     assert "#cal-grid" in unstyled[0]
 
@@ -380,7 +404,9 @@ def test_truly_orphan_css_still_warns():
         ]
     )
 
-    orphan = [w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)]
+    orphan = [
+        w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)
+    ]
     assert orphan
     assert ".never-emitted" in orphan[0]
     assert review.summary["true_orphan_css_selectors"] == [".never-emitted"]
@@ -482,7 +508,9 @@ agenda.innerHTML = `
 def test_markup_only_change_does_not_run_styling_checks():
     # No CSS changed: an unstyled new class must not be flagged, and a grid
     # container cannot be judged without a stylesheet view.
-    review = review_ui([UiSource("p.html", "html", "<div class='calendar-grid'></div>")])
+    review = review_ui(
+        [UiSource("p.html", "html", "<div class='calendar-grid'></div>")]
+    )
     codes = _codes(review.warnings)
     assert UI_WARNING_UNSTYLED_SELECTORS not in codes
     assert UI_WARNING_GRID_CONTAINER_WITHOUT_LAYOUT not in codes
@@ -499,7 +527,9 @@ def test_added_text_focuses_warnings_on_the_change():
             UiSource("a.css", "css", css_full, added_text=css_added),
         ]
     )
-    orphan = [w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)]
+    orphan = [
+        w for w in review.warnings if w.startswith(UI_WARNING_ORPHAN_CSS_SELECTORS)
+    ]
     assert orphan
     assert ".added-orphan" in orphan[0]
     assert ".existing" not in orphan[0]
@@ -547,7 +577,10 @@ def test_classify_web_source_recognizes_kinds():
     assert classify_web_source("a.css", "") == "css"
     assert classify_web_source("a.js", "") == "js"
     assert classify_web_source("page.html", "<div></div>") == "html"
-    assert classify_web_source("app/web_pages.py", "<section class='x'>") == "python_markup"
+    assert (
+        classify_web_source("app/web_pages.py", "<section class='x'>")
+        == "python_markup"
+    )
     assert classify_web_source("app/db.py", "def connect(): pass") is None
     assert classify_web_source("notes.txt", "hello") is None
 
@@ -556,7 +589,9 @@ def test_warnings_are_bounded():
     classes = " ".join(f"c{i}" for i in range(200))
     html = f"<div class='{classes}'></div>"
     css = ".styled { color: red; }"
-    review = review_ui([UiSource("p.html", "html", html), UiSource("a.css", "css", css)])
+    review = review_ui(
+        [UiSource("p.html", "html", html), UiSource("a.css", "css", css)]
+    )
     assert len(review.warnings) <= 24
     for value in review.summary.values():
         if isinstance(value, list):
@@ -569,9 +604,11 @@ def test_warnings_are_bounded():
 
 
 def test_ui_review_module_is_pure():
-    source = Path(
-        __import__("app.dev.freestyle_ui_review", fromlist=["__file__"]).__file__
-    ).read_text(encoding="utf-8").casefold()
+    source = (
+        Path(__import__("app.dev.freestyle_ui_review", fromlist=["__file__"]).__file__)
+        .read_text(encoding="utf-8")
+        .casefold()
+    )
     for forbidden in (
         "subprocess",
         "import socket",

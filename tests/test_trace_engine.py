@@ -21,11 +21,11 @@ def _python_project(tmp_path: Path) -> Path:
         "\n"
         "class Store:\n"
         "    def save(self, item) -> None:\n"
-        "        with sqlite3.connect(\"db\") as conn:\n"
-        "            conn.execute(\"INSERT INTO items VALUES (?)\", (item,))\n"
+        '        with sqlite3.connect("db") as conn:\n'
+        '            conn.execute("INSERT INTO items VALUES (?)", (item,))\n'
         "\n"
         "    def load(self):\n"
-        "        raise KeyError(\"missing\")\n",
+        '        raise KeyError("missing")\n',
     )
     _write(
         root,
@@ -53,9 +53,9 @@ def _python_project(tmp_path: Path) -> Path:
         "\n"
         "def main():\n"
         "    service = Service(build_store())\n"
-        "    service.record(\"x\")\n"
+        '    service.record("x")\n'
         "    store = build_store()\n"
-        "    store.save(\"y\")\n",
+        '    store.save("y")\n',
     )
     _write(
         root,
@@ -63,7 +63,7 @@ def _python_project(tmp_path: Path) -> Path:
         "from app.service import Service, build_store\n"
         "\n"
         "def test_record():\n"
-        "    Service(build_store()).record(\"a\")\n",
+        '    Service(build_store()).record("a")\n',
     )
     return root
 
@@ -75,9 +75,9 @@ def _js_project(tmp_path: Path) -> Path:
         "tsconfig.json",
         "{\n"
         "  // comment allowed\n"
-        "  \"compilerOptions\": {\n"
-        "    \"baseUrl\": \"src\",\n"
-        "    \"paths\": { \"@lib/*\": [\"src/lib/*\"], },\n"
+        '  "compilerOptions": {\n'
+        '    "baseUrl": "src",\n'
+        '    "paths": { "@lib/*": ["src/lib/*"], },\n'
         "  },\n"
         "}\n",
     )
@@ -85,9 +85,9 @@ def _js_project(tmp_path: Path) -> Path:
         root,
         "src/lib/api.ts",
         "export async function saveUser(user: unknown) {\n"
-        "  const response = await fetch(\"/api\", { method: \"POST\" });\n"
+        '  const response = await fetch("/api", { method: "POST" });\n'
         "  if (!response.ok) {\n"
-        "    throw new Error(\"save failed\");\n"
+        '    throw new Error("save failed");\n'
         "  }\n"
         "  return response;\n"
         "}\n",
@@ -95,13 +95,13 @@ def _js_project(tmp_path: Path) -> Path:
     _write(
         root,
         "src/lib/index.ts",
-        "export { saveUser as persistUser } from \"./api\";\n",
+        'export { saveUser as persistUser } from "./api";\n',
     )
     _write(
         root,
         "src/UserCard.tsx",
-        "import { useState } from \"react\";\n"
-        "import { persistUser } from \"@lib/index\";\n"
+        'import { useState } from "react";\n'
+        'import { persistUser } from "@lib/index";\n'
         "\n"
         "export function useSaver() {\n"
         "  const [busy, setBusy] = useState(false);\n"
@@ -122,15 +122,15 @@ def _js_project(tmp_path: Path) -> Path:
     _write(
         root,
         "src/UserCard.test.tsx",
-        "import UserCard, { useSaver } from \"./UserCard\";\n"
+        'import UserCard, { useSaver } from "./UserCard";\n'
         "\n"
-        "test(\"renders\", () => {\n"
-        "  const el = <UserCard user={{ name: \"Ada\" }} />;\n"
+        'test("renders", () => {\n'
+        '  const el = <UserCard user={{ name: "Ada" }} />;\n'
         "});\n"
         "\n"
-        "test(\"saves\", async () => {\n"
+        'test("saves", async () => {\n'
         "  const save = useSaver();\n"
-        "  await save({ name: \"Ada\" });\n"
+        '  await save({ name: "Ada" });\n'
         "});\n",
     )
     return root
@@ -163,7 +163,9 @@ def test_workspace_blocks_unsafe_paths_and_symlinks(tmp_path):
 
     assert "app/store.py" in listed
     assert "tests/test_service.py" in listed
-    assert not any(path.startswith((".", "data/", "node_modules/", "dist/")) for path in listed)
+    assert not any(
+        path.startswith((".", "data/", "node_modules/", "dist/")) for path in listed
+    )
     assert "app/secrets.py" not in listed
     assert "app/big.py" not in listed
     assert "app/vendor.min.js" not in listed
@@ -193,16 +195,12 @@ def test_workspace_discovery_is_bounded(tmp_path):
 def test_workspace_never_writes(tmp_path):
     root = _python_project(tmp_path)
     before = {
-        path: path.stat().st_mtime_ns
-        for path in root.rglob("*")
-        if path.is_file()
+        path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()
     }
     tracer = CodeTracer(root)
     tracer.trace("Service.record", mode="review")
     after = {
-        path: path.stat().st_mtime_ns
-        for path in root.rglob("*")
-        if path.is_file()
+        path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()
     }
     assert before == after
 
@@ -216,9 +214,7 @@ def test_quick_trace_python_callers_callees_and_effects(tmp_path):
 
     assert result.ok and result.target is not None
     assert result.target.path == "app/store.py"
-    caller_ids = {
-        (edge.caller_path, edge.caller_qualname) for edge in result.callers
-    }
+    caller_ids = {(edge.caller_path, edge.caller_qualname) for edge in result.callers}
     assert ("app/service.py", "Service.record") in caller_ids
     assert ("app/entry.py", "main") in caller_ids
     effect_categories = {effect.category for effect in result.side_effects}
@@ -279,9 +275,10 @@ def test_deep_trace_detects_cycles_and_transitive_effects(tmp_path):
 
 def test_deep_trace_respects_depth_limit_with_truncation_notice(tmp_path):
     root = tmp_path / "deep"
-    chain = "\n".join(
-        f"def f{i}():\n    return f{i + 1}()\n" for i in range(8)
-    ) + "\ndef f8():\n    return 1\n"
+    chain = (
+        "\n".join(f"def f{i}():\n    return f{i + 1}()\n" for i in range(8))
+        + "\ndef f8():\n    return 1\n"
+    )
     _write(root, "chain.py", chain)
     tracer = CodeTracer(root, limits=TraceLimits(max_depth=2))
     result = tracer.trace("f0", mode="deep").result
@@ -303,7 +300,9 @@ def test_dynamic_calls_are_labeled_not_guessed(tmp_path):
     result = tracer.trace("Runner.dispatch", mode="quick").result
     resolutions = {edge.resolution for edge in result.callees}
     assert "dynamic" in resolutions
-    assert all(edge.resolution != "confirmed" or edge.target_path for edge in result.callees)
+    assert all(
+        edge.resolution != "confirmed" or edge.target_path for edge in result.callees
+    )
 
 
 def test_subclass_override_marks_dispatch_ambiguous(tmp_path):
@@ -391,7 +390,7 @@ def test_review_flags_python_issues_with_lines(tmp_path):
         "\n"
         "def get_data(items=[]):\n"
         "    try:\n"
-        "        subprocess.run(\"ls\", shell=True)\n"
+        '        subprocess.run("ls", shell=True)\n'
         "    except:\n"
         "        pass\n"
         "    return items\n",
@@ -449,7 +448,9 @@ def test_review_findings_survive_into_compact_dict(tmp_path):
     from app.trace.render import to_compact_dict
 
     root = tmp_path / "compact"
-    _write(root, "app/x.py", "def f():\n    try:\n        g()\n    except:\n        pass\n")
+    _write(
+        root, "app/x.py", "def f():\n    try:\n        g()\n    except:\n        pass\n"
+    )
     tracer = CodeTracer(root)
     result = tracer.trace("f", mode="review").result
     data = to_compact_dict(result)
@@ -470,7 +471,7 @@ def test_snippets_are_redacted_and_bounded(tmp_path):
         root,
         "app/secretsish.py".replace("secretsish", "settings"),
         "def configure():\n"
-        "    api_key = \"sk-testtesttesttesttesttesttest\"\n" + body + "\n",
+        '    api_key = "sk-testtesttesttesttesttesttest"\n' + body + "\n",
     )
     tracer = CodeTracer(root, limits=TraceLimits(max_snippet_lines=10))
     result = tracer.trace("configure", mode="quick").result
@@ -542,7 +543,7 @@ def test_commonjs_require_calls_resolve_across_files(tmp_path):
     _write(
         root,
         "main.js",
-        "const { formatRow } = require(\"./lib/util\");\n"
+        'const { formatRow } = require("./lib/util");\n'
         "function run() {\n  return formatRow(1);\n}\n",
     )
     tracer = CodeTracer(root)

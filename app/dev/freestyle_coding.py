@@ -81,6 +81,7 @@ _CLI_COMMANDS = {
     "create",
     "generate-edits",
     "list",
+    "loop",
     "materialize",
     "propose",
     "recover",
@@ -244,6 +245,13 @@ class FreestyleJob:
     latest_run_artifact_path: str | None = None
     latest_run_completed_stages: tuple[str, ...] = ()
     latest_run_errors: tuple[str, ...] = ()
+    latest_loop_id: str | None = None
+    latest_loop_status: str = "not_run"
+    latest_loop_started_at: str | None = None
+    latest_loop_completed_at: str | None = None
+    latest_loop_artifact_path: str | None = None
+    latest_loop_stop_reason: str | None = None
+    latest_loop_errors: tuple[str, ...] = ()
     original_artifacts: dict[str, str | None] | None = None
     original_stage_statuses: dict[str, str] | None = None
     refinement_count: int = 0
@@ -500,6 +508,8 @@ def generate_freestyle_edit_bundle(
     goal_override: str | None = None,
     title_override: str | None = None,
     artifact_metadata: dict[str, Any] | None = None,
+    extra_preferred_paths: tuple[str, ...] = (),
+    sampling_temperature: float | None = None,
 ) -> FreestyleJob:
     """Generate and validate one provider edit bundle without applying it."""
     from app.dev.freestyle_edit_generation import generate_edit_bundle
@@ -513,6 +523,8 @@ def generate_freestyle_edit_bundle(
         goal_override=goal_override,
         title_override=title_override,
         artifact_metadata=artifact_metadata,
+        extra_preferred_paths=extra_preferred_paths,
+        sampling_temperature=sampling_temperature,
     )
     return _sync_refinement_if_needed(completed, project_root, state_root)
 
@@ -594,9 +606,7 @@ def _sync_refinement_if_needed(
         return job
     from app.dev.freestyle_refinement import sync_latest_refinement
 
-    return sync_latest_refinement(
-        job, project_root=project_root, state_root=state_root
-    )
+    return sync_latest_refinement(job, project_root=project_root, state_root=state_root)
 
 
 def run_freestyle_job(
@@ -624,6 +634,34 @@ def run_freestyle_job(
         state_root=state_root,
         deepseek_config=deepseek_config,
         deepseek_client=deepseek_client,
+    )
+
+
+def run_freestyle_loop(
+    job_id: str,
+    *,
+    run_checks: bool = True,
+    check_ids: Sequence[str] | None = None,
+    resume: bool = False,
+    project_root: Path | None = None,
+    state_root: Path | None = None,
+    deepseek_config: Any | None = None,
+    deepseek_client: Any | None = None,
+    limits: Any | None = None,
+) -> FreestyleJob:
+    """Run the bounded evidence-driven freestyle loop in the isolated worktree."""
+    from app.dev.freestyle_loop import run_freestyle_loop as run_loop
+
+    return run_loop(
+        job_id,
+        run_checks=run_checks,
+        check_ids=check_ids,
+        resume=resume,
+        project_root=project_root,
+        state_root=state_root,
+        deepseek_config=deepseek_config,
+        deepseek_client=deepseek_client,
+        limits=limits,
     )
 
 
@@ -869,9 +907,7 @@ def _run_git_blob_batch(
         or any(not _is_commit_id(blob.object_id) for blob in blobs)
     ):
         raise FreestyleJobRefusedError("Internal error: invalid git blob batch.")
-    input_bytes = b"".join(
-        blob.object_id.encode("ascii") + b"\n" for blob in blobs
-    )
+    input_bytes = b"".join(blob.object_id.encode("ascii") + b"\n" for blob in blobs)
     try:
         completed = subprocess.run(
             list(command),
@@ -929,9 +965,7 @@ def _is_allowed_materialization_git_command(args: tuple[str, ...]) -> bool:
     if suffix == ("ls-files", "-v", "-z"):
         return True
     return (
-        len(suffix) == 2
-        and suffix[0] == "read-tree"
-        and _is_commit_id(suffix[1])
+        len(suffix) == 2 and suffix[0] == "read-tree" and _is_commit_id(suffix[1])
     ) or (
         len(suffix) == 5
         and suffix[:3] == ("diff-index", "--cached", "--quiet")
@@ -951,10 +985,7 @@ def _require_git_toplevel(root: Path) -> None:
 def _head_commit(root: Path) -> str:
     result = _run_git(["git", "rev-parse", "HEAD"], root)
     commit = result.stdout.strip()
-    if (
-        result.returncode != 0
-        or not _is_commit_id(commit)
-    ):
+    if result.returncode != 0 or not _is_commit_id(commit):
         raise FreestyleJobRefusedError("Could not read a valid committed HEAD.")
     return commit
 
@@ -987,7 +1018,9 @@ def _require_clean_main_checkout(root: Path) -> None:
     )
     if result.returncode != 0:
         raise FreestyleJobRefusedError(
-            _bounded_error(result.stderr, "Could not verify that the main checkout is clean.")
+            _bounded_error(
+                result.stderr, "Could not verify that the main checkout is clean."
+            )
         )
     if result.stdout:
         raise FreestyleJobRefusedError(
@@ -1005,14 +1038,18 @@ def _require_state_inside_project(state: Path, root: Path) -> None:
             "Freestyle dev state must stay inside the project root."
         ) from exc
     if state == root:
-        raise FreestyleJobRefusedError("Freestyle dev state cannot be the project root.")
+        raise FreestyleJobRefusedError(
+            "Freestyle dev state cannot be the project root."
+        )
 
 
 def _validated_job_worktree(job: FreestyleJob, root: Path, state: Path) -> Path:
     expected = state / "worktrees" / job.job_id
     supplied = Path(job.worktree_path)
     if not supplied.is_absolute() or supplied != expected:
-        raise FreestyleJobRefusedError("Job worktree path does not match local dev state.")
+        raise FreestyleJobRefusedError(
+            "Job worktree path does not match local dev state."
+        )
     if not expected.is_dir() or expected.is_symlink():
         raise FreestyleJobRefusedError("Job worktree is missing or is a symlink.")
     try:
@@ -1023,12 +1060,18 @@ def _validated_job_worktree(job: FreestyleJob, root: Path, state: Path) -> Path:
         ) from exc
     _require_git_toplevel(expected)
     if _head_commit(expected) != job.base_commit:
-        raise FreestyleJobRefusedError("Job worktree HEAD does not match its base commit.")
+        raise FreestyleJobRefusedError(
+            "Job worktree HEAD does not match its base commit."
+        )
     branch = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], expected)
     if branch.returncode != 0 or branch.stdout.strip() != job.branch:
-        raise FreestyleJobRefusedError("Job worktree branch does not match its metadata.")
+        raise FreestyleJobRefusedError(
+            "Job worktree branch does not match its metadata."
+        )
     if job.branch != f"{BRANCH_PREFIX}{job.job_id[:12]}":
-        raise FreestyleJobRefusedError("Job branch does not match its generated job id.")
+        raise FreestyleJobRefusedError(
+            "Job branch does not match its generated job id."
+        )
     if not _is_commit_id(job.base_commit):
         raise FreestyleJobRefusedError("Job base commit is invalid.")
     return expected
@@ -1129,7 +1172,8 @@ def _synchronize_materialized_worktree_index(
         if skip_omitted.returncode != 0:
             raise FreestyleJobRefusedError(
                 _bounded_error(
-                    skip_omitted.stderr, "Git omitted-path index synchronization failed."
+                    skip_omitted.stderr,
+                    "Git omitted-path index synchronization failed.",
                 )
             )
 
@@ -1205,9 +1249,7 @@ def _require_expected_materialized_index(
             )
 
 
-def _archive_snapshot(
-    blobs: tuple[SnapshotBlob, ...], root: Path
-) -> tuple[bytes, ...]:
+def _archive_snapshot(blobs: tuple[SnapshotBlob, ...], root: Path) -> tuple[bytes, ...]:
     archives: list[bytes] = []
     total_archive_bytes = 0
     total_blob_bytes = 0
@@ -1292,7 +1334,9 @@ def _parse_git_blob_batch(
     for blob, expected_size in zip(blobs, expected_sizes):
         header_end = output.find(b"\n", offset)
         if header_end < 0:
-            raise FreestyleJobRefusedError("Git blob extraction returned malformed output.")
+            raise FreestyleJobRefusedError(
+                "Git blob extraction returned malformed output."
+            )
         header = output[offset:header_end].split(b" ")
         try:
             object_id = header[0].decode("ascii")
@@ -1313,7 +1357,9 @@ def _parse_git_blob_batch(
             or content_end >= len(output)
             or output[content_end : content_end + 1] != b"\n"
         ):
-            raise FreestyleJobRefusedError("Git blob extraction returned malformed output.")
+            raise FreestyleJobRefusedError(
+                "Git blob extraction returned malformed output."
+            )
         contents.append(output[content_start:content_end])
         offset = content_end + 1
     if offset != len(output):
@@ -1427,7 +1473,9 @@ def _extract_preflighted_archive(
             _require_safe_extraction_target(target, worktree)
             source = snapshot.extractfile(member)
             if source is None:
-                raise FreestyleJobRefusedError("Could not read a repository archive file.")
+                raise FreestyleJobRefusedError(
+                    "Could not read a repository archive file."
+                )
             with source, target.open("xb") as destination:
                 while chunk := source.read(64 * 1024):
                     destination.write(chunk)
@@ -1469,7 +1517,9 @@ def _write_job(job: FreestyleJob, state: Path) -> None:
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise FreestyleJobRefusedError("Freestyle job metadata path is unsafe.")
     if temporary.exists() or temporary.is_symlink():
-        raise FreestyleJobRefusedError("Freestyle job temporary metadata path is unsafe.")
+        raise FreestyleJobRefusedError(
+            "Freestyle job temporary metadata path is unsafe."
+        )
     temporary.write_text(
         json.dumps(asdict(job), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -1530,9 +1580,7 @@ def _read_job(path: Path) -> FreestyleJob:
         payload["review_repo_map_warnings"] = tuple(
             payload.get("review_repo_map_warnings", ())
         )
-        payload["review_plan_warnings"] = tuple(
-            payload.get("review_plan_warnings", ())
-        )
+        payload["review_plan_warnings"] = tuple(payload.get("review_plan_warnings", ()))
         payload["review_errors"] = tuple(payload.get("review_errors", ()))
         payload.setdefault("checks_status", "not_run")
         payload.setdefault("checks_started_at", None)
@@ -1554,6 +1602,13 @@ def _read_job(path: Path) -> FreestyleJob:
             payload.get("latest_run_completed_stages", ())
         )
         payload["latest_run_errors"] = tuple(payload.get("latest_run_errors", ()))
+        payload.setdefault("latest_loop_id", None)
+        payload.setdefault("latest_loop_status", "not_run")
+        payload.setdefault("latest_loop_started_at", None)
+        payload.setdefault("latest_loop_completed_at", None)
+        payload.setdefault("latest_loop_artifact_path", None)
+        payload.setdefault("latest_loop_stop_reason", None)
+        payload["latest_loop_errors"] = tuple(payload.get("latest_loop_errors", ()))
         payload.setdefault("original_artifacts", None)
         payload.setdefault("original_stage_statuses", None)
         payload.setdefault("refinement_count", 0)
@@ -1575,7 +1630,9 @@ def _read_job(path: Path) -> FreestyleJob:
         payload["refinement_history"] = tuple(history)
         return FreestyleJob(**payload)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise FreestyleJobRefusedError(f"Could not read freestyle job {path.stem!r}.") from exc
+        raise FreestyleJobRefusedError(
+            f"Could not read freestyle job {path.stem!r}."
+        ) from exc
 
 
 def _validated_jobs_dir(state: Path, *, create: bool) -> Path:
@@ -1597,13 +1654,14 @@ def _validated_jobs_dir(state: Path, *, create: bool) -> Path:
 
 def _validate_job_id(job_id: str) -> None:
     if not is_job_id(job_id):
-        raise FreestyleJobRefusedError("Job id must be a 32-character lowercase hex id.")
+        raise FreestyleJobRefusedError(
+            "Job id must be a 32-character lowercase hex id."
+        )
 
 
 def _is_commit_id(value: str) -> bool:
-    return (
-        len(value) == 40
-        and all(character in "0123456789abcdef" for character in value)
+    return len(value) == 40 and all(
+        character in "0123456789abcdef" for character in value
     )
 
 
@@ -1616,9 +1674,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _require_explicit_developer_approval(
-    job: FreestyleJob, operation: str
-) -> None:
+def _require_explicit_developer_approval(job: FreestyleJob, operation: str) -> None:
     if job.developer_approved is not True:
         raise FreestyleJobRefusedError(
             f"Freestyle job {job.job_id!r} cannot {operation}: explicit persisted "
@@ -1699,6 +1755,11 @@ def _failed_artifact_path(command: str | None, job_id: str | None) -> str | None
             "latest_run_status",
             {"error", "failed", "refused"},
             "latest_run_artifact_path",
+        ),
+        "loop": (
+            "latest_loop_status",
+            {"stopped", "safety_stop", "exhausted"},
+            "latest_loop_artifact_path",
         ),
         "refine": (
             "latest_refinement_status",
@@ -1878,6 +1939,28 @@ def main(argv: list[str] | None = None) -> int:
         metavar="CHECK_ID",
         help="Allowlisted check id to run (repeatable); requires --run-checks.",
     )
+    loop_parser = subparsers.add_parser(
+        "loop",
+        help="Run the bounded evidence-driven loop and stop for human approval.",
+    )
+    loop_parser.add_argument("job_id")
+    loop_parser.add_argument(
+        "--no-checks",
+        action="store_true",
+        help="Skip allowlisted checks for this loop attempt.",
+    )
+    loop_parser.add_argument(
+        "--check",
+        action="append",
+        dest="check_ids",
+        metavar="CHECK_ID",
+        help="Allowlisted check id to run (repeatable); omitted means all available.",
+    )
+    loop_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a previously running loop artifact for this job.",
+    )
     refine_parser = subparsers.add_parser(
         "refine",
         help="Generate a refinement bundle from the current isolated worktree.",
@@ -2004,6 +2087,15 @@ def main(argv: list[str] | None = None) -> int:
             _print_job(review_freestyle_job(args.job_id))
         elif args.command == "run-checks":
             _print_job(run_freestyle_checks(args.job_id, check_ids=args.check_ids))
+        elif args.command == "loop":
+            _print_job(
+                run_freestyle_loop(
+                    args.job_id,
+                    run_checks=not args.no_checks,
+                    check_ids=args.check_ids,
+                    resume=args.resume,
+                )
+            )
         elif args.command == "cleanup":
             print(
                 json.dumps(

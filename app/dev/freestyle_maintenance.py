@@ -68,9 +68,10 @@ def get_freestyle_cleanup_status(
     """Return a read-only inventory of jobs and their local maintenance state."""
     root, state = _maintenance_roots(project_root, state_root)
     _require_git_toplevel(root)
-    jobs = {job.job_id: job for job in list_freestyle_jobs(
-        project_root=root, state_root=state
-    )}
+    jobs = {
+        job.job_id: job
+        for job in list_freestyle_jobs(project_root=root, state_root=state)
+    }
     worktrees = _registered_worktrees(root)
     branches = _freestyle_branches(root)
     job_ids = set(jobs)
@@ -173,17 +174,24 @@ def cleanup_freestyle_job(
         result = _run_maintenance_git(args, root)
         git_operations.append(_git_operation_record(result))
         if result.returncode != 0:
-            reason = _bounded_error(result.stderr or result.stdout,
-                                    "Could not remove isolated worktree.")
+            reason = _bounded_error(
+                result.stderr or result.stdout, "Could not remove isolated worktree."
+            )
             _write_refusal_artifact(
-                "cleanup", job, state, status, reason,
+                "cleanup",
+                job,
+                state,
+                status,
+                reason,
                 git_operations=git_operations,
             )
             raise FreestyleJobRefusedError(reason)
         actions.append("removed_validated_isolated_worktree")
         removed.append(_relative_state_path(worktree, state))
     elif worktree.exists() or worktree.is_symlink():
-        reason = "Expected worktree path exists but is not a registered matching worktree."
+        reason = (
+            "Expected worktree path exists but is not a registered matching worktree."
+        )
         _write_refusal_artifact("cleanup", job, state, status, reason)
         raise FreestyleJobRefusedError(reason)
 
@@ -197,10 +205,16 @@ def cleanup_freestyle_job(
         result = _run_maintenance_git(args, root)
         git_operations.append(_git_operation_record(result))
         if result.returncode != 0:
-            reason = _bounded_error(result.stderr or result.stdout,
-                                    "Could not remove local freestyle branch.")
+            reason = _bounded_error(
+                result.stderr or result.stdout,
+                "Could not remove local freestyle branch.",
+            )
             _write_refusal_artifact(
-                "cleanup", job, state, status, reason,
+                "cleanup",
+                job,
+                state,
+                status,
+                reason,
                 git_operations=git_operations,
             )
             raise FreestyleJobRefusedError(reason)
@@ -273,8 +287,7 @@ def recover_freestyle_job(
         raise FreestyleJobRefusedError(reason)
     if status["inconsistent"] and not confirm_inconsistent:
         reason = (
-            "Recovery will not clear inconsistent state without "
-            "--confirm-inconsistent."
+            "Recovery will not clear inconsistent state without --confirm-inconsistent."
         )
         _write_refusal_artifact("recover", job, state, status, reason)
         raise FreestyleJobRefusedError(reason)
@@ -443,15 +456,25 @@ def _job_cleanup_status(
     )
     if worktree_registered and not mismatched and job:
         if worktree_not_checked_out:
-            entries = [
-                path.name for path in expected_worktree.iterdir()
-                if path.name != ".git"
-            ] if expected_worktree.is_dir() and not expected_worktree.is_symlink() else []
+            entries = (
+                [
+                    path.name
+                    for path in expected_worktree.iterdir()
+                    if path.name != ".git"
+                ]
+                if expected_worktree.is_dir() and not expected_worktree.is_symlink()
+                else []
+            )
             dirty_paths = sorted(entries)
         else:
             result = _run_maintenance_git(
-                [*_MAINTENANCE_GIT_PREFIX, "status", "--porcelain=v1", "-z",
-                 "--untracked-files=all"],
+                [
+                    *_MAINTENANCE_GIT_PREFIX,
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                ],
                 expected_worktree,
             )
             if result.returncode == 0:
@@ -472,11 +495,7 @@ def _job_cleanup_status(
     else:
         dirty_reason = None
     orphaned = job is None or bool(
-        job and (
-            not worktree_exists
-            or not worktree_registered
-            or not branch_exists
-        )
+        job and (not worktree_exists or not worktree_registered or not branch_exists)
     )
     stale = bool(active_fields and job and _is_stale(job.updated_at))
     active = bool(active_fields)
@@ -568,7 +587,9 @@ def _recommended_action(
     worktree_not_checked_out: bool,
 ) -> str:
     if job is None:
-        return "Inspect orphaned local artifacts manually; cleanup requires job metadata."
+        return (
+            "Inspect orphaned local artifacts manually; cleanup requires job metadata."
+        )
     if mismatched:
         return "Inspect mismatched worktree and branch metadata manually."
     if inconsistent:
@@ -576,8 +597,8 @@ def _recommended_action(
     if active:
         return (
             "Use recover --confirm after verifying the operation is abandoned."
-            if stale else
-            "Verify the operation is abandoned before using recover --confirm."
+            if stale
+            else "Verify the operation is abandoned before using recover --confirm."
         )
     if dirty:
         return "Review isolated changes, or clean with explicit discard confirmation."
@@ -651,7 +672,9 @@ def _is_stale(timestamp: str) -> bool:
         updated = datetime.fromisoformat(timestamp)
         if updated.tzinfo is None:
             return True
-        return datetime.now(timezone.utc) - updated.astimezone(timezone.utc) >= STALE_AFTER
+        return (
+            datetime.now(timezone.utc) - updated.astimezone(timezone.utc) >= STALE_AFTER
+        )
     except (TypeError, ValueError):
         return True
 
@@ -714,7 +737,9 @@ def _freestyle_branches(root: Path) -> dict[str, str]:
         try:
             branch, commit = line.split("\x00", 1)
         except ValueError as exc:
-            raise FreestyleJobRefusedError("Git returned malformed branch metadata.") from exc
+            raise FreestyleJobRefusedError(
+                "Git returned malformed branch metadata."
+            ) from exc
         if branch.startswith(BRANCH_PREFIX) and _is_commit_id(commit):
             found[branch] = commit
     return found
@@ -730,7 +755,9 @@ def _job_id_from_worktree_path(path: Path, state: Path) -> str | None:
         relative = path.relative_to(state / "worktrees")
     except ValueError:
         return None
-    return relative.name if len(relative.parts) == 1 and is_job_id(relative.name) else None
+    return (
+        relative.name if len(relative.parts) == 1 and is_job_id(relative.name) else None
+    )
 
 
 def _parse_status_paths(output: str) -> list[str]:
@@ -754,7 +781,9 @@ def _remove_allowed_state_path(path: Path, state: Path) -> None:
 def _validate_allowed_state_path(path: Path, state: Path) -> None:
     allowed_parents = {state / name for name in _JOB_ARTIFACT_DIRS}
     if path.parent not in allowed_parents or not is_job_id(path.name):
-        raise FreestyleJobRefusedError("Cleanup path is outside allowed local artifacts.")
+        raise FreestyleJobRefusedError(
+            "Cleanup path is outside allowed local artifacts."
+        )
     if path.parent.is_symlink() or not path.parent.is_dir():
         raise FreestyleJobRefusedError("Cleanup artifact parent is unsafe.")
     try:
@@ -771,7 +800,9 @@ def _relative_state_path(path: Path, state: Path) -> str:
     try:
         return path.relative_to(state).as_posix()
     except ValueError as exc:
-        raise FreestyleJobRefusedError("Maintenance path escaped local dev state.") from exc
+        raise FreestyleJobRefusedError(
+            "Maintenance path escaped local dev state."
+        ) from exc
 
 
 def _append_bounded(values: tuple[str, ...], note: str) -> tuple[str, ...]:
@@ -857,7 +888,9 @@ def _git_operation_record(result: GitCommandResult) -> dict[str, Any]:
 def _run_maintenance_git(args: list[str], cwd: Path) -> GitCommandResult:
     command = tuple(args)
     if not _is_allowed_maintenance_git(command):
-        raise FreestyleJobRefusedError("Internal error: forbidden maintenance git operation.")
+        raise FreestyleJobRefusedError(
+            "Internal error: forbidden maintenance git operation."
+        )
     try:
         completed = subprocess.run(
             args,
@@ -883,7 +916,7 @@ def _run_maintenance_git(args: list[str], cwd: Path) -> GitCommandResult:
 def _is_allowed_maintenance_git(args: tuple[str, ...]) -> bool:
     if args[: len(_MAINTENANCE_GIT_PREFIX)] != _MAINTENANCE_GIT_PREFIX:
         return False
-    suffix = args[len(_MAINTENANCE_GIT_PREFIX):]
+    suffix = args[len(_MAINTENANCE_GIT_PREFIX) :]
     if suffix in {
         ("worktree", "list", "--porcelain"),
         ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
@@ -914,6 +947,6 @@ def _is_allowed_maintenance_git(args: tuple[str, ...]) -> bool:
         and len(suffix[2]) == len(BRANCH_PREFIX) + 12
         and all(
             character in "0123456789abcdef"
-            for character in suffix[2][len(BRANCH_PREFIX):]
+            for character in suffix[2][len(BRANCH_PREFIX) :]
         )
     )

@@ -561,6 +561,7 @@ class ToolRegistry:
                 for item in results
             ],
         }
+
     def _list_project_files(self, args: dict[str, Any]) -> dict[str, Any]:
         if args:
             return {

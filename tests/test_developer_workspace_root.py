@@ -6,6 +6,7 @@ the configured external workspace, never silently on the Lewis repo.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 
@@ -88,7 +89,7 @@ def test_resolve_developer_workspace_root_rejects_missing_path(tmp_path):
     missing = tmp_path / "does-not-exist"
     settings = _base_settings(developer_workspace_root=missing)
 
-    with pytest.raises(DeveloperWorkspaceRootError, match=str(missing)):
+    with pytest.raises(DeveloperWorkspaceRootError, match=re.escape(str(missing))):
         resolve_developer_workspace_root(settings, default=tmp_path)
 
 
@@ -149,7 +150,7 @@ def test_build_agent_rejects_missing_external_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("LEWIS_DEVELOPER_WORKSPACE_ROOT", str(missing))
     monkeypatch.setenv("LEWIS_DB_PATH", str(tmp_path / "test.sqlite3"))
 
-    with pytest.raises(DeveloperWorkspaceRootError, match=str(missing)):
+    with pytest.raises(DeveloperWorkspaceRootError, match=re.escape(str(missing))):
         build_agent()
 
 

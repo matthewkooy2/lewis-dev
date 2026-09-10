@@ -229,9 +229,7 @@ def test_running_state_refusal_is_clean_and_does_not_clear_state(
     assert persisted.proposal_status == "proposing"
 
 
-def test_expected_error_output_redacts_secret_environment_values(
-    monkeypatch, capsys
-):
+def test_expected_error_output_redacts_secret_environment_values(monkeypatch, capsys):
     secret = "secret-value-that-must-not-appear"
     monkeypatch.setenv("DEEPSEEK_API_KEY", secret)
 

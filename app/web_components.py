@@ -14,12 +14,26 @@ from app.memory_store import Memory, MemoryEvent
 
 
 def page_html(
-    title: str, active_path: str, content: str, *, show_dev_navigation: bool = False
+    title: str,
+    active_path: str,
+    content: str,
+    *,
+    show_dev_navigation: bool = False,
+    show_coding_agents_navigation: bool = False,
+    show_projects_navigation: bool = False,
 ) -> str:
-    dev_navigation = (
-        nav_group(active_path, "Developer", (("/dev/freestyle", "Freestyle"),))
-        if show_dev_navigation
+    projects_navigation = (
+        nav_group(active_path, "Projects", (("/projects", "Projects"),))
+        if show_projects_navigation
         else ""
+    )
+    dev_links = []
+    if show_dev_navigation:
+        dev_links.append(("/dev/freestyle", "Freestyle"))
+    if show_coding_agents_navigation:
+        dev_links.append(("/dev/coding-agents", "Coding Agents"))
+    dev_navigation = (
+        nav_group(active_path, "Developer", tuple(dev_links)) if dev_links else ""
     )
     return f"""<!doctype html>
 <html lang="en">
@@ -36,6 +50,7 @@ def page_html(
       {nav_group(active_path, "Overview", (("/dashboard", "Dashboard"), ("/usage", "Usage")))}
       {nav_group(active_path, "Review", (("/approvals", "Approvals"), ("/tasks", "Tasks"), ("/calendar", "Calendar"), ("/history", "History")))}
       {nav_group(active_path, "Knowledge", (("/memories", "Memories"), ("/documents", "Document Search")))}
+      {projects_navigation}
       {nav_group(active_path, "Assistant", (("/chat", "Chat"),))}
       {dev_navigation}
     </nav>
@@ -46,9 +61,7 @@ def page_html(
 </html>"""
 
 
-def nav_group(
-    active_path: str, label: str, links: tuple[tuple[str, str], ...]
-) -> str:
+def nav_group(active_path: str, label: str, links: tuple[tuple[str, str], ...]) -> str:
     items = "".join(nav_link(active_path, path, text) for path, text in links)
     return (
         "<div class='nav-group'>"
@@ -619,7 +632,9 @@ def type_badge(action_type: object) -> str:
 
 
 def flash(message: str) -> str:
-    return f"<div class='flash' role='status'>{escape(message)}</div>" if message else ""
+    return (
+        f"<div class='flash' role='status'>{escape(message)}</div>" if message else ""
+    )
 
 
 def payload_value(payload: dict[str, object], *keys: str) -> object | None:

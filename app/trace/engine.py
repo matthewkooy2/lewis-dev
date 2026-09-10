@@ -39,50 +39,188 @@ from app.trace.project_index import ProjectIndex
 
 PYTHON_BUILTINS = frozenset(
     {
-        "abs", "all", "any", "bool", "bytes", "callable", "chr", "classmethod",
-        "dict", "dir", "divmod", "enumerate", "filter", "float", "format",
-        "frozenset", "getattr", "hasattr", "hash", "hex", "id", "int",
-        "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min",
-        "next", "object", "oct", "ord", "pow", "property", "range", "repr",
-        "reversed", "round", "set", "setattr", "slice", "sorted",
-        "staticmethod", "str", "sum", "super", "tuple", "type", "vars", "zip",
-        "print", "input", "open", "Exception", "ValueError", "TypeError",
-        "KeyError", "IndexError", "RuntimeError", "OSError", "IOError",
-        "AttributeError", "NotImplementedError", "StopIteration",
-        "FileNotFoundError", "PermissionError", "KeyboardInterrupt",
-        "ZeroDivisionError", "ArithmeticError", "LookupError", "NameError",
-        "UnicodeDecodeError", "UnicodeEncodeError", "ConnectionError",
-        "TimeoutError", "InterruptedError", "AssertionError", "BaseException",
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "bytes",
+        "callable",
+        "chr",
+        "classmethod",
+        "dict",
+        "dir",
+        "divmod",
+        "enumerate",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "getattr",
+        "hasattr",
+        "hash",
+        "hex",
+        "id",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "map",
+        "max",
+        "min",
+        "next",
+        "object",
+        "oct",
+        "ord",
+        "pow",
+        "property",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "setattr",
+        "slice",
+        "sorted",
+        "staticmethod",
+        "str",
+        "sum",
+        "super",
+        "tuple",
+        "type",
+        "vars",
+        "zip",
+        "print",
+        "input",
+        "open",
+        "Exception",
+        "ValueError",
+        "TypeError",
+        "KeyError",
+        "IndexError",
+        "RuntimeError",
+        "OSError",
+        "IOError",
+        "AttributeError",
+        "NotImplementedError",
+        "StopIteration",
+        "FileNotFoundError",
+        "PermissionError",
+        "KeyboardInterrupt",
+        "ZeroDivisionError",
+        "ArithmeticError",
+        "LookupError",
+        "NameError",
+        "UnicodeDecodeError",
+        "UnicodeEncodeError",
+        "ConnectionError",
+        "TimeoutError",
+        "InterruptedError",
+        "AssertionError",
+        "BaseException",
     }
 )
 
 JS_GLOBALS = frozenset(
     {
-        "Array", "ArrayBuffer", "BigInt", "Boolean", "DataView", "Date",
-        "Error", "EvalError", "Function", "Infinity", "Intl", "JSON", "Map",
-        "Math", "NaN", "Number", "Object", "Promise", "Proxy", "RangeError",
-        "ReferenceError", "Reflect", "RegExp", "Set", "String", "Symbol",
-        "SyntaxError", "TypeError", "URIError", "URL", "URLSearchParams",
-        "WeakMap", "WeakSet", "decodeURI", "decodeURIComponent", "encodeURI",
-        "encodeURIComponent", "eval", "isFinite", "isNaN", "parseFloat",
-        "parseInt", "structuredClone", "fetch", "console", "setTimeout",
-        "setInterval", "clearTimeout", "clearInterval", "requestAnimationFrame",
-        "queueMicrotask", "alert", "confirm", "prompt", "document", "window",
-        "navigator", "location", "history", "localStorage", "sessionStorage",
-        "crypto", "require", "String", "Buffer", "process", "globalThis",
+        "Array",
+        "ArrayBuffer",
+        "BigInt",
+        "Boolean",
+        "DataView",
+        "Date",
+        "Error",
+        "EvalError",
+        "Function",
+        "Infinity",
+        "Intl",
+        "JSON",
+        "Map",
+        "Math",
+        "NaN",
+        "Number",
+        "Object",
+        "Promise",
+        "Proxy",
+        "RangeError",
+        "ReferenceError",
+        "Reflect",
+        "RegExp",
+        "Set",
+        "String",
+        "Symbol",
+        "SyntaxError",
+        "TypeError",
+        "URIError",
+        "URL",
+        "URLSearchParams",
+        "WeakMap",
+        "WeakSet",
+        "decodeURI",
+        "decodeURIComponent",
+        "encodeURI",
+        "encodeURIComponent",
+        "eval",
+        "isFinite",
+        "isNaN",
+        "parseFloat",
+        "parseInt",
+        "structuredClone",
+        "fetch",
+        "console",
+        "setTimeout",
+        "setInterval",
+        "clearTimeout",
+        "clearInterval",
+        "requestAnimationFrame",
+        "queueMicrotask",
+        "alert",
+        "confirm",
+        "prompt",
+        "document",
+        "window",
+        "navigator",
+        "location",
+        "history",
+        "localStorage",
+        "sessionStorage",
+        "crypto",
+        "require",
+        "String",
+        "Buffer",
+        "process",
+        "globalThis",
     }
 )
 
 FRAMEWORK_DECORATOR_MARKERS = (
-    ".get(", ".post(", ".put(", ".patch(", ".delete(", ".head(", ".options(",
-    ".route(", ".websocket(", ".middleware(", ".exception_handler(",
-    ".on_event(", "fixture", ".command(", ".task(",
+    ".get(",
+    ".post(",
+    ".put(",
+    ".patch(",
+    ".delete(",
+    ".head(",
+    ".options(",
+    ".route(",
+    ".websocket(",
+    ".middleware(",
+    ".exception_handler(",
+    ".on_event(",
+    "fixture",
+    ".command(",
+    ".task(",
 )
 
 CALLABLE_KINDS = frozenset(
     {
-        "function", "async_function", "method", "async_method",
-        KIND_COMPONENT, KIND_HOOK, KIND_CLASS,
+        "function",
+        "async_function",
+        "method",
+        "async_method",
+        KIND_COMPONENT,
+        KIND_HOOK,
+        KIND_CLASS,
     }
 )
 
@@ -90,12 +228,47 @@ CALLABLE_KINDS = frozenset(
 # unknown (they collide with stdlib/DB-API/collection methods constantly).
 COMMON_METHOD_NAMES = frozenset(
     {
-        "add", "append", "clear", "close", "commit", "connect", "copy",
-        "count", "create", "delete", "execute", "extend", "find", "format",
-        "get", "insert", "items", "join", "keys", "list", "load", "open",
-        "pop", "push", "put", "read", "remove", "rollback", "run", "save",
-        "search", "send", "set", "sort", "split", "start", "stop", "strip",
-        "update", "values", "write",
+        "add",
+        "append",
+        "clear",
+        "close",
+        "commit",
+        "connect",
+        "copy",
+        "count",
+        "create",
+        "delete",
+        "execute",
+        "extend",
+        "find",
+        "format",
+        "get",
+        "insert",
+        "items",
+        "join",
+        "keys",
+        "list",
+        "load",
+        "open",
+        "pop",
+        "push",
+        "put",
+        "read",
+        "remove",
+        "rollback",
+        "run",
+        "save",
+        "search",
+        "send",
+        "set",
+        "sort",
+        "split",
+        "start",
+        "stop",
+        "strip",
+        "update",
+        "values",
+        "write",
     }
 )
 
@@ -191,7 +364,9 @@ class TraceEngine:
         self, spec: str, file_path: str | None
     ) -> list[SymbolDefinition]:
         scoped = (
-            [self.index.modules[file_path]] if file_path else self.index.modules.values()
+            [self.index.modules[file_path]]
+            if file_path
+            else self.index.modules.values()
         )
         exact: list[SymbolDefinition] = []
         by_name: list[SymbolDefinition] = []
@@ -251,7 +426,9 @@ class TraceEngine:
     ) -> ResolvedCallee:
         if call.is_dynamic:
             return ResolvedCallee(
-                "dynamic", None, RESOLUTION_DYNAMIC,
+                "dynamic",
+                None,
+                RESOLUTION_DYNAMIC,
                 note="call target is computed at runtime",
             )
         if call.jsx_component:
@@ -262,11 +439,15 @@ class TraceEngine:
             resolved = self._resolve_name(module, call.head, call.caller_qualname)
             if resolved is not None:
                 return ResolvedCallee(
-                    "project", resolved, RESOLUTION_FRAMEWORK,
+                    "project",
+                    resolved,
+                    RESOLUTION_FRAMEWORK,
                     note="registered as an event handler/callback",
                 )
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note="handler reference not found in workspace",
             )
         receiver = call.receiver_type
@@ -293,7 +474,9 @@ class TraceEngine:
                 method = self.index.resolve_method(scoped, call.attr_chain[0])
                 if method is not None and len(call.attr_chain) == 1:
                     return ResolvedCallee(
-                        "project", method, RESOLUTION_CONFIRMED,
+                        "project",
+                        method,
+                        RESOLUTION_CONFIRMED,
                         note=f"class-level call on {scoped.name}",
                     )
 
@@ -303,7 +486,9 @@ class TraceEngine:
 
         if self._is_builtin(module, call.head):
             return ResolvedCallee(
-                "external", None, RESOLUTION_EXTERNAL,
+                "external",
+                None,
+                RESOLUTION_EXTERNAL,
                 note=(
                     "python builtin"
                     if module.language == LANGUAGE_PYTHON
@@ -317,7 +502,9 @@ class TraceEngine:
     ) -> ResolvedCallee:
         if call.attr_chain:
             return ResolvedCallee(
-                "dynamic", None, RESOLUTION_DYNAMIC,
+                "dynamic",
+                None,
+                RESOLUTION_DYNAMIC,
                 note=(
                     f"call on a property of locally bound `{call.head}` "
                     "(injected value; target depends on the caller)"
@@ -329,8 +516,7 @@ class TraceEngine:
         )
         if call.local_default_line is not None:
             note += (
-                f"; default implementation at "
-                f"{module.path}:{call.local_default_line}"
+                f"; default implementation at {module.path}:{call.local_default_line}"
             )
         return ResolvedCallee("dynamic", None, RESOLUTION_DYNAMIC, note=note)
 
@@ -340,22 +526,30 @@ class TraceEngine:
         resolved = self._resolve_name(module, call.head, call.caller_qualname)
         if resolved is not None and not call.attr_chain:
             return ResolvedCallee(
-                "project", resolved, RESOLUTION_FRAMEWORK,
+                "project",
+                resolved,
+                RESOLUTION_FRAMEWORK,
                 note="rendered as JSX; React invokes the component",
             )
         via_import = self._resolve_via_imports(module, call)
         if via_import is not None and via_import.kind == "project":
             return ResolvedCallee(
-                "project", via_import.definition, RESOLUTION_FRAMEWORK,
+                "project",
+                via_import.definition,
+                RESOLUTION_FRAMEWORK,
                 note="rendered as JSX; React invokes the component",
             )
         if via_import is not None and via_import.kind == "external":
             return ResolvedCallee(
-                "external", None, RESOLUTION_EXTERNAL,
+                "external",
+                None,
+                RESOLUTION_EXTERNAL,
                 note="component imported from an external package",
             )
         return ResolvedCallee(
-            "unresolved", None, RESOLUTION_UNRESOLVED,
+            "unresolved",
+            None,
+            RESOLUTION_UNRESOLVED,
             note="JSX component not found in workspace",
         )
 
@@ -367,7 +561,7 @@ class TraceEngine:
     ) -> tuple[SymbolDefinition | None, str]:
         """Class definition for a type hint, following `~call:` factory hints."""
         if hint.startswith("~call:"):
-            callee = hint[len("~call:"):]
+            callee = hint[len("~call:") :]
             factory = self._resolve_dotted_name(module, callee, caller_qualname)
             if factory is None:
                 return None, ""
@@ -387,7 +581,7 @@ class TraceEngine:
         """External module name when a `~call:` factory is an external import."""
         if not hint.startswith("~call:"):
             return None
-        head = hint[len("~call:"):].split(".")[0]
+        head = hint[len("~call:") :].split(".")[0]
         for binding in module.imports:
             if binding.kind == "star" or binding.local_name != head:
                 continue
@@ -440,10 +634,11 @@ class TraceEngine:
             external_source = self._factory_is_external(module, receiver)
             if external_source is not None:
                 return ResolvedCallee(
-                    "external", None, RESOLUTION_EXTERNAL,
+                    "external",
+                    None,
+                    RESOLUTION_EXTERNAL,
                     note=(
-                        f"method on an object created by external "
-                        f"`{external_source}`"
+                        f"method on an object created by external `{external_source}`"
                     ),
                 )
             class_def, receiver_note = self._class_from_type_hint(
@@ -462,7 +657,9 @@ class TraceEngine:
             )
             if not attr_type:
                 return ResolvedCallee(
-                    "unresolved", None, RESOLUTION_UNRESOLVED,
+                    "unresolved",
+                    None,
+                    RESOLUTION_UNRESOLVED,
                     note=(
                         f"attribute `{attribute}` on {current.name} has no "
                         "statically known type"
@@ -473,7 +670,9 @@ class TraceEngine:
             )
             if next_def is None or next_def.kind != KIND_CLASS:
                 return ResolvedCallee(
-                    "unresolved", None, RESOLUTION_UNRESOLVED,
+                    "unresolved",
+                    None,
+                    RESOLUTION_UNRESOLVED,
                     note=f"receiver type `{attr_type}` not found in workspace",
                 )
             current = next_def
@@ -482,17 +681,19 @@ class TraceEngine:
         method = self.index.resolve_method(current, method_name)
         if method is None:
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note=f"no method `{method_name}` found on {current.name} or its bases",
             )
         overrides = self.index.subclass_overrides(current, method_name)
         if overrides:
             candidates = tuple([method, *overrides][: self.limits.max_candidates])
             return ResolvedCallee(
-                "ambiguous", method, RESOLUTION_AMBIGUOUS,
-                note=(
-                    f"dynamic dispatch: {len(overrides)} subclass override(s) exist"
-                ),
+                "ambiguous",
+                method,
+                RESOLUTION_AMBIGUOUS,
+                note=(f"dynamic dispatch: {len(overrides)} subclass override(s) exist"),
                 candidates=candidates,
             )
         inherited = method.path != current.path or not method.qualname.startswith(
@@ -524,12 +725,16 @@ class TraceEngine:
         resolved = self.index.resolve_import_binding(module, binding, name_in_module)
         if resolved == "external":
             return ResolvedCallee(
-                "external", None, RESOLUTION_EXTERNAL,
+                "external",
+                None,
+                RESOLUTION_EXTERNAL,
                 note=f"from external module `{binding.source_module}`",
             )
         if resolved == (None, None):
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note=(
                     f"`{name_in_module or binding.local_name}` not found in "
                     f"module `{binding.source_module}`"
@@ -542,15 +747,11 @@ class TraceEngine:
             if base is not None:
                 qualname = base.qualname
                 remainder = remainder[1:]
-        definition = (
-            self.index.definition_at(path, qualname) if qualname else None
-        )
+        definition = self.index.definition_at(path, qualname) if qualname else None
         for part in remainder:
             if definition is None:
                 break
-            nested = self.index.definition_at(
-                path, f"{definition.qualname}.{part}"
-            )
+            nested = self.index.definition_at(path, f"{definition.qualname}.{part}")
             if nested is None and definition.kind == KIND_CLASS:
                 nested = self.index.resolve_method(definition, part)
             definition = nested
@@ -559,11 +760,15 @@ class TraceEngine:
         if definition is None:
             if qualname == "" and not remainder:
                 return ResolvedCallee(
-                    "unresolved", None, RESOLUTION_UNRESOLVED,
+                    "unresolved",
+                    None,
+                    RESOLUTION_UNRESOLVED,
                     note=f"module `{binding.source_module}` is called directly",
                 )
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note=(
                     f"could not resolve `{call.callee_text}` inside "
                     f"`{binding.source_module}`"
@@ -593,7 +798,9 @@ class TraceEngine:
                 definition = self.index.definition_at(path, qualname)
                 if definition is not None:
                     return ResolvedCallee(
-                        "project", definition, RESOLUTION_INFERRED,
+                        "project",
+                        definition,
+                        RESOLUTION_INFERRED,
                         note=f"via star import from `{binding.source_module}`",
                     )
         return None
@@ -604,10 +811,11 @@ class TraceEngine:
         name = call.attr_chain[-1] if call.attr_chain else call.head
         if name in COMMON_METHOD_NAMES:
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note=(
-                    f"receiver unknown and `{name}` is too common to attribute "
-                    "by name"
+                    f"receiver unknown and `{name}` is too common to attribute by name"
                 ),
             )
         candidates = tuple(
@@ -617,17 +825,23 @@ class TraceEngine:
         )
         if len(candidates) == 1:
             return ResolvedCallee(
-                "project", candidates[0], RESOLUTION_INFERRED,
+                "project",
+                candidates[0],
+                RESOLUTION_INFERRED,
                 note=f"matched by method name only (receiver is an {receiver_note})",
             )
         if len(candidates) > 1:
             return ResolvedCallee(
-                "ambiguous", None, RESOLUTION_AMBIGUOUS,
+                "ambiguous",
+                None,
+                RESOLUTION_AMBIGUOUS,
                 note=f"{len(candidates)} methods named `{name}` in workspace",
                 candidates=candidates[: self.limits.max_candidates],
             )
         return ResolvedCallee(
-            "unresolved", None, RESOLUTION_UNRESOLVED,
+            "unresolved",
+            None,
+            RESOLUTION_UNRESOLVED,
             note=f"no workspace method named `{name}`",
         )
 
@@ -637,10 +851,11 @@ class TraceEngine:
         name = call.attr_chain[-1] if call.attr_chain else call.head
         if call.attr_chain and name in COMMON_METHOD_NAMES:
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note=(
-                    f"receiver unknown and `{name}` is too common to attribute "
-                    "by name"
+                    f"receiver unknown and `{name}` is too common to attribute by name"
                 ),
             )
         candidates = tuple(
@@ -651,32 +866,44 @@ class TraceEngine:
         if call.attr_chain:
             if len(candidates) == 1:
                 return ResolvedCallee(
-                    "project", candidates[0], RESOLUTION_INFERRED,
+                    "project",
+                    candidates[0],
+                    RESOLUTION_INFERRED,
                     note="matched by method name only (receiver unknown)",
                 )
             if len(candidates) > 1:
                 return ResolvedCallee(
-                    "ambiguous", None, RESOLUTION_AMBIGUOUS,
+                    "ambiguous",
+                    None,
+                    RESOLUTION_AMBIGUOUS,
                     note=f"{len(candidates)} workspace definitions named `{name}`",
                     candidates=candidates[: self.limits.max_candidates],
                 )
             return ResolvedCallee(
-                "unresolved", None, RESOLUTION_UNRESOLVED,
+                "unresolved",
+                None,
+                RESOLUTION_UNRESOLVED,
                 note="receiver unknown; no matching workspace definition",
             )
         if len(candidates) == 1:
             return ResolvedCallee(
-                "project", candidates[0], RESOLUTION_INFERRED,
+                "project",
+                candidates[0],
+                RESOLUTION_INFERRED,
                 note="name match; the name is not statically in scope here",
             )
         if len(candidates) > 1:
             return ResolvedCallee(
-                "ambiguous", None, RESOLUTION_AMBIGUOUS,
+                "ambiguous",
+                None,
+                RESOLUTION_AMBIGUOUS,
                 note=f"{len(candidates)} workspace definitions named `{name}`",
                 candidates=candidates[: self.limits.max_candidates],
             )
         return ResolvedCallee(
-            "unresolved", None, RESOLUTION_UNRESOLVED,
+            "unresolved",
+            None,
+            RESOLUTION_UNRESOLVED,
             note="not defined, imported, or known as a builtin here",
         )
 
@@ -879,9 +1106,7 @@ class TraceEngine:
         # for that path (labeled inferred, never claimed globally).
         for supplied in self.caller_supplied_callbacks(target):
             if len(callees) < limits.max_callees:
-                callees.append(
-                    self._supplied_callback_edge(target, supplied, depth=1)
-                )
+                callees.append(self._supplied_callback_edge(target, supplied, depth=1))
             else:
                 truncations.append(f"Callees truncated at {limits.max_callees}.")
                 break
@@ -911,9 +1136,7 @@ class TraceEngine:
             and not _superseded_inferred_effect(effect, project_call_lines)
         ]
         if len(effects) > limits.max_side_effects:
-            truncations.append(
-                f"Side effects truncated at {limits.max_side_effects}."
-            )
+            truncations.append(f"Side effects truncated at {limits.max_side_effects}.")
             effects = effects[: limits.max_side_effects]
 
         error_handling = tuple(
@@ -1085,7 +1308,10 @@ class TraceEngine:
             if module is None:
                 continue
             for info in module.error_handling:
-                if info.qualname == definition.qualname and info.qualname not in seen_error_scopes:
+                if (
+                    info.qualname == definition.qualname
+                    and info.qualname not in seen_error_scopes
+                ):
                     if info.raises or info.catches:
                         deep_error_handling.append(info)
                         seen_error_scopes.add(info.qualname)
@@ -1274,7 +1500,8 @@ def _edge_from_call(
     note = resolved.note
     if resolved.candidates and resolved.kind == "ambiguous":
         preview = ", ".join(
-            f"{candidate.path}:{candidate.line}" for candidate in resolved.candidates[:3]
+            f"{candidate.path}:{candidate.line}"
+            for candidate in resolved.candidates[:3]
         )
         suffix = "…" if len(resolved.candidates) > 3 else ""
         note = f"{note} [candidates: {preview}{suffix}]" if note else preview

@@ -41,7 +41,9 @@ def _init_repo(tmp_path: Path) -> Path:
     return root
 
 
-def _settings(tmp_path: Path, *, debug: bool) -> Settings:
+def _settings(
+    tmp_path: Path, *, debug: bool, freestyle_web_ui: bool = False
+) -> Settings:
     documents = tmp_path / "documents"
     documents.mkdir(exist_ok=True)
     return Settings(
@@ -58,13 +60,26 @@ def _settings(tmp_path: Path, *, debug: bool) -> Settings:
         price_per_1k_input_tokens=0.0,
         price_per_1k_output_tokens=0.0,
         deepseek_code_model="deepseek-code-test",
+        freestyle_web_ui=freestyle_web_ui,
     )
 
 
-def _client(tmp_path: Path, root: Path, *, debug: bool = True) -> TestClient:
-    app = create_app(_settings(tmp_path, debug=debug))
+def _client(
+    tmp_path: Path,
+    root: Path,
+    *,
+    debug: bool = True,
+    freestyle_web_ui: bool = False,
+) -> TestClient:
+    app = create_app(
+        _settings(tmp_path, debug=debug, freestyle_web_ui=freestyle_web_ui)
+    )
     app.state.freestyle_project_root = root
-    return TestClient(app)
+    return TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
 
 def _job(root: Path):
@@ -98,7 +113,7 @@ def _source_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_freestyle_page_and_navigation_are_debug_only(tmp_path):
+def test_freestyle_page_and_navigation_require_debug_or_dedicated_flag(tmp_path):
     root = _init_repo(tmp_path)
     normal = _client(tmp_path, root, debug=False)
     dev = _client(tmp_path, root)
@@ -109,6 +124,28 @@ def test_freestyle_page_and_navigation_are_debug_only(tmp_path):
     assert response.status_code == 200
     assert "Freestyle Command Center" in response.text
     assert "/dev/freestyle" in dev.get("/dashboard").text
+
+
+def test_dedicated_freestyle_flag_enables_ui_without_broad_debug_mode(tmp_path):
+    """LEWIS_FREESTYLE_UI alone (LEWIS_DEBUG left off) must be sufficient."""
+    root = _init_repo(tmp_path)
+    narrow = _client(tmp_path, root, debug=False, freestyle_web_ui=True)
+
+    response = narrow.get("/dev/freestyle")
+    assert response.status_code == 200
+    assert "Freestyle Command Center" in response.text
+    assert "/dev/freestyle" in narrow.get("/dashboard").text
+
+
+def test_opening_the_page_never_creates_a_job(tmp_path):
+    root = _init_repo(tmp_path)
+    client = _client(tmp_path, root, debug=False, freestyle_web_ui=True)
+
+    for _ in range(3):
+        response = client.get("/dev/freestyle")
+        assert response.status_code == 200
+
+    assert freestyle.list_freestyle_jobs(project_root=root) == []
 
 
 def test_page_renders_empty_state_and_requires_explicit_create_approval(tmp_path):
@@ -181,9 +218,9 @@ def test_populated_detail_renders_handoff_artifacts_and_escaped_bounded_preview(
     assert "[preview truncated]" in response.text
     assert len(response.text) < MAX_WEB_PREVIEW_CHARS + 40_000
     assert "does not commit, merge, push" in response.text
-    assert f"/dev/freestyle/{job.job_id}/apply" in response.text
-    assert f"/dev/freestyle/{job.job_id}/review" in response.text
-    assert f"/dev/freestyle/{job.job_id}/run-checks" in response.text
+    assert f"/dev/freestyle/{job.job_id}/apply" not in response.text
+    assert f"/dev/freestyle/{job.job_id}/review" not in response.text
+    assert f"/dev/freestyle/{job.job_id}/run-checks" not in response.text
     assert f"/dev/freestyle/{job.job_id}/cleanup" in response.text
     assert f"/dev/freestyle/{job.job_id}/recover" in response.text
     assert "Advanced Maintenance And Danger Actions" in response.text
@@ -238,9 +275,7 @@ def test_default_run_uses_only_non_mutating_orchestration_flags(tmp_path, monkey
     monkeypatch.setattr(freestyle_web, "run_freestyle_job", fake_run)
     client = _client(tmp_path, root)
 
-    response = client.post(
-        f"/dev/freestyle/{job.job_id}/run", follow_redirects=False
-    )
+    response = client.post(f"/dev/freestyle/{job.job_id}/run", follow_redirects=False)
 
     assert response.status_code == 303
     assert calls == [
@@ -278,9 +313,7 @@ def test_materialize_route_uses_existing_isolated_operation_only(tmp_path):
     job = _job(root)
     source_before = _source_snapshot(root)
 
-    response = _client(tmp_path, root).post(
-        f"/dev/freestyle/{job.job_id}/materialize"
-    )
+    response = _client(tmp_path, root).post(f"/dev/freestyle/{job.job_id}/materialize")
 
     updated = freestyle.get_freestyle_job(job.job_id, project_root=root)
     assert response.status_code == 200
@@ -312,7 +345,15 @@ def test_actions_reject_arbitrary_fields_before_backend_calls(tmp_path, monkeypa
         monkeypatch.setattr(freestyle_web, name, forbidden)
     client = _client(tmp_path, root)
 
-    for suffix in ("run", "apply", "refine", "review", "run-checks", "cleanup", "recover"):
+    for suffix in (
+        "run",
+        "apply",
+        "refine",
+        "review",
+        "run-checks",
+        "cleanup",
+        "recover",
+    ):
         rejected = client.post(
             f"/dev/freestyle/{job.job_id}/{suffix}",
             data={
@@ -371,7 +412,10 @@ def test_refine_web_requires_goal_and_approval_and_uses_safe_defaults(
         f"/dev/freestyle/{job.job_id}/refine",
         data={"goal": "Wire route.", "developer_approved": "approved"},
     )
-    assert "Generated a refinement bundle from the current isolated worktree" in response.text
+    assert (
+        "Generated a refinement bundle from the current isolated worktree"
+        in response.text
+    )
     assert calls == [
         {
             "job_id": job.job_id,
@@ -389,9 +433,7 @@ def test_detail_renders_original_and_latest_refinement_state(tmp_path):
     job = _job(root)
     freestyle.materialize_freestyle_job(job.job_id, project_root=root)
     refinement_id = "1" * 16
-    reference = (
-        f"refinements/{job.job_id}/refinement-{refinement_id}-0001.json"
-    )
+    reference = f"refinements/{job.job_id}/refinement-{refinement_id}-0001.json"
     artifact = root / freestyle.DEV_STATE_DIR_NAME / reference
     artifact.parent.mkdir(parents=True)
     artifact.write_text("{}\n", encoding="utf-8")
@@ -511,9 +553,7 @@ def test_review_calls_deterministic_reviewer_only(tmp_path, monkeypatch):
     monkeypatch.setattr(freestyle_web, "review_freestyle_job", fake_review)
     monkeypatch.setattr(freestyle_web, "run_freestyle_job", forbidden)
 
-    response = _client(tmp_path, root).post(
-        f"/dev/freestyle/{job.job_id}/review"
-    )
+    response = _client(tmp_path, root).post(f"/dev/freestyle/{job.job_id}/review")
 
     assert "Created a deterministic review" in response.text
     assert calls == [(job.job_id, root)]
@@ -547,10 +587,10 @@ def test_run_checks_accepts_only_static_backend_ids_before_execution(
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
 
-    assert "Completed allowlisted checks: pytest-freestyle, ruff-check." in response.text
-    assert calls == [
-        (job.job_id, ("pytest-freestyle", "ruff-check"), root)
-    ]
+    assert (
+        "Completed allowlisted checks: pytest-freestyle, ruff-check." in response.text
+    )
+    assert calls == [(job.job_id, ("pytest-freestyle", "ruff-check"), root)]
 
 
 def test_cleanup_requires_confirmation_and_separate_discard_confirmation(
@@ -675,7 +715,11 @@ def test_missing_deepseek_error_is_inline_without_traceback_or_secret(
     settings = replace(_settings(tmp_path, debug=True), deepseek_api_key=secret)
     app = create_app(settings)
     app.state.freestyle_project_root = root
-    client = TestClient(app)
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=app,
+    )
 
     response = client.post(f"/dev/freestyle/{job.job_id}/run")
 

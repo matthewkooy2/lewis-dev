@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -52,9 +54,7 @@ def get_freestyle_handoff(
 
     errors = _job_errors(job)
     artifacts = _artifact_references(job)
-    proposal = _read_optional_artifact(
-        artifacts["proposal"], state, "proposal", errors
-    )
+    proposal = _read_optional_artifact(artifacts["proposal"], state, "proposal", errors)
     proposal_failure = _read_optional_artifact(
         artifacts["proposal_failure"], state, "proposal failure", errors
     )
@@ -63,6 +63,9 @@ def get_freestyle_handoff(
     )
     review = _read_optional_artifact(artifacts["review"], state, "review", errors)
     checks = _read_optional_artifact(artifacts["checks"], state, "checks", errors)
+    applied = _read_optional_artifact(
+        artifacts["applied_edit"], state, "applied edit", errors
+    )
     changed_files = _changed_file_summary(job, root, state, review, errors)
     check_summary = _check_summary(job, checks)
     blocked = _blocked_summary(job, errors)
@@ -102,6 +105,17 @@ def get_freestyle_handoff(
         ),
         "changed_files": changed_files,
         "checks": check_summary,
+        "review_snapshot": {
+            key: review[key]
+            for key in (
+                "generated_at",
+                "diff_snippets",
+                "files_omitted_from_diff_snippets",
+            )
+            if review and key in review
+        },
+        "check_results": (checks or {}).get("checks", []),
+        "result": _result_summary(job, state, applied, review, checks, blocked),
         "bounded_errors": errors[:MAX_HANDOFF_ERRORS],
         "risks": risks[:MAX_HANDOFF_RISKS],
         "blocked": blocked,
@@ -152,13 +166,9 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         if plan.get("recommended_strategy"):
             lines.append(f"- **Strategy:** {plan['recommended_strategy']}")
         if plan.get("expected_files"):
-            lines.append(
-                f"- **Expected files:** {', '.join(plan['expected_files'])}"
-            )
+            lines.append(f"- **Expected files:** {', '.join(plan['expected_files'])}")
         if plan.get("forbidden_files"):
-            lines.append(
-                f"- **Forbidden files:** {', '.join(plan['forbidden_files'])}"
-            )
+            lines.append(f"- **Forbidden files:** {', '.join(plan['forbidden_files'])}")
         if plan.get("failed_strategy_patterns"):
             lines.append(
                 "- **Failed prior strategies:** "
@@ -190,9 +200,7 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
             f"- **Count:** {changed['count'] if changed['count'] is not None else 'unknown'}",
         ]
     )
-    lines.extend(
-        f"- `{item['path']}` ({item['status']})" for item in changed["files"]
-    )
+    lines.extend(f"- `{item['path']}` ({item['status']})" for item in changed["files"])
 
     checks = handoff["checks"]
     lines.extend(
@@ -249,10 +257,13 @@ def render_freestyle_handoff_markdown(handoff: dict[str, Any]) -> str:
         lines.append("- none recorded")
 
     lines.extend(["", "## Human Next Steps", ""])
-    lines.extend(f"{index}. {step}" for index, step in enumerate(
-        handoff["human_next_steps"], start=1
-    ))
-    lines.extend(["", f"**Integration safety:** {handoff['integration_statement']}", ""])
+    lines.extend(
+        f"{index}. {step}"
+        for index, step in enumerate(handoff["human_next_steps"], start=1)
+    )
+    lines.extend(
+        ["", f"**Integration safety:** {handoff['integration_statement']}", ""]
+    )
     return "\n".join(lines)
 
 
@@ -269,9 +280,7 @@ def _implementation_plan_summary(
 def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
     return {
         "proposal": safe_artifact_reference(job.proposal_artifact_path),
-        "proposal_failure": safe_artifact_reference(
-            job.proposal_failure_artifact_path
-        ),
+        "proposal_failure": safe_artifact_reference(job.proposal_failure_artifact_path),
         "generated_bundle": safe_artifact_reference(job.edit_bundle_path),
         "edit_generation": safe_artifact_reference(job.edit_generation_artifact_path),
         "implementation_plan": safe_artifact_reference(
@@ -288,7 +297,9 @@ def _artifact_references(job: FreestyleJob) -> dict[str, str | None]:
 
 
 def _refinement_summary(job: FreestyleJob) -> dict[str, Any]:
-    original = job.original_artifacts if isinstance(job.original_artifacts, dict) else {}
+    original = (
+        job.original_artifacts if isinstance(job.original_artifacts, dict) else {}
+    )
     original_stages = (
         job.original_stage_statuses
         if isinstance(job.original_stage_statuses, dict)
@@ -361,9 +372,9 @@ def _proposal_failure_summary(
                     {
                         "attempt": attempt,
                         "status": status[:50],
-                        "validator_category": str(
-                            item.get("validator_category", "")
-                        )[:50],
+                        "validator_category": str(item.get("validator_category", ""))[
+                            :50
+                        ],
                     }
                 )
     statuses = ", ".join(
@@ -387,18 +398,130 @@ def _read_optional_artifact(
         return None
     path = state.joinpath(*PurePosixPath(reference).parts)
     try:
-        if path.is_symlink() or not path.is_file():
-            raise FreestyleJobRefusedError(f"Latest {label} artifact is missing or unsafe.")
-        path.resolve(strict=True).relative_to(state.resolve(strict=True))
-        if path.stat().st_size > MAX_HANDOFF_ARTIFACT_BYTES:
-            raise FreestyleJobRefusedError(f"Latest {label} artifact exceeds read limit.")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_bounded_artifact(path, state))
         if not isinstance(payload, dict):
             raise FreestyleJobRefusedError(f"Latest {label} artifact is not an object.")
         return payload
     except (OSError, ValueError, json.JSONDecodeError, FreestyleJobRefusedError) as exc:
-        errors.append(_bounded_error(str(exc), f"Could not read latest {label} artifact."))
+        errors.append(
+            _bounded_error(str(exc), f"Could not read latest {label} artifact.")
+        )
         return None
+
+
+def _read_bounded_artifact(path: Path, state: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Artifact is missing or unsafe.")
+    path.resolve(strict=True).relative_to(state.resolve(strict=True))
+    with path.open("rb") as stream:
+        data = stream.read(MAX_HANDOFF_ARTIFACT_BYTES + 1)
+    if len(data) > MAX_HANDOFF_ARTIFACT_BYTES:
+        raise ValueError("Artifact exceeds read limit.")
+    return data
+
+
+def _not_before(candidate: str | None, reference: str | None) -> bool:
+    if not candidate or not reference:
+        return False
+    try:
+        return datetime.fromisoformat(candidate) >= datetime.fromisoformat(reference)
+    except (TypeError, ValueError):
+        return False
+
+
+def _result_summary(
+    job: FreestyleJob,
+    state: Path,
+    applied: dict[str, Any] | None,
+    review: dict[str, Any] | None,
+    checks: dict[str, Any] | None,
+    blocked: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive display state from existing artifacts; never persist a second lifecycle."""
+    from app.dev.freestyle_run import _required_bundle_path
+
+    bundle_state = "unavailable"
+    try:
+        bundle = _read_bounded_artifact(_required_bundle_path(job, state), state)
+        if job.edit_apply_status == "applied" and (
+            not applied
+            or applied.get("job_id") != job.job_id
+            or not applied.get("bundle_sha256")
+        ):
+            bundle_state = "unknown"
+        else:
+            bundle_state = (
+                "applied"
+                if applied
+                and applied.get("job_id") == job.job_id
+                and applied.get("bundle_sha256") == hashlib.sha256(bundle).hexdigest()
+                else "pending"
+            )
+    except (OSError, ValueError, FreestyleJobRefusedError):
+        pass
+    applied_at = job.edit_applied_at
+    review_current = bool(
+        applied_at
+        and review
+        and job.review_status == "reviewed"
+        and _not_before(review.get("generated_at"), applied_at)
+    )
+    checks_current = bool(
+        applied_at
+        and checks
+        and job.checks_started_at
+        and _not_before(job.checks_started_at, applied_at)
+        and checks.get("started_at") == job.checks_started_at
+        and isinstance(checks.get("summary"), dict)
+        and checks.get("summary", {}).get("overall_status") == job.checks_status
+    )
+    review_current = review_current and bundle_state != "pending"
+    checks_current = checks_current and bundle_state != "pending"
+    if blocked.get("running_lock"):
+        action, label = "wait", "Work in progress"
+    elif job.edit_apply_status == "inconsistent":
+        action, label = "recover", "Recovery required"
+    elif job.approval_state != "approved" or job.status not in {
+        "ready",
+        "materialized",
+    }:
+        action, label = "inspect", "Job unavailable"
+    elif job.materialization_status != "materialized":
+        action, label = "materialize", "Ready to start"
+    elif job.edit_apply_status == "error":
+        action, label = "refine", "Edit application failed"
+    elif bundle_state == "unknown":
+        action, label = "inspect", "Application evidence unavailable"
+    elif bundle_state == "pending":
+        action, label = "apply", "New bundle ready to apply"
+    elif job.edit_generation_status == "error":
+        action, label = "refine", "Bundle generation failed"
+    elif job.edit_apply_status != "applied":
+        action, label = "generate", "Generate an edit bundle"
+    elif bundle_state == "unavailable" and job.edit_bundle_path:
+        action, label = "inspect", "Latest bundle unavailable"
+    elif not review_current:
+        action, label = "review", "Edits applied — review needed"
+    elif job.checks_status not in {"passed", "not_run"} or job.checks_modified_worktree:
+        action, label = "checks", "Checks need attention"
+    elif (
+        not checks_current
+        or job.checks_status == "not_run"
+        or job.checks_passed_count < 1
+    ):
+        action, label = "checks", "Edits applied — checks needed"
+    else:
+        action, label = "handoff", "Ready for human review"
+    return {
+        "action": action,
+        "label": label,
+        "bundle_state": bundle_state,
+        "review_current": review_current,
+        "checks_current": checks_current,
+        "reviewed_at": (review or {}).get("generated_at"),
+        "checked_at": (checks or {}).get("generated_at"),
+        "check_attempt_status": job.checks_status,
+    }
 
 
 def _changed_file_summary(
@@ -500,8 +623,16 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
         and any(marker in lowered_errors for marker in _DEEPSEEK_CONFIG_MARKERS),
         "inconsistent_edit_state": job.edit_apply_status == "inconsistent",
         "running_lock": any(
-            status in {"preparing", "materializing", "proposing", "generating",
-                       "applying", "reviewing", "running"}
+            status
+            in {
+                "preparing",
+                "materializing",
+                "proposing",
+                "generating",
+                "applying",
+                "reviewing",
+                "running",
+            }
             for status in (
                 job.status,
                 job.materialization_status,
@@ -522,7 +653,10 @@ def _blocked_summary(job: FreestyleJob, errors: list[str]) -> dict[str, Any]:
     reasons = [
         label
         for key, label in (
-            ("missing_deepseek_config", "Missing or invalid model provider configuration."),
+            (
+                "missing_deepseek_config",
+                "Missing or invalid model provider configuration.",
+            ),
             ("inconsistent_edit_state", "Edit application state is inconsistent."),
             ("running_lock", "A stage is marked running or in progress."),
             ("failed_checks", "One or more allowlisted checks failed."),
@@ -554,12 +688,8 @@ def _risk_summary(
         risks.extend(
             str(item)[:500] for item in check_warnings if isinstance(item, str)
         )
-    risks.extend(
-        str(warning)[:500] for warning in job.edit_bundle_goal_fit_warnings
-    )
-    risks.extend(
-        str(warning)[:500] for warning in job.edit_bundle_semantic_warnings
-    )
+    risks.extend(str(warning)[:500] for warning in job.edit_bundle_goal_fit_warnings)
+    risks.extend(str(warning)[:500] for warning in job.edit_bundle_semantic_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_ui_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_repo_map_warnings)
     risks.extend(str(warning)[:500] for warning in job.review_plan_warnings)

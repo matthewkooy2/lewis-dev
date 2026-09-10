@@ -435,9 +435,7 @@ def test_passing_checks_persist_artifact_and_metadata(tmp_path):
     assert completed.checks_completed_at
     assert completed.checks_errors == ()
     assert completed.checks_artifact_path.startswith(f"checks/{job.job_id}/checks-")
-    artifact_file = (
-        root / freestyle.DEV_STATE_DIR_NAME / completed.checks_artifact_path
-    )
+    artifact_file = root / freestyle.DEV_STATE_DIR_NAME / completed.checks_artifact_path
     assert artifact_file.is_file()
     assert artifact_file.stat().st_size <= checks.MAX_CHECKS_ARTIFACT_BYTES
 
@@ -554,9 +552,7 @@ def test_timeout_produces_timeout_status_and_counts(tmp_path, monkeypatch):
     assert "timeout" in result["note"]
 
 
-def test_output_caps_set_truncation_flags_and_bound_the_artifact(
-    tmp_path, monkeypatch
-):
+def test_output_caps_set_truncation_flags_and_bound_the_artifact(tmp_path, monkeypatch):
     root = _init_repo(tmp_path)
     job = _materialized_job(root)
     cap = checks.CHECKS_BY_ID["pytest-freestyle"].max_output_bytes
@@ -772,9 +768,7 @@ def test_run_checks_cli_refuses_unknown_ids_without_executing(
     monkeypatch.setattr(checks, "ROOT_DIR", root)
     _forbid_subprocess(monkeypatch)
 
-    exit_code = freestyle.main(
-        ["run-checks", job.job_id, "--check", "evil; rm -rf /"]
-    )
+    exit_code = freestyle.main(["run-checks", job.job_id, "--check", "evil; rm -rf /"])
 
     assert exit_code == 1
     error = json.loads(capsys.readouterr().err)

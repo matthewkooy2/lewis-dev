@@ -1115,7 +1115,11 @@ def test_exact_search_first_code_proposal_creates_real_visible_approval_without_
         for path in project_root.rglob("*")
         if path.is_file()
     } == before
-    response = TestClient(create_app(settings)).get("/approvals")
+    response = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    ).get("/approvals")
     assert response.status_code == 200
     assert f"#{approval_id}" in response.text
     assert "propose_code_change" in response.text

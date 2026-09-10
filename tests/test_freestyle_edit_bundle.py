@@ -32,7 +32,7 @@ _MULTI_ANCHOR_TEXT = "ALPHA = 1\nBETA = 2\nGAMMA = 3\n"
 # A routes file that references approval code without defining it, mirroring
 # the real app/web_routes.py. Built with the concatenated class name so this
 # test file itself never contains the literal class text.
-_APPROVAL_REFERENCING_ROUTES = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+_APPROVAL_REFERENCING_ROUTES = f"""from app.approvals import {APPROVAL_STORE_CLASS_NAME}
 from app.approval_service import approve_approval
 from app.web_pages import approvals_page, calendar_page, chat_page
 
@@ -62,7 +62,7 @@ def _approval_store(request):
 
 def _page(title, request, content):
     return content
-'''
+"""
 
 _SAFE_ROUTE_ANCHOR = '        return _page("Chat", request, chat_page())'
 _WIRED_ROUTE_TEXT = (
@@ -110,7 +110,7 @@ def _routes_job(root: Path):
     job = _materialized_job(root, goal="Wire the shenanigans page route.")
     routes = Path(job.worktree_path) / "app" / "web_routes.py"
     routes.parent.mkdir(parents=True, exist_ok=True)
-    routes.write_text(_APPROVAL_REFERENCING_ROUTES, encoding="utf-8")
+    routes.write_text(_APPROVAL_REFERENCING_ROUTES, encoding="utf-8", newline="\n")
     return job, routes
 
 
@@ -119,7 +119,7 @@ def _multi_anchor_job(root: Path):
     job = _materialized_job(root)
     target = Path(job.worktree_path) / "src" / "multi.py"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_MULTI_ANCHOR_TEXT, encoding="utf-8")
+    target.write_text(_MULTI_ANCHOR_TEXT, encoding="utf-8", newline="\n")
     return job, target
 
 
@@ -212,7 +212,9 @@ def _checkout_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def _refused_apply(root: Path, job_id: str, bundle_path: Path) -> "freestyle.FreestyleJob":
+def _refused_apply(
+    root: Path, job_id: str, bundle_path: Path
+) -> "freestyle.FreestyleJob":
     """Apply expecting the wrapped refusal; return the persisted failed job."""
     with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
         apply_freestyle_edit_bundle(job_id, str(bundle_path), project_root=root)
@@ -226,7 +228,11 @@ def test_applies_create_replace_delete_and_replace_text_inside_worktree_only(tmp
     checkout_before = _checkout_snapshot(root)
     status_before = _git(root, "status", "--porcelain")
     operations = [
-        {"op": "create_file", "path": "src/new_module.py", "content": "CREATED = True\n"},
+        {
+            "op": "create_file",
+            "path": "src/new_module.py",
+            "content": "CREATED = True\n",
+        },
         {
             "op": "replace_file",
             "path": "tracked.txt",
@@ -658,9 +664,7 @@ def test_approval_store_helper_definition_edit_is_refused(tmp_path):
     root = _init_repo(tmp_path)
     job, routes = _routes_job(root)
     before = routes.read_text(encoding="utf-8")
-    new_text = _APPROVAL_HELPER_DEFINITION.replace(
-        "database_path", "db_path"
-    )
+    new_text = _APPROVAL_HELPER_DEFINITION.replace("database_path", "db_path")
     bundle_path = _routes_replace_bundle(
         tmp_path, job.job_id, _APPROVAL_HELPER_DEFINITION, new_text, "helper-def.json"
     )
@@ -671,7 +675,9 @@ def test_approval_store_helper_definition_edit_is_refused(tmp_path):
     assert routes.read_text(encoding="utf-8") == before
 
 
-@pytest.mark.parametrize("blocked_path", ["app/approvals.py", "app/approval_service.py"])
+@pytest.mark.parametrize(
+    "blocked_path", ["app/approvals.py", "app/approval_service.py"]
+)
 def test_replace_text_on_approval_files_is_refused_by_path(tmp_path, blocked_path):
     """Approval-record implementation files stay blocked at the path layer for
     every operation kind, including replace_text."""
@@ -742,7 +748,7 @@ def test_whole_file_operations_never_touch_approval_referencing_files(tmp_path):
 # concatenated class name so this test file never holds the literal class text.
 # ---------------------------------------------------------------------------
 
-_CALENDAR_FIXTURE_TEST = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+_CALENDAR_FIXTURE_TEST = f"""from app.approvals import {APPROVAL_STORE_CLASS_NAME}
 from app.web_pages import calendar_page
 
 
@@ -750,7 +756,7 @@ def test_calendar_page_lists_seeded_proposals(tmp_path):
     store = {APPROVAL_STORE_CLASS_NAME}(tmp_path / "db.sqlite3")
     store.add_proposal(kind="calendar", payload={{"day": 1}})
     assert "calendar" in calendar_page(store.list_proposals())
-'''
+"""
 
 
 def _create_file_bundle(
@@ -796,7 +802,7 @@ def test_modifying_existing_non_approval_test_fixture_is_allowed(tmp_path):
     job = _materialized_job(root)
     target = Path(job.worktree_path) / "tests" / "test_calendar_page.py"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_CALENDAR_FIXTURE_TEST, encoding="utf-8")
+    target.write_text(_CALENDAR_FIXTURE_TEST, encoding="utf-8", newline="\n")
     updated_content = _CALENDAR_FIXTURE_TEST + (
         "\n\ndef test_calendar_page_handles_two_days(tmp_path):\n"
         f'    store = {APPROVAL_STORE_CLASS_NAME}(tmp_path / "db.sqlite3")\n'
@@ -1102,11 +1108,23 @@ def test_rejects_malformed_bundles_and_schema_violations(tmp_path):
     worktree_before = _worktree_snapshot(Path(job.worktree_path))
 
     cases: list[tuple[str, dict | str]] = [
-        ("wrong-version.json", _bundle_payload(job.job_id, [_create_op()], schema_version=2)),
-        ("count-mismatch.json", _bundle_payload(job.job_id, [_create_op()], operation_count=5)),
-        ("extra-field.json", _bundle_payload(job.job_id, [_create_op()], surprise=True)),
+        (
+            "wrong-version.json",
+            _bundle_payload(job.job_id, [_create_op()], schema_version=2),
+        ),
+        (
+            "count-mismatch.json",
+            _bundle_payload(job.job_id, [_create_op()], operation_count=5),
+        ),
+        (
+            "extra-field.json",
+            _bundle_payload(job.job_id, [_create_op()], surprise=True),
+        ),
         ("no-operations.json", _bundle_payload(job.job_id, [])),
-        ("bad-timestamp.json", _bundle_payload(job.job_id, [_create_op()], created_at="not a date")),
+        (
+            "bad-timestamp.json",
+            _bundle_payload(job.job_id, [_create_op()], created_at="not a date"),
+        ),
         ("not-json.json", "this is not json"),
         (
             "extra-op-field.json",
@@ -1158,9 +1176,7 @@ def test_rejects_malformed_bundles_and_schema_violations(tmp_path):
     with pytest.raises(FreestyleJobRefusedError, match="error was recorded"):
         wrong_suffix = tmp_path / "bundle.txt"
         wrong_suffix.write_text("{}", encoding="utf-8")
-        apply_freestyle_edit_bundle(
-            job.job_id, str(wrong_suffix), project_root=root
-        )
+        apply_freestyle_edit_bundle(job.job_id, str(wrong_suffix), project_root=root)
     assert _worktree_snapshot(Path(job.worktree_path)) == worktree_before
 
 
@@ -1235,7 +1251,11 @@ def test_rolls_back_to_an_unchanged_worktree_on_midway_failure(tmp_path, monkeyp
         _bundle_payload(
             job.job_id,
             [
-                {"op": "delete_file", "path": "notes.txt", "expected_sha256": NOTES_SHA},
+                {
+                    "op": "delete_file",
+                    "path": "notes.txt",
+                    "expected_sha256": NOTES_SHA,
+                },
                 _create_op(path="beta.txt"),
             ],
         ),
@@ -1267,7 +1287,9 @@ def test_refuses_in_progress_or_inconsistent_edit_state(tmp_path):
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
         payload["edit_apply_status"] = blocked_status
         metadata_path.write_text(json.dumps(payload), encoding="utf-8")
-        with pytest.raises(FreestyleJobRefusedError, match="in-progress or inconsistent"):
+        with pytest.raises(
+            FreestyleJobRefusedError, match="in-progress or inconsistent"
+        ):
             apply_freestyle_edit_bundle(job.job_id, str(bundle_path), project_root=root)
         refreshed = get_freestyle_job(job.job_id, project_root=root)
         assert refreshed.edit_apply_status == blocked_status
@@ -1399,7 +1421,11 @@ def test_multi_replace_text_missing_or_ambiguous_match_fails_closed(tmp_path):
     assert "no exact match" in failed.edit_errors[0]
     assert target.read_text(encoding="utf-8") == before
 
-    target.write_text("DUP = 1\nDUP = 1\nKEEP = 2\n", encoding="utf-8")
+    target.write_text(
+        "DUP = 1\nDUP = 1\nKEEP = 2\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     before_dup = target.read_text(encoding="utf-8")
     ambiguous = _write_bundle(
         tmp_path,
@@ -1489,7 +1515,9 @@ def test_same_file_multi_replace_text_touching_approval_marker_fails_closed(tmp_
     assert routes.read_text(encoding="utf-8") == before
 
 
-def test_multi_replace_text_file_rolls_back_when_a_later_op_fails(tmp_path, monkeypatch):
+def test_multi_replace_text_file_rolls_back_when_a_later_op_fails(
+    tmp_path, monkeypatch
+):
     """The folded multi-replace_text write is journaled like any other, so a
     later failing operation rolls the whole worktree back unchanged."""
     root = _init_repo(tmp_path)
@@ -1570,3 +1598,91 @@ def test_apply_edits_cli_dispatches_job_id_and_bundle_path(
     assert exit_code == 0
     assert calls == [(job.job_id, "bundle.json")]
     assert json.loads(capsys.readouterr().out)["job_id"] == job.job_id
+
+
+def test_recoverable_operation_errors_carry_categories_and_paths(tmp_path):
+    """Deterministic model-mistake refusals expose a stable category while
+    keeping the exact refusal message; safety refusals never gain one."""
+    root = _init_repo(tmp_path)
+    job = _materialized_job(root)
+    worktree = Path(job.worktree_path)
+    (worktree / "dup.py").write_bytes(b"X = 1\nX = 1\n")
+
+    scenarios = [
+        (
+            {"op": "create_file", "path": "src/sample.py", "content": "Y = 1\n"},
+            "create_existing_file",
+            "src/sample.py",
+        ),
+        (
+            {
+                "op": "replace_file",
+                "path": "missing.py",
+                "content": "Y = 1\n",
+                "expected_sha256": "0" * 64,
+            },
+            "missing_target_file",
+            "missing.py",
+        ),
+        (
+            {
+                "op": "replace_file",
+                "path": "src/sample.py",
+                "content": "Y = 1\n",
+                "expected_sha256": "0" * 64,
+            },
+            "stale_expected_sha256",
+            "src/sample.py",
+        ),
+        (
+            {
+                "op": "replace_text",
+                "path": "src/sample.py",
+                "old_text": "VALUE = 1",
+                "new_text": "VALUE = 1",
+            },
+            "identical_replacement",
+            "src/sample.py",
+        ),
+        (
+            {
+                "op": "replace_text",
+                "path": "dup.py",
+                "old_text": "X = 1",
+                "new_text": "X = 2",
+            },
+            "ambiguous_replacement",
+            "dup.py",
+        ),
+    ]
+    for operation, category, path in scenarios:
+        bundle = json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": job.job_id,
+                "created_at": "2026-06-10T12:00:00+00:00",
+                "operation_count": 1,
+                "operations": [operation],
+            }
+        ).encode("utf-8")
+        with pytest.raises(edit_bundle.EditBundleRecoverableOperationError) as info:
+            edit_bundle.validate_edit_bundle_bytes(job.job_id, bundle, worktree)
+        assert info.value.category == category
+        assert info.value.path == path
+
+    unsafe = json.dumps(
+        {
+            "schema_version": 1,
+            "job_id": job.job_id,
+            "created_at": "2026-06-10T12:00:00+00:00",
+            "operation_count": 1,
+            "operations": [
+                {"op": "create_file", "path": ".env", "content": "TOKEN=x\n"}
+            ],
+        }
+    ).encode("utf-8")
+    with pytest.raises(FreestyleJobRefusedError) as unsafe_info:
+        edit_bundle.validate_edit_bundle_bytes(job.job_id, unsafe, worktree)
+    assert not isinstance(
+        unsafe_info.value, edit_bundle.EditBundleRecoverableOperationError
+    )

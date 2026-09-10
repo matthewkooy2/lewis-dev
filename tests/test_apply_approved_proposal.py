@@ -402,9 +402,7 @@ def test_applies_patch_preview_without_final_newline(tmp_path):
 def test_patch_bytes_sent_to_git_apply_end_with_newline(tmp_path, monkeypatch):
     root = _init_repo(tmp_path)
     store = _store(tmp_path)
-    approval_id = _approved(
-        store, _payload(patch_preview=PATCH.rstrip("\n"))
-    )
+    approval_id = _approved(store, _payload(patch_preview=PATCH.rstrip("\n")))
 
     sent: list[tuple[tuple[str, ...], bytes]] = []
     original_run_git = applicator._run_git
@@ -417,7 +415,9 @@ def test_patch_bytes_sent_to_git_apply_end_with_newline(tmp_path, monkeypatch):
     monkeypatch.setattr(applicator, "_run_git", recording_run_git)
     apply_approved_proposal(approval_id, store=store, project_root=root)
 
-    apply_calls = [b for a, b in sent if a in (("git", "apply", "--check"), ("git", "apply"))]
+    apply_calls = [
+        b for a, b in sent if a in (("git", "apply", "--check"), ("git", "apply"))
+    ]
     assert len(apply_calls) == 2
     for patch_bytes in apply_calls:
         assert isinstance(patch_bytes, bytes)

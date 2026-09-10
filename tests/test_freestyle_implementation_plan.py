@@ -145,7 +145,11 @@ def test_initial_web_ui_feature_plan():
     )
     art = plan.to_artifact()
     assert art["task_type"] == TASK_WEB_UI_FEATURE
-    for surface in ("app/web_pages.py", "app/static/calendar.js", "app/static/lewis.css"):
+    for surface in (
+        "app/web_pages.py",
+        "app/static/calendar.js",
+        "app/static/lewis.css",
+    ):
         assert surface in art["expected_files"]
     assert art["affected_surfaces"]["pipeline"] == [] or art["primary_routes"] == [
         "/calendar"
@@ -602,14 +606,16 @@ def test_review_surfaces_css_only_plan_deviation(tmp_path):
         plan, state, JOB_ID, "gen-implementation-plan.json"
     )
     assert relative is not None
-    job = replace(_job("Repair the calendar layout"), implementation_plan_artifact_path=relative)
-    changed = (review._ChangedPath(path="app/static/lewis.css", status="M", git_status="M"),)
+    job = replace(
+        _job("Repair the calendar layout"), implementation_plan_artifact_path=relative
+    )
+    changed = (
+        review._ChangedPath(path="app/static/lewis.css", status="M", git_status="M"),
+    )
     section = review._implementation_plan_review(job, changed, state)
     assert section["plan_available"] is True
     assert any("only CSS" in warning for warning in section["warnings"])
-    assert review._artifact_plan_warnings(
-        {"implementation_plan_review": section}
-    )
+    assert review._artifact_plan_warnings({"implementation_plan_review": section})
 
 
 def test_summarize_plan_carries_repo_map_provenance():
