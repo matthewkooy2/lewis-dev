@@ -490,7 +490,7 @@ textarea { resize: vertical; }
 
 .freestyle-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
   gap: var(--sp-4);
   align-items: start;
 }
@@ -503,6 +503,7 @@ textarea { resize: vertical; }
 
 .job-row {
   display: flex;
+  flex-direction: column;
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--sp-2);
@@ -852,3 +853,12 @@ textarea { resize: vertical; }
   .project-filter-form { grid-template-columns: 1fr; }
   .inline-form { display: grid; align-items: stretch; }
 }
+
+/* Job outcomes precede workflow controls and implementation metadata. */
+.job-outcome { font-size: 1.2rem; font-weight: 750; }
+.job-next-action { display: grid; gap: var(--sp-2); border-top: 1px solid var(--line-soft); padding-top: var(--sp-3); }
+.job-next-action h3, .job-next-action p { margin: 0; }
+.job-next-action form { display: grid; gap: var(--sp-2); }
+.job-diff { white-space: pre; overflow-x: auto; }
+.diff-addition { color: #166534; background: #effaf1; }
+.diff-deletion { color: #9f2222; background: #fff0f0; }

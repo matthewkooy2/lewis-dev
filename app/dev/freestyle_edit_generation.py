@@ -408,7 +408,9 @@ def generate_edit_bundle(
             )
             attempts.append({"attempt": 1, "status": "valid"})
         except _EditBundleFormatError as format_exc:
-            attempts.append(_attempt_record(1, "format_error", format_exc, response, config))
+            attempts.append(
+                _attempt_record(1, "format_error", format_exc, response, config)
+            )
             response = _call_deepseek(
                 client,
                 config,
@@ -724,7 +726,9 @@ def _read_successful_proposal(
     path = job_dir / name
     for directory in (proposals_dir, job_dir):
         if directory.is_symlink() or not directory.is_dir():
-            raise FreestyleJobRefusedError("Successful proposal artifact path is unsafe.")
+            raise FreestyleJobRefusedError(
+                "Successful proposal artifact path is unsafe."
+            )
     if path.is_symlink() or not path.is_file():
         raise FreestyleJobRefusedError(
             "Successful proposal artifact is missing or unsafe."
@@ -742,7 +746,9 @@ def _read_successful_proposal(
             "Successful proposal artifact is unreadable or malformed."
         ) from exc
     if not isinstance(payload, dict):
-        raise FreestyleJobRefusedError("Successful proposal artifact must be an object.")
+        raise FreestyleJobRefusedError(
+            "Successful proposal artifact must be an object."
+        )
     goal = job.goal if expected_goal is None else expected_goal
     if payload.get("job_id") != job.job_id or payload.get("goal") != goal:
         raise FreestyleJobRefusedError(
@@ -789,11 +795,7 @@ def _proposal_text_list(
                 f"Successful proposal artifact field {field_name!r} is invalid."
             )
         text = " ".join(item.strip().split())
-        if (
-            not text
-            or len(text) > MAX_PROPOSAL_ITEM_CHARS
-            or "\x00" in text
-        ):
+        if not text or len(text) > MAX_PROPOSAL_ITEM_CHARS or "\x00" in text:
             raise FreestyleJobRefusedError(
                 f"Successful proposal artifact field {field_name!r} is invalid."
             )
@@ -856,9 +858,7 @@ def _fit_prompt(
                     [str(item["path"]) for item in files],
                     omitted,
                     priority_candidate_count=priority_candidate_count,
-                    candidate_paths=[
-                        str(item["path"]) for item in files
-                    ]
+                    candidate_paths=[str(item["path"]) for item in files]
                     + [str(record.get("path", "")) for record in omitted],
                 ),
             )
@@ -948,9 +948,7 @@ def _anchor_snippet_targets(
     filled up.
     """
     ordered: list[str] = [*extra_first, *proposal["likely_files_to_edit"]]
-    ordered.extend(
-        str(item["path"]) for item in context.files if item.get("truncated")
-    )
+    ordered.extend(str(item["path"]) for item in context.files if item.get("truncated"))
     ordered.extend(
         str(record.get("path", ""))
         for record in context.omitted_files
@@ -1023,9 +1021,7 @@ def _harvest_prompt_snippets(
             labels.append(snippet.label)
             char_count += len(snippet.exact_text)
             total_chars += len(snippet.exact_text)
-        omitted.extend(
-            {"path": relative, **record} for record in harvest.omitted
-        )
+        omitted.extend({"path": relative, **record} for record in harvest.omitted)
         harvested_files.append(
             {
                 "path": relative,
@@ -1562,18 +1558,16 @@ def _build_generation_artifact(
             context.included_char_count if context is not None else 0
         ),
         "included_files": (
-            [str(item["path"]) for item in context.files]
-            if context is not None
-            else []
+            [str(item["path"]) for item in context.files] if context is not None else []
         ),
         "omission_counts": context.omission_counts if context is not None else {},
-        "omitted_files": (
-            list(context.omitted_files) if context is not None else []
-        ),
+        "omitted_files": (list(context.omitted_files) if context is not None else []),
     }
     validation_result: dict[str, Any] = {
         "status": validation_status,
-        "candidate_file_count": len(validation.planned) if validation is not None else 0,
+        "candidate_file_count": len(validation.planned)
+        if validation is not None
+        else 0,
         "errors": list(errors),
     }
     if validation is not None:
@@ -1760,9 +1754,7 @@ def _response_diagnostics(
         "included_char_count": (
             context.included_char_count if context is not None else 0
         ),
-        "omitted_file_counts": (
-            context.omission_counts if context is not None else {}
-        ),
+        "omitted_file_counts": (context.omission_counts if context is not None else {}),
     }
     if response is not None:
         envelope = safe_response_envelope(response)

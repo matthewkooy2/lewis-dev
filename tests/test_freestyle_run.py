@@ -148,7 +148,9 @@ def _set_metadata(root: Path, job_id: str, **values) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_default_run_materializes_proposes_generates_and_stops_before_mutation(tmp_path):
+def test_default_run_materializes_proposes_generates_and_stops_before_mutation(
+    tmp_path,
+):
     root = _init_repo(tmp_path)
     job = _created_job(root)
     main_before = _source_snapshot(root)
@@ -293,7 +295,9 @@ def test_checks_require_applied_edits_and_dispatch_only_selected_ids(
     job = _created_job(root)
     with pytest.raises(FreestyleJobRefusedError, match="require previously applied"):
         run_freestyle_job(job.job_id, run_checks=True, project_root=root)
-    assert get_freestyle_job(job.job_id, project_root=root).latest_run_status == "not_run"
+    assert (
+        get_freestyle_job(job.job_id, project_root=root).latest_run_status == "not_run"
+    )
 
     client = _FakeDeepSeekClient([_proposal_content(), _bundle_content(job.job_id)])
     calls: list[tuple[str, tuple[str, ...]]] = []
@@ -381,7 +385,9 @@ def test_completed_stages_are_skipped_idempotently(tmp_path, monkeypatch):
 def test_stage_failure_persists_bounded_run_artifact_and_metadata(tmp_path):
     root = _init_repo(tmp_path)
     job = _created_job(root)
-    client = _FakeDeepSeekClient([], error=RuntimeError("proposal exploded " + "x" * 900))
+    client = _FakeDeepSeekClient(
+        [], error=RuntimeError("proposal exploded " + "x" * 900)
+    )
 
     with pytest.raises(FreestyleJobRefusedError, match="bounded failure was recorded"):
         run_freestyle_job(
@@ -401,7 +407,9 @@ def test_stage_failure_persists_bounded_run_artifact_and_metadata(tmp_path):
     assert artifact["errors"]
     assert artifact["stages"][-1]["status"] == "failed"
     assert artifact["artifact_references"]["proposal_failure"]
-    assert "Inspect proposal diagnostics before retrying." in artifact["human_next_steps"]
+    assert (
+        "Inspect proposal diagnostics before retrying." in artifact["human_next_steps"]
+    )
     assert artifact["human_next_steps"]
 
 

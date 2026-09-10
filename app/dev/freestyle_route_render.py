@@ -81,7 +81,9 @@ def render_local_pages(
 def _render_with_client(test_client_cls, app, routes: tuple[str, ...]):
     pages: list[RenderedPage] = []
     try:
-        client = test_client_cls(app, raise_server_exceptions=False)
+        client = test_client_cls(
+            app, base_url="http://127.0.0.1", raise_server_exceptions=False
+        )
     except Exception:
         return ()
     with suppress(Exception):
@@ -114,10 +116,6 @@ def _validated_routes(routes: Sequence[str] | None) -> tuple[str, ...]:
     candidates = SAFE_RENDER_ROUTES if routes is None else routes
     safe: list[str] = []
     for route in candidates:
-        if (
-            isinstance(route, str)
-            and route in SAFE_RENDER_ROUTES
-            and route not in safe
-        ):
+        if isinstance(route, str) and route in SAFE_RENDER_ROUTES and route not in safe:
             safe.append(route)
     return tuple(safe[:MAX_RENDER_ROUTES])

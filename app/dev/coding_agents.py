@@ -1,4 +1,4 @@
-﻿"""Bounded read-only coding-agent jobs for Codex and Claude CLIs."""
+"""Bounded read-only coding-agent jobs for Codex and Claude CLIs."""
 
 from __future__ import annotations
 
@@ -406,7 +406,9 @@ class CodingAgentStore:
             ).fetchall()
         return [CodingAgentJob.from_row(row) for row in rows]
 
-    def list_events(self, job_id: str, limit: int = 100) -> list[CodingAgentEventRecord]:
+    def list_events(
+        self, job_id: str, limit: int = 100
+    ) -> list[CodingAgentEventRecord]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -709,7 +711,9 @@ class CodexAdapter:
         event_type = _payload_type(payload)
         events: list[NormalizedEvent] = []
         external_id = _extract_external_id(payload)
-        if external_id and any(marker in event_type for marker in ("thread", "session")):
+        if external_id and any(
+            marker in event_type for marker in ("thread", "session")
+        ):
             events.append(
                 NormalizedEvent(
                     "job_started",
@@ -742,7 +746,10 @@ class CodexAdapter:
         if command:
             normalized_type = (
                 "command_finished"
-                if any(marker in event_type for marker in ("finished", "completed", "exit", "end"))
+                if any(
+                    marker in event_type
+                    for marker in ("finished", "completed", "exit", "end")
+                )
                 else "command_started"
             )
             events.append(
@@ -864,7 +871,9 @@ class ClaudeAdapter:
                             tool_name,
                             {
                                 "provider_event_type": event_type,
-                                "tool_id": _bounded_text(str(content.get("id") or ""), 200),
+                                "tool_id": _bounded_text(
+                                    str(content.get("id") or ""), 200
+                                ),
                                 "tool_name": tool_name,
                             },
                             external_session_id=external_id,
@@ -877,7 +886,9 @@ class ClaudeAdapter:
                             "tool_result",
                             {
                                 "provider_event_type": event_type,
-                                "tool_use_id": _bounded_text(str(content.get("tool_use_id") or ""), 200),
+                                "tool_use_id": _bounded_text(
+                                    str(content.get("tool_use_id") or ""), 200
+                                ),
                                 "is_error": bool(content.get("is_error", False)),
                             },
                             external_session_id=external_id,
@@ -907,12 +918,17 @@ class ClaudeAdapter:
                     )
                 )
             duration = _duration_seconds_from_payload(payload)
-            is_error = bool(payload.get("is_error")) or str(payload.get("subtype") or "").startswith("error")
+            is_error = bool(payload.get("is_error")) or str(
+                payload.get("subtype") or ""
+            ).startswith("error")
             if is_error:
                 events.append(
                     NormalizedEvent(
                         "job_failed",
-                        _bounded_text(str(payload.get("result") or "Claude reported an error."), 500),
+                        _bounded_text(
+                            str(payload.get("result") or "Claude reported an error."),
+                            500,
+                        ),
                         {"provider_event_type": event_type},
                         external_session_id=external_id,
                         duration_seconds=duration,
@@ -960,7 +976,8 @@ class CodingAgentService:
         store: CodingAgentStore | None = None,
         runner: SafeProcessRunner | None = None,
         executable_resolver: Callable[[str], Path] | None = None,
-        status_runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess] | None = None,
+        status_runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess]
+        | None = None,
     ):
         self.settings = settings
         self.store = store or CodingAgentStore(settings.database_path)
@@ -978,7 +995,9 @@ class CodingAgentService:
         statuses: dict[str, ProviderStatus] = {}
         for provider in sorted(KNOWN_PROVIDERS):
             cached = self._status_cache.get(provider)
-            installed_path = _safe_resolve_executable(self.settings, provider, strict=False)
+            installed_path = _safe_resolve_executable(
+                self.settings, provider, strict=False
+            )
             if cached is not None:
                 statuses[provider] = cached
             else:
@@ -1001,7 +1020,9 @@ class CodingAgentService:
     def launch(self, request: LaunchRequest) -> CodingAgentJob:
         request = _validated_launch_request(request, self.settings)
         repository = repository_by_id(self.settings, request.repository_id)
-        project_id = _validated_project_link(self.settings, request.project_id, repository)
+        project_id = _validated_project_link(
+            self.settings, request.project_id, repository
+        )
         executable = self._resolve_executable(request.provider)
         self.store.upsert_repository(repository)
         now = _utc_now()
@@ -1082,7 +1103,9 @@ class CodingAgentService:
         executable: Path,
         cancel_event: threading.Event,
     ) -> None:
-        adapter = CodexAdapter() if request.provider == PROVIDER_CODEX else ClaudeAdapter()
+        adapter = (
+            CodexAdapter() if request.provider == PROVIDER_CODEX else ClaudeAdapter()
+        )
         invocation = adapter.build_invocation(executable, request, repository)
         self.store.mark_started(job_id)
         self.store.append_event(
@@ -1107,7 +1130,9 @@ class CodingAgentService:
             for event in events:
                 self.store.append_event(job_id, event)
                 if event.external_session_id:
-                    self.store.set_external_session_id(job_id, event.external_session_id)
+                    self.store.set_external_session_id(
+                        job_id, event.external_session_id
+                    )
                 if event.usage:
                     self.store.update_usage(job_id, event.usage)
                 if event.event_type in {"agent_message", "command_started"}:
@@ -1200,10 +1225,15 @@ class CodingAgentService:
             )
             return
         if result.returncode not in {0, None}:
-            message = result.stderr or f"Provider process exited with code {result.returncode}."
+            message = (
+                result.stderr
+                or f"Provider process exited with code {result.returncode}."
+            )
             self.store.append_event(
                 job_id,
-                NormalizedEvent("job_failed", message, failure_category="process_error"),
+                NormalizedEvent(
+                    "job_failed", message, failure_category="process_error"
+                ),
             )
             self.store.mark_terminal(
                 job_id,
@@ -1215,7 +1245,9 @@ class CodingAgentService:
             return
         self.store.append_event(
             job_id,
-            NormalizedEvent("job_completed", "Provider process completed successfully."),
+            NormalizedEvent(
+                "job_completed", "Provider process completed successfully."
+            ),
         )
         self.store.mark_terminal(
             job_id,
@@ -1230,7 +1262,9 @@ class CodingAgentService:
         assert path is not None
         return path
 
-    def _run_status_command(self, args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess:
+    def _run_status_command(
+        self, args: Sequence[str], cwd: Path
+    ) -> subprocess.CompletedProcess:
         if self._status_runner is not None:
             return self._status_runner(args, cwd)
         return _run_status_command(args, cwd)
@@ -1244,7 +1278,9 @@ class CodingAgentService:
                 auth_status="executable unavailable",
                 checked_at=_utc_now(),
             )
-        version = _status_stdout(self._run_status_command([str(path), "--version"], ROOT_DIR))
+        version = _status_stdout(
+            self._run_status_command([str(path), "--version"], ROOT_DIR)
+        )
         status = self._run_status_command([str(path), "login", "status"], ROOT_DIR)
         text = _status_stdout(status) or _status_stderr(status)
         authenticated = status.returncode == 0 and "logged in" in text.casefold()
@@ -1254,7 +1290,9 @@ class CodingAgentService:
             executable_path=str(path),
             version=version or None,
             authenticated=authenticated,
-            auth_status="authenticated" if authenticated else _bounded_text(text or "not authenticated", 200),
+            auth_status="authenticated"
+            if authenticated
+            else _bounded_text(text or "not authenticated", 200),
             usage_status=(
                 "unavailable; Codex app-server usage/rate-limit integration "
                 "is not required for Phase 1"
@@ -1271,8 +1309,12 @@ class CodingAgentService:
                 auth_status="executable unavailable",
                 checked_at=_utc_now(),
             )
-        version = _status_stdout(self._run_status_command([str(path), "--version"], ROOT_DIR))
-        status = self._run_status_command([str(path), "auth", "status", "--json"], ROOT_DIR)
+        version = _status_stdout(
+            self._run_status_command([str(path), "--version"], ROOT_DIR)
+        )
+        status = self._run_status_command(
+            [str(path), "auth", "status", "--json"], ROOT_DIR
+        )
         authenticated = False
         auth_status = "not authenticated"
         try:
@@ -1281,18 +1323,29 @@ class CodingAgentService:
             payload = {}
         if status.returncode == 0 and isinstance(payload, dict):
             authenticated = bool(payload.get("loggedIn"))
-            method = str(payload.get("authMethod") or payload.get("apiProvider") or "authenticated")
+            method = str(
+                payload.get("authMethod")
+                or payload.get("apiProvider")
+                or "authenticated"
+            )
             subscription = str(payload.get("subscriptionType") or "")
-            auth_status = method if not subscription else f"{method}; subscription={subscription}"
+            auth_status = (
+                method if not subscription else f"{method}; subscription={subscription}"
+            )
         elif status.returncode != 0:
-            auth_status = _bounded_text(_status_stderr(status) or _status_stdout(status), 200) or "not authenticated"
+            auth_status = (
+                _bounded_text(_status_stderr(status) or _status_stdout(status), 200)
+                or "not authenticated"
+            )
         return ProviderStatus(
             provider=PROVIDER_CLAUDE,
             installed=True,
             executable_path=str(path),
             version=version or None,
             authenticated=authenticated,
-            auth_status="authenticated" if authenticated and not auth_status else auth_status,
+            auth_status="authenticated"
+            if authenticated and not auth_status
+            else auth_status,
             usage_status="subscription-window usage unavailable via documented local JSON status",
             checked_at=_utc_now(),
         )
@@ -1355,12 +1408,18 @@ def repository_by_id(settings: Settings, repository_id: str) -> ApprovedReposito
     for repository in approved_repositories(settings):
         if repository.repo_id == repository_id:
             if not repository.valid:
-                raise RepositoryRefusedError(repository.error or "Repository is not approved.")
+                raise RepositoryRefusedError(
+                    repository.error or "Repository is not approved."
+                )
             return repository
-    raise RepositoryRefusedError("Repository selection must be one configured approved repository.")
+    raise RepositoryRefusedError(
+        "Repository selection must be one configured approved repository."
+    )
 
 
-def sanitized_process_environment(parent: dict[str, str] | None = None) -> dict[str, str]:
+def sanitized_process_environment(
+    parent: dict[str, str] | None = None,
+) -> dict[str, str]:
     source = parent or os.environ
     env: dict[str, str] = {}
     for key, value in source.items():
@@ -1379,7 +1438,9 @@ def sanitized_process_environment(parent: dict[str, str] | None = None) -> dict[
     return env
 
 
-def _validated_launch_request(request: LaunchRequest, settings: Settings) -> LaunchRequest:
+def _validated_launch_request(
+    request: LaunchRequest, settings: Settings
+) -> LaunchRequest:
     provider = str(request.provider or "").strip().casefold()
     if provider not in KNOWN_PROVIDERS:
         raise CodingAgentError("Provider must be codex or claude.")
@@ -1388,10 +1449,14 @@ def _validated_launch_request(request: LaunchRequest, settings: Settings) -> Lau
     effort = str(request.effort or "").strip().casefold() or None
     if provider == PROVIDER_CLAUDE:
         if effort is not None and effort not in CLAUDE_EFFORTS:
-            raise CodingAgentError("Claude effort must be low, medium, high, xhigh, or max.")
+            raise CodingAgentError(
+                "Claude effort must be low, medium, high, xhigh, or max."
+            )
     elif effort is not None:
         raise CodingAgentError("Effort is only accepted for Claude jobs in this phase.")
-    max_turns = _bounded_int(request.max_turns, default=6, minimum=1, maximum=MAX_TURNS_LIMIT)
+    max_turns = _bounded_int(
+        request.max_turns, default=6, minimum=1, maximum=MAX_TURNS_LIMIT
+    )
     configured_max = _bounded_int(
         settings.coding_agent_max_timeout_seconds,
         default=MAX_TIMEOUT_SECONDS,
@@ -1422,7 +1487,9 @@ def _validated_launch_request(request: LaunchRequest, settings: Settings) -> Lau
     )
 
 
-def _validated_project_link(settings: Settings, project_id: str | None, repository: ApprovedRepository) -> str | None:
+def _validated_project_link(
+    settings: Settings, project_id: str | None, repository: ApprovedRepository
+) -> str | None:
     clean = _validate_optional_project_id(project_id)
     if clean is None:
         return None
@@ -1430,7 +1497,9 @@ def _validated_project_link(settings: Settings, project_id: str | None, reposito
 
     project = ProjectStore(settings.database_path).require_project(clean)
     if str(project.repository_root).casefold() != str(repository.root).casefold():
-        raise CodingAgentError("Project id does not match the selected approved repository.")
+        raise CodingAgentError(
+            "Project id does not match the selected approved repository."
+        )
     return clean
 
 
@@ -1450,7 +1519,9 @@ def _validate_goal(goal: str) -> str:
     if not clean:
         raise CodingAgentError("Goal must not be empty.")
     if len(clean) > MAX_GOAL_LENGTH:
-        raise CodingAgentError(f"Goal exceeds the maximum length of {MAX_GOAL_LENGTH} characters.")
+        raise CodingAgentError(
+            f"Goal exceeds the maximum length of {MAX_GOAL_LENGTH} characters."
+        )
     if "\x00" in clean:
         raise CodingAgentError("Goal must not contain NUL bytes.")
     return clean
@@ -1463,7 +1534,9 @@ def _validate_model(model: str | None) -> str | None:
     if not clean:
         return None
     if len(clean) > MAX_MODEL_LENGTH or _MODEL_PATTERN.fullmatch(clean) is None:
-        raise CodingAgentError("Model must be a bounded model name without spaces or shell characters.")
+        raise CodingAgentError(
+            "Model must be a bounded model name without spaces or shell characters."
+        )
     return clean
 
 
@@ -1477,18 +1550,24 @@ def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> 
 
 def _validate_configured_repository(path: Path) -> ApprovedRepository:
     if not isinstance(path, Path):
-        raise RepositoryRefusedError("Approved repository roots must come from local configuration.")
+        raise RepositoryRefusedError(
+            "Approved repository roots must come from local configuration."
+        )
     if path.is_symlink():
         raise RepositoryRefusedError("Approved repository root must not be a symlink.")
     try:
         root = path.expanduser().resolve(strict=True)
     except OSError as exc:
-        raise RepositoryRefusedError("Approved repository root does not exist.") from exc
+        raise RepositoryRefusedError(
+            "Approved repository root does not exist."
+        ) from exc
     if not root.is_dir():
         raise RepositoryRefusedError("Approved repository root must be a directory.")
     _require_git_toplevel(root)
     _validate_repository_tree(root)
-    return ApprovedRepository(repo_id=_repository_id(root), root=root, label=root.name or str(root))
+    return ApprovedRepository(
+        repo_id=_repository_id(root), root=root, label=root.name or str(root)
+    )
 
 
 def _require_git_toplevel(root: Path) -> None:
@@ -1502,13 +1581,21 @@ def _require_git_toplevel(root: Path) -> None:
         timeout=STATUS_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
-        raise RepositoryRefusedError("Approved repository root must be a Git work tree.")
+        raise RepositoryRefusedError(
+            "Approved repository root must be a Git work tree."
+        )
     try:
-        top = Path(result.stdout.decode("utf-8", errors="replace").strip()).resolve(strict=True)
+        top = Path(result.stdout.decode("utf-8", errors="replace").strip()).resolve(
+            strict=True
+        )
     except OSError as exc:
-        raise RepositoryRefusedError("Git top-level path could not be resolved.") from exc
+        raise RepositoryRefusedError(
+            "Git top-level path could not be resolved."
+        ) from exc
     if top != root:
-        raise RepositoryRefusedError("Jobs may run only at the approved Git repository top level.")
+        raise RepositoryRefusedError(
+            "Jobs may run only at the approved Git repository top level."
+        )
 
 
 def _validate_repository_tree(root: Path) -> None:
@@ -1519,21 +1606,29 @@ def _validate_repository_tree(root: Path) -> None:
         try:
             entries = list(current.iterdir())
         except OSError as exc:
-            raise RepositoryRefusedError("Approved repository tree could not be inspected safely.") from exc
+            raise RepositoryRefusedError(
+                "Approved repository tree could not be inspected safely."
+            ) from exc
         for entry in entries:
             scanned += 1
             if scanned > MAX_REPOSITORY_SCAN_ENTRIES:
-                raise RepositoryRefusedError("Approved repository tree exceeds the Phase 1 safety scan limit.")
+                raise RepositoryRefusedError(
+                    "Approved repository tree exceeds the Phase 1 safety scan limit."
+                )
             if entry.name == ".git":
                 if entry.parent != root:
-                    raise RepositoryRefusedError("Nested Git repositories are not accepted for Phase 1 jobs.")
+                    raise RepositoryRefusedError(
+                        "Nested Git repositories are not accepted for Phase 1 jobs."
+                    )
                 continue
             if entry.is_symlink():
                 try:
                     target = entry.resolve(strict=True)
                     target.relative_to(root)
                 except (OSError, ValueError) as exc:
-                    raise RepositoryRefusedError("Repository symlinks must not escape the approved root.") from exc
+                    raise RepositoryRefusedError(
+                        "Repository symlinks must not escape the approved root."
+                    ) from exc
                 continue
             if entry.is_dir():
                 if entry.name in _GENERATED_OR_CACHE_PARTS:
@@ -1545,7 +1640,9 @@ def _repository_id(root: Path) -> str:
     return hashlib.sha256(str(root).casefold().encode("utf-8")).hexdigest()[:16]
 
 
-def _safe_resolve_executable(settings: Settings, provider: str, *, strict: bool) -> Path | None:
+def _safe_resolve_executable(
+    settings: Settings, provider: str, *, strict: bool
+) -> Path | None:
     if provider == PROVIDER_CODEX:
         configured = settings.codex_cli_path
         executable_name = "codex"
@@ -1616,7 +1713,9 @@ def _assert_safe_invocation(provider: str, args: Sequence[str]) -> None:
         if sandbox_index + 1 >= len(values) or values[sandbox_index + 1] != "read-only":
             raise CodingAgentError("Codex invocation must set --sandbox read-only.")
         if "--skip-git-repo-check" in values:
-            raise CodingAgentError("Codex invocation must not skip the Git repository check.")
+            raise CodingAgentError(
+                "Codex invocation must not skip the Git repository check."
+            )
     elif provider == PROVIDER_CLAUDE:
         if "-p" not in values and "--print" not in values:
             raise CodingAgentError("Claude invocation must use print mode.")
@@ -1633,8 +1732,13 @@ def _assert_safe_invocation(provider: str, args: Sequence[str]) -> None:
         if "--tools" not in values:
             raise CodingAgentError("Claude invocation must restrict tools.")
         tools_index = values.index("--tools")
-        if tools_index + 1 >= len(values) or values[tools_index + 1] != "Read,Grep,Glob,LS":
-            raise CodingAgentError("Claude invocation must restrict tools to read-only built-ins.")
+        if (
+            tools_index + 1 >= len(values)
+            or values[tools_index + 1] != "Read,Grep,Glob,LS"
+        ):
+            raise CodingAgentError(
+                "Claude invocation must restrict tools to read-only built-ins."
+            )
     else:
         raise CodingAgentError("Unknown provider invocation.")
 
@@ -1677,7 +1781,16 @@ def _parse_json_line(line: str) -> dict[str, Any]:
 
 
 def _payload_type(payload: dict[str, Any]) -> str:
-    return str(payload.get("type") or payload.get("event") or payload.get("event_type") or "").strip().casefold()
+    return (
+        str(
+            payload.get("type")
+            or payload.get("event")
+            or payload.get("event_type")
+            or ""
+        )
+        .strip()
+        .casefold()
+    )
 
 
 def _extract_external_id(payload: dict[str, Any]) -> str | None:
@@ -1702,7 +1815,11 @@ def _extract_external_id(payload: dict[str, Any]) -> str | None:
 def _payload_error_text(payload: dict[str, Any]) -> str:
     for key in ("error", "error_message", "message"):
         value = payload.get(key)
-        if isinstance(value, str) and value.strip() and (key != "message" or "error" in _payload_type(payload)):
+        if (
+            isinstance(value, str)
+            and value.strip()
+            and (key != "message" or "error" in _payload_type(payload))
+        ):
             return _bounded_text(value, 500)
         if isinstance(value, dict):
             nested = value.get("message") or value.get("error")
@@ -1792,7 +1909,12 @@ def _extract_usage(payload: dict[str, Any]) -> UsageValues:
             "reported"
             if any(
                 value is not None
-                for value in (input_tokens, cached_input_tokens, output_tokens, reasoning_tokens)
+                for value in (
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                )
             )
             else None
         ),
@@ -1911,7 +2033,11 @@ def _utc_now() -> str:
 
 
 def _is_job_id(value: str) -> bool:
-    return isinstance(value, str) and len(value) == 32 and all(character in "0123456789abcdef" for character in value)
+    return (
+        isinstance(value, str)
+        and len(value) == 32
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _run_status_command(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -1927,10 +2053,14 @@ def _run_status_command(args: Sequence[str], cwd: Path) -> subprocess.CompletedP
     return _cap_completed_output(completed)
 
 
-def _cap_completed_output(completed: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
+def _cap_completed_output(
+    completed: subprocess.CompletedProcess,
+) -> subprocess.CompletedProcess:
     stdout = bytes(completed.stdout or b"")[:STATUS_OUTPUT_LIMIT_BYTES]
     stderr = bytes(completed.stderr or b"")[:STATUS_OUTPUT_LIMIT_BYTES]
-    return subprocess.CompletedProcess(completed.args, completed.returncode, stdout=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(
+        completed.args, completed.returncode, stdout=stdout, stderr=stderr
+    )
 
 
 def _status_stdout(completed: subprocess.CompletedProcess) -> str:

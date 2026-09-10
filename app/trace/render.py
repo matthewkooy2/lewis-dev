@@ -36,9 +36,7 @@ def render_result(result: TraceResult, limits: TraceLimits | None = None) -> str
         return text[: limits.max_report_chars]
 
     if result.target is None:
-        lines.append(
-            f"AMBIGUOUS SYMBOL: {len(result.candidates)} definitions match."
-        )
+        lines.append(f"AMBIGUOUS SYMBOL: {len(result.candidates)} definitions match.")
         lines.append("Re-run with file::symbol or a qualified name. Candidates:")
         lines.extend(_candidate_lines(result.candidates))
         text = "\n".join(lines)
@@ -46,9 +44,7 @@ def render_result(result: TraceResult, limits: TraceLimits | None = None) -> str
 
     target = result.target
     header = result.mode.upper() + " TRACE" if result.mode != "review" else "REVIEW"
-    lines.append(
-        f"{header}: {target.qualname} [{target.kind}, {target.language}]"
-    )
+    lines.append(f"{header}: {target.qualname} [{target.kind}, {target.language}]")
     location = f"Defined at {target.path}:{target.line}-{target.end_line}"
     if target.signature:
         location += f"  signature: {target.signature}"
@@ -71,9 +67,7 @@ def render_result(result: TraceResult, limits: TraceLimits | None = None) -> str
         _render_evidence(lines, result)
 
     caller_cap = 12 if result.mode == "review" else None
-    _render_edges(
-        lines, "Callers", result.callers, direction="caller", cap=caller_cap
-    )
+    _render_edges(lines, "Callers", result.callers, direction="caller", cap=caller_cap)
     _render_edges(lines, "Callees", result.callees, direction="callee")
     _render_effects(lines, "Side effects (direct)", result.side_effects)
     if result.transitive_side_effects:
@@ -97,16 +91,16 @@ def render_result(result: TraceResult, limits: TraceLimits | None = None) -> str
 
     if result.error_handling:
         entries = [
-            info
-            for info in result.error_handling
-            if info.raises or info.catches
+            info for info in result.error_handling if info.raises or info.catches
         ]
         if entries:
             lines.append("Error handling:")
             for info in entries[:12]:
                 raises = ", ".join(info.raises[:4]) or "-"
                 catches = ", ".join(info.catches[:4]) or "-"
-                lines.append(f"  {info.qualname}: raises [{raises}] catches [{catches}]")
+                lines.append(
+                    f"  {info.qualname}: raises [{raises}] catches [{catches}]"
+                )
                 for line in info.bare_catch_lines[:2]:
                     lines.append(f"    bare except at line {line}")
                 for line in info.swallowed_catch_lines[:2]:

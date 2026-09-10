@@ -21,7 +21,6 @@ from app.model_profiles import profile_after_tool_call, profile_for_user_input
 from app.project_search_discipline import (
     MAX_PROJECT_SEARCHES_PER_TURN,
     has_useful_project_search_results,
-    is_code_proposal_request,
     project_search_answer,
     project_search_query,
     project_search_records,
@@ -29,7 +28,6 @@ from app.project_search_discipline import (
     should_finish_project_search_turn,
     should_suppress_project_search,
 )
-from app.search_first_code_proposal import create_search_first_code_proposal
 from app.tool_call_limits import effective_tool_call_limit
 from app.text_tool_calls import extract_text_tool_calls, strip_tool_call_markup
 from app.tools import ToolRegistry
@@ -266,10 +264,6 @@ class LewisAgent:
                 answer=answer,
                 tool_calls=replacement_code_proposal.tool_records,
             )
-
-        legacy_code_proposal = self._maybe_run_legacy_code_proposal(user_input)
-        if legacy_code_proposal is not None:
-            return legacy_code_proposal
 
         local_tool_run = self._maybe_run_local_read_only_tool(user_input)
         if local_tool_run is not None:
@@ -616,43 +610,6 @@ class LewisAgent:
                 )
                 self._print_debug_token_summary(run)
                 return run
-
-    def _maybe_run_legacy_code_proposal(self, user_input: str) -> AssistantRun | None:
-        normalized = " ".join(user_input.lower().split())
-        if "proposal" in normalized and is_code_proposal_request(user_input):
-            return self._run_legacy_code_proposal(user_input)
-
-        return None
-
-    def _run_legacy_code_proposal(self, user_input: str) -> AssistantRun:
-        model_profile = profile_for_user_input(self.settings, user_input)
-        tool_call_limit = effective_tool_call_limit(self.settings, model_profile)
-        if tool_call_limit < 2:
-            answer = self._tool_limit_stop_text(
-                f"Tool call limit reached ({tool_call_limit}).",
-                [],
-            )
-            tool_records = [{"name": "tool_limit", "result": answer}]
-        else:
-            result = create_search_first_code_proposal(
-                user_input=user_input,
-                search=self.tools.project_file_search,
-                store=self.tools.approval_store,
-                max_searches=min(2, tool_call_limit - 1),
-            )
-            if result.approval is not None:
-                proposal_result = result.tool_records[-1]["result"]
-                self._track_approval("propose_code_change", proposal_result)
-            answer = result.message
-            tool_records = result.tool_records
-
-        self._append_conversation_turn(user_input, answer)
-        self.logger.log_run(
-            user_input=user_input,
-            model=model_profile.model,
-            tool_calls=tool_records,
-        )
-        return AssistantRun(answer=answer, tool_calls=tool_records)
 
     def _registered_structured_tool_calls(
         self,

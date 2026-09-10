@@ -73,9 +73,7 @@ def test_start_script_clears_marker_only_after_health_gate() -> None:
 def test_start_script_keeps_pid_file_when_stop_fails() -> None:
     text = _script_text("start-lewis.ps1")
     restart_block = text[
-        text.index("$RestartRequested = Test-Path") : text.index(
-            "# Start LM Studio"
-        )
+        text.index("$RestartRequested = Test-Path") : text.index("# Start LM Studio")
     ]
     kept = restart_block.index("could not be stopped")
     removed = restart_block.index("Remove-Item $PidFile")

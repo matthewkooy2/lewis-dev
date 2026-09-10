@@ -312,7 +312,9 @@ def test_review_uses_only_constrained_readonly_git_and_no_model_or_shell(
 ):
     root = _init_repo(tmp_path)
     job = _materialized_job(root)
-    (Path(job.worktree_path) / "tracked.txt").write_text("review me\n", encoding="utf-8")
+    (Path(job.worktree_path) / "tracked.txt").write_text(
+        "review me\n", encoding="utf-8"
+    )
     calls: list[tuple[list[str], dict]] = []
     real_run = subprocess.run
 
@@ -521,7 +523,9 @@ def test_ui_review_reads_referenced_unchanged_static_js_for_selector_reconciliat
 def test_non_web_changes_carry_an_empty_ui_review(tmp_path):
     root = _init_repo(tmp_path)
     job = _materialized_job(root)
-    (Path(job.worktree_path) / "tracked.txt").write_text("plain edit\n", encoding="utf-8")
+    (Path(job.worktree_path) / "tracked.txt").write_text(
+        "plain edit\n", encoding="utf-8"
+    )
 
     completed = review_freestyle_job(job.job_id, project_root=root)
     artifact = _artifact(root, completed)

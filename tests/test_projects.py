@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 import subprocess
@@ -74,7 +74,9 @@ def _init_repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (root / "node_modules").mkdir()
-    (root / "node_modules" / "ignored.js").write_text("function ignored() {}\n", encoding="utf-8")
+    (root / "node_modules" / "ignored.js").write_text(
+        "function ignored() {}\n", encoding="utf-8"
+    )
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test User")
@@ -131,7 +133,10 @@ def test_project_creation_validation_archiving_and_notes(tmp_path: Path):
     with pytest.raises(Exception):
         store.delete_note_permanently(project.id, note.id, confirm="")
     store.delete_note_permanently(project.id, note.id, confirm="delete-note")
-    assert all(item.id != note.id for item in store.list_notes(project.id, include_archived=True))
+    assert all(
+        item.id != note.id
+        for item in store.list_notes(project.id, include_archived=True)
+    )
 
     archived = store.archive_project(project.id, confirm="archive-project")
     assert archived.status == "archived"
@@ -160,7 +165,9 @@ def test_repository_validation_rejects_nested_git_and_symlink_escape(tmp_path: P
             validate_project_repository(settings, repository_path=str(repo))
 
 
-def test_repository_map_persists_symbols_relationships_and_incremental_refresh(tmp_path: Path):
+def test_repository_map_persists_symbols_relationships_and_incremental_refresh(
+    tmp_path: Path,
+):
     repo = _init_repo(tmp_path)
     settings = _settings(tmp_path, repos=[repo])
     store = ProjectStore(settings.database_path)
@@ -180,13 +187,17 @@ def test_repository_map_persists_symbols_relationships_and_incremental_refresh(t
     assert {symbol.name for symbol in symbols} >= {"Service", "run"}
     relationships = store.search_map(project.id, query="helper")["relationships"]
     assert any(rel.relationship_type == "import" for rel in relationships)
-    assert store.repository_summary(project.id).startswith("Deterministic repository map")
+    assert store.repository_summary(project.id).startswith(
+        "Deterministic repository map"
+    )
 
     (repo / "app" / "helper.py").write_text(
         "def helper():\n    return 'changed'\n",
         encoding="utf-8",
     )
-    second = store.create_map_run(project.id, run_type="incremental", full_rebuild=False)
+    second = store.create_map_run(
+        project.id, run_type="incremental", full_rebuild=False
+    )
     ProjectMapWorker(settings, store, threading.Event()).run(second.id)
     refreshed = store.require_map_run(second.id)
     assert refreshed.status == "completed"
@@ -211,12 +222,20 @@ def test_map_run_cancellation_and_restart_recovery(tmp_path: Path):
 
 def test_projects_web_feature_flag_and_project_workflow(tmp_path: Path):
     repo = _init_repo(tmp_path)
-    disabled = TestClient(create_app(_settings(tmp_path, repos=[repo], projects_enabled=False)))
+    disabled = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(_settings(tmp_path, repos=[repo], projects_enabled=False)),
+    )
     assert disabled.get("/projects").status_code == 404
     assert "/projects" not in disabled.get("/dashboard").text
 
     settings = _settings(tmp_path, repos=[repo], projects_enabled=True)
-    client = TestClient(create_app(settings))
+    client = TestClient(
+        base_url="http://127.0.0.1:8787",
+        headers={"Origin": "http://127.0.0.1:8787"},
+        app=create_app(settings),
+    )
     assert client.get("/projects").status_code == 200
     assert "/projects" in client.get("/dashboard").text
 
@@ -255,7 +274,9 @@ def test_coding_agent_job_can_link_to_project(tmp_path: Path):
     project = _create_project(settings, repo)
 
     class StubRunner:
-        def run(self, invocation, *, on_stdout_line, on_stderr_line=None, cancel_event=None):
+        def run(
+            self, invocation, *, on_stdout_line, on_stderr_line=None, cancel_event=None
+        ):
             return ProcessResult(returncode=0, duration_seconds=0.01)
 
     service = CodingAgentService(
@@ -280,7 +301,12 @@ def test_coding_agent_job_can_link_to_project(tmp_path: Path):
     job = service.store.get_job(created.id)
     assert job is not None
     assert job.project_id == project.id
-    assert ProjectStore(settings.database_path).related_coding_agent_jobs(project.id)[0]["id"] == job.id
+    assert (
+        ProjectStore(settings.database_path).related_coding_agent_jobs(project.id)[0][
+            "id"
+        ]
+        == job.id
+    )
 
 
 def test_import_relationship_derivation_is_bounded_and_deterministic():

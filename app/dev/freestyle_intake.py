@@ -168,7 +168,9 @@ def is_test_path(path: str) -> bool:
     return is_test_pattern(path) or "/tests/" in path.casefold()
 
 
-def split_named_targets(paths: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def split_named_targets(
+    paths: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Split named targets into (implementation files, test files)."""
     implementation = tuple(path for path in paths if not is_test_path(path))
     tests = tuple(path for path in paths if is_test_path(path))
@@ -224,9 +226,7 @@ def build_intake_summary(
         "forbidden_paths": list(forbidden_paths),
         "must_inspect_files": must_inspect,
         "previous_bundle_touched_files": list(_dedupe(previous_bundle_touched_files)),
-        "previous_proposal_likely_files": list(
-            _dedupe(previous_proposal_likely_files)
-        ),
+        "previous_proposal_likely_files": list(_dedupe(previous_proposal_likely_files)),
         "rejection_text_present": bool(rejection_text and rejection_text.strip()),
     }
 

@@ -203,7 +203,9 @@ def test_refine_sees_prior_applied_page_and_stops_before_apply(tmp_path):
     assert "current isolated worktree, not a fresh job" in proposal_payload["goal"]
     assert refined.latest_refinement_status == "generated"
     assert refined.edit_apply_status == "not_applied"
-    assert (worktree / "app" / "web_routes.py").read_text(encoding="utf-8") == original_main
+    assert (worktree / "app" / "web_routes.py").read_text(
+        encoding="utf-8"
+    ) == original_main
     assert (root / "app" / "web_routes.py").read_text(encoding="utf-8") == original_main
     assert refined.original_artifacts["proposal"] == original_proposal
     assert refined.original_artifacts["generated_bundle"] == original_bundle
@@ -272,9 +274,9 @@ def test_refinement_huge_goal_is_not_echoed_into_model_output_contract(tmp_path)
 
     # The persisted bundle carries Lewis-injected, bounded provenance only.
     persisted = json.loads(
-        (
-            root / freestyle.DEV_STATE_DIR_NAME / refined.edit_bundle_path
-        ).read_text(encoding="utf-8")
+        (root / freestyle.DEV_STATE_DIR_NAME / refined.edit_bundle_path).read_text(
+            encoding="utf-8"
+        )
     )
     assert persisted["job_id"] == job.job_id
     assert persisted["operation_count"] == 1
@@ -330,13 +332,15 @@ def test_refine_apply_requires_both_flags_and_uses_safe_applier(tmp_path):
     assert '"/shenanigans"' in (
         Path(job.worktree_path) / "app" / "web_routes.py"
     ).read_text(encoding="utf-8")
-    assert (root / "app" / "web_routes.py").read_text(encoding="utf-8") == "ROUTES = {}\n"
+    assert (root / "app" / "web_routes.py").read_text(
+        encoding="utf-8"
+    ) == "ROUTES = {}\n"
 
 
 # Mirrors the real app/web_routes.py: approval-store imports and approval
 # routes live in the same file as ordinary page routes. Assembled with the
 # concatenated class name so this test file never contains the literal text.
-_TETRIS_ROUTES = f'''from app.approvals import {APPROVAL_STORE_CLASS_NAME}
+_TETRIS_ROUTES = f"""from app.approvals import {APPROVAL_STORE_CLASS_NAME}
 from app.approval_service import approve_approval
 from app.web_pages import approvals_page, chat_page
 
@@ -357,7 +361,7 @@ def _approval_store(request):
 
 def _page(title, request, content):
     return content
-'''
+"""
 _TETRIS_REFINEMENT_GOAL = (
     "Wire the existing shenanigans_page into app/web_routes.py so GET "
     "/shenanigans returns the Shenanigans page using the same _page(...) "
@@ -380,15 +384,18 @@ def _init_tetris_repo(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     (root / "app" / "static").mkdir(parents=True)
     (root / "tests").mkdir()
-    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8")
-    (root / "app" / "web_routes.py").write_text(_TETRIS_ROUTES, encoding="utf-8")
+    (root / ".gitignore").write_text(".lewis-dev/\n", encoding="utf-8", newline="\n")
+    (root / "app" / "web_routes.py").write_text(
+        _TETRIS_ROUTES, encoding="utf-8", newline="\n"
+    )
     (root / "app" / "web_pages.py").write_text(
-        'def chat_page():\n    return "<p>chat</p>"\n', encoding="utf-8"
+        'def chat_page():\n    return "<p>chat</p>"\n', encoding="utf-8", newline="\n"
     )
     (root / "tests" / "test_routes.py").write_text(
-        "def test_routes():\n    assert True\n", encoding="utf-8"
+        "def test_routes():\n    assert True\n", encoding="utf-8", newline="\n"
     )
     _git(root, "init", "-b", "main")
+    _git(root, "config", "core.autocrlf", "false")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test User")
     _git(root, "add", ".")
@@ -471,8 +478,7 @@ def test_tetris_refinement_proposes_route_wiring_and_stops_at_generated_bundle(
                         "path": "tests/test_web_shenanigans.py",
                         "old_text": "def test_shenanigans_page():\n    assert True",
                         "new_text": (
-                            "def test_shenanigans_route():\n"
-                            '    assert "/shenanigans"'
+                            'def test_shenanigans_route():\n    assert "/shenanigans"'
                         ),
                     },
                 ],
@@ -585,17 +591,16 @@ def test_tetris_refinement_recovers_from_stale_anchor_with_exact_snippets(tmp_pa
                         "path": "tests/test_routes.py",
                         "old_text": "def test_routes():\n    assert True",
                         "new_text": (
-                            "def test_shenanigans_route():\n"
-                            '    assert "/shenanigans"'
+                            'def test_shenanigans_route():\n    assert "/shenanigans"'
                         ),
                     },
                 ],
             ),
         ]
     )
-    routes_before = (
-        Path(job.worktree_path) / "app" / "web_routes.py"
-    ).read_text(encoding="utf-8")
+    routes_before = (Path(job.worktree_path) / "app" / "web_routes.py").read_text(
+        encoding="utf-8"
+    )
 
     refined = refine_freestyle_job(
         job.job_id,
@@ -641,9 +646,10 @@ def test_tetris_refinement_recovers_from_stale_anchor_with_exact_snippets(tmp_pa
             encoding="utf-8"
         )
     )
-    assert [
-        record["status"] for record in generation_artifact["attempts"]
-    ] == ["exact_match_error", "valid"]
+    assert [record["status"] for record in generation_artifact["attempts"]] == [
+        "exact_match_error",
+        "valid",
+    ]
     retry = generation_artifact["anchor_snippets"]["retry"]
     assert retry["used"] is True
     assert retry["failed_path"] == "app/web_routes.py"
@@ -651,9 +657,10 @@ def test_tetris_refinement_recovers_from_stale_anchor_with_exact_snippets(tmp_pa
     bundle_payload = json.loads(
         (artifact_root / refined.edit_bundle_path).read_text(encoding="utf-8")
     )
-    assert [
-        operation["path"] for operation in bundle_payload["operations"]
-    ] == ["app/web_routes.py", "tests/test_routes.py"]
+    assert [operation["path"] for operation in bundle_payload["operations"]] == [
+        "app/web_routes.py",
+        "tests/test_routes.py",
+    ]
 
     assert (Path(job.worktree_path) / "app" / "web_routes.py").read_text(
         encoding="utf-8"
@@ -777,7 +784,9 @@ def test_refine_refuses_unknown_unapproved_not_materialized_active_and_inconsist
             job.job_id, "Refine it.", developer_approved=True, project_root=root
         )
 
-    _set_metadata(root, job.job_id, checks_status="not_run", edit_apply_status="inconsistent")
+    _set_metadata(
+        root, job.job_id, checks_status="not_run", edit_apply_status="inconsistent"
+    )
     with pytest.raises(FreestyleJobRefusedError, match="cannot be refined"):
         refine_freestyle_job(
             job.job_id, "Refine it.", developer_approved=True, project_root=root
@@ -794,12 +803,16 @@ def test_refine_refuses_unsafe_missing_mismatched_and_wrong_registered_worktrees
     freestyle.materialize_freestyle_job(job.job_id, project_root=root)
 
     _set_metadata(root, job.job_id, worktree_path=str(tmp_path / "outside"))
-    with pytest.raises(FreestyleJobRefusedError, match="does not match local dev state"):
+    with pytest.raises(
+        FreestyleJobRefusedError, match="does not match local dev state"
+    ):
         refine_freestyle_job(
             job.job_id, "Refine it.", developer_approved=True, project_root=root
         )
 
-    _set_metadata(root, job.job_id, worktree_path=job.worktree_path, branch="wrong-branch")
+    _set_metadata(
+        root, job.job_id, worktree_path=job.worktree_path, branch="wrong-branch"
+    )
     with pytest.raises(FreestyleJobRefusedError, match="branch does not match"):
         refine_freestyle_job(
             job.job_id, "Refine it.", developer_approved=True, project_root=root
@@ -857,9 +870,7 @@ def test_recovery_and_cleanup_remain_safe_for_refined_jobs(tmp_path):
     )
     freestyle.materialize_freestyle_job(job.job_id, project_root=root)
     refinement_id = "1" * 16
-    artifact_dir = (
-        root / freestyle.DEV_STATE_DIR_NAME / "refinements" / job.job_id
-    )
+    artifact_dir = root / freestyle.DEV_STATE_DIR_NAME / "refinements" / job.job_id
     artifact_dir.mkdir(parents=True)
     artifact = artifact_dir / f"refinement-{refinement_id}-0001.json"
     artifact.write_text("{}\n", encoding="utf-8")
@@ -885,9 +896,7 @@ def test_recovery_and_cleanup_remain_safe_for_refined_jobs(tmp_path):
     )
 
     with pytest.raises(FreestyleJobRefusedError, match="active or inconsistent"):
-        maintenance.cleanup_freestyle_job(
-            job.job_id, confirm=True, project_root=root
-        )
+        maintenance.cleanup_freestyle_job(job.job_id, confirm=True, project_root=root)
     recovered = maintenance.recover_freestyle_job(
         job.job_id, confirm=True, project_root=root
     )
@@ -981,7 +990,9 @@ def test_effective_refinement_goal_keeps_observed_feedback_separate():
     assert "Observed runtime/UI feedback" in goal
     assert "Days render as a vertical list." in goal
     # The human refinement instruction stays a distinct, later section.
-    assert goal.index("Observed runtime/UI feedback") < goal.index("New refinement goal:")
+    assert goal.index("Observed runtime/UI feedback") < goal.index(
+        "New refinement goal:"
+    )
 
 
 def test_validate_observed_ui_feedback_bounds_and_normalizes():
@@ -1008,7 +1019,10 @@ def test_refine_cli_requires_approval_and_dispatches_safe_defaults(
         return job
 
     monkeypatch.setattr(freestyle, "refine_freestyle_job", fake_refine)
-    assert freestyle.main(["refine", job.job_id, "--goal", "Wire route.", "--approve"]) == 0
+    assert (
+        freestyle.main(["refine", job.job_id, "--goal", "Wire route.", "--approve"])
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["job_id"] == job.job_id
     assert calls == [
         {

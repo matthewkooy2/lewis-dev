@@ -1,4 +1,4 @@
-﻿"""Developer-only web UI for bounded read-only coding-agent jobs."""
+"""Developer-only web UI for bounded read-only coding-agent jobs."""
 
 from __future__ import annotations
 
@@ -19,7 +19,14 @@ from app.dev.coding_agents import (
     LaunchRequest,
     ProviderStatus,
 )
-from app.web_components import escape, field, flash, page_html, page_header, status_badge
+from app.web_components import (
+    escape,
+    field,
+    flash,
+    page_html,
+    page_header,
+    status_badge,
+)
 
 MAX_WEB_REQUEST_BYTES = 20_000
 READ_ONLY_LABEL = "Read-only analysis and proposal jobs. File modifications and Git integration are disabled."
@@ -36,7 +43,9 @@ def register_coding_agent_web_routes(app: FastAPI) -> None:
                 error="Coding Agents views only accept status-message parameters.",
                 status_code=400,
             )
-        return _page_response(request, message=message, error=error, project_id=project_id)
+        return _page_response(
+            request, message=message, error=error, project_id=project_id
+        )
 
     @app.get("/dev/coding-agents/{job_id}", response_class=HTMLResponse)
     def coding_agent_detail(
@@ -57,14 +66,18 @@ def register_coding_agent_web_routes(app: FastAPI) -> None:
     async def refresh_status(request: Request) -> RedirectResponse:
         fields = await _request_fields(request)
         if set(fields) - {"confirm_status"}:
-            return _redirect(error="Status refresh accepts only its confirmation field.")
+            return _redirect(
+                error="Status refresh accepts only its confirmation field."
+            )
         if fields.get("confirm_status") != "refresh-provider-status":
             return _redirect(error="Explicit status-refresh confirmation is required.")
         try:
             _service(request).refresh_provider_statuses()
         except Exception as exc:
             return _redirect(error=_web_error(exc))
-        return _redirect(message="Provider status refreshed with fixed local status commands.")
+        return _redirect(
+            message="Provider status refreshed with fixed local status commands."
+        )
 
     @app.post("/dev/coding-agents/launch")
     async def launch_agent(request: Request) -> RedirectResponse:
@@ -81,9 +94,13 @@ def register_coding_agent_web_routes(app: FastAPI) -> None:
             "project_id",
         }
         if set(fields) - allowed:
-            return _redirect(error="Launch accepts only the bounded Coding Agents form fields.")
+            return _redirect(
+                error="Launch accepts only the bounded Coding Agents form fields."
+            )
         if fields.get("launch_confirm") != "read-only-analysis":
-            return _redirect(error="Explicit confirmation is required before launching a read-only job.")
+            return _redirect(
+                error="Explicit confirmation is required before launching a read-only job."
+            )
         try:
             job = _service(request).launch(
                 LaunchRequest(
@@ -99,13 +116,17 @@ def register_coding_agent_web_routes(app: FastAPI) -> None:
             )
         except Exception as exc:
             return _redirect(error=_web_error(exc))
-        return _redirect(job.id, message=f"Launched read-only {job.provider} job {job.id[:12]}.")
+        return _redirect(
+            job.id, message=f"Launched read-only {job.provider} job {job.id[:12]}."
+        )
 
     @app.post("/dev/coding-agents/{job_id}/stop")
     async def stop_agent(request: Request, job_id: str) -> RedirectResponse:
         fields = await _request_fields(request)
         if set(fields) - {"confirm_stop"}:
-            return _redirect(job_id, error="Stop accepts only explicit stop confirmation.")
+            return _redirect(
+                job_id, error="Stop accepts only explicit stop confirmation."
+            )
         if fields.get("confirm_stop") != "stop-running-job":
             return _redirect(job_id, error="Explicit stop confirmation is required.")
         try:
@@ -149,7 +170,9 @@ def _page_response(
         try:
             from app.projects import ProjectStore
 
-            project = ProjectStore(request.app.state.settings.database_path).require_project(project_id)
+            project = ProjectStore(
+                request.app.state.settings.database_path
+            ).require_project(project_id)
             for repo in repositories:
                 if str(repo.root).casefold() == str(project.repository_root).casefold():
                     preselected_repository_id = repo.repo_id
@@ -197,13 +220,19 @@ def coding_agents_page(
 ) -> str:
     return "".join(
         [
-            page_header("Coding Agents", READ_ONLY_LABEL, "<a class='button' href='/dev/coding-agents'>Refresh</a>"),
+            page_header(
+                "Coding Agents",
+                READ_ONLY_LABEL,
+                "<a class='button' href='/dev/coding-agents'>Refresh</a>",
+            ),
             _safety_notice(),
             flash(message),
             _error_notice(error),
             _status_panel(statuses),
             "<section class='freestyle-layout'><div class='freestyle-rail'>",
-            _launch_form(repositories, preselected_repository_id, preselected_project_id),
+            _launch_form(
+                repositories, preselected_repository_id, preselected_project_id
+            ),
             _jobs_list(jobs, selected_job.id if selected_job else None),
             "</div><div class='freestyle-detail'>",
             _job_detail(selected_job, events),
@@ -233,7 +262,11 @@ def _status_panel(statuses: dict[str, ProviderStatus]) -> str:
     cards = []
     for provider in sorted(KNOWN_PROVIDERS):
         status = statuses[provider]
-        auth = "not checked" if status.authenticated is None else ("yes" if status.authenticated else "no")
+        auth = (
+            "not checked"
+            if status.authenticated is None
+            else ("yes" if status.authenticated else "no")
+        )
         cards.append(
             "<article class='card'>"
             f"<h3>{escape(provider.title())}</h3>"
@@ -256,7 +289,11 @@ def _status_panel(statuses: dict[str, ProviderStatus]) -> str:
     )
 
 
-def _launch_form(repositories: list[Any], preselected_repository_id: str = "", preselected_project_id: str = "") -> str:
+def _launch_form(
+    repositories: list[Any],
+    preselected_repository_id: str = "",
+    preselected_project_id: str = "",
+) -> str:
     repo_options = "".join(
         f"<option value='{escape(repo.repo_id)}'{' selected' if repo.repo_id == preselected_repository_id else ''}>{escape(repo.label)} - {escape(repo.root)}</option>"
         for repo in repositories
@@ -307,10 +344,16 @@ def _jobs_list(jobs: list[CodingAgentJob], selected_id: str | None) -> str:
             "</span>"
             f"{status_badge(job.state)}</a>"
         )
-    return "<section class='band'><h2>Active And Recent Jobs</h2><div class='job-list'>" + "".join(rows) + "</div></section>"
+    return (
+        "<section class='band'><h2>Active And Recent Jobs</h2><div class='job-list'>"
+        + "".join(rows)
+        + "</div></section>"
+    )
 
 
-def _job_detail(job: CodingAgentJob | None, events: list[CodingAgentEventRecord]) -> str:
+def _job_detail(
+    job: CodingAgentJob | None, events: list[CodingAgentEventRecord]
+) -> str:
     if job is None:
         return "<section class='empty-state'><p>Select a job to inspect its bounded event timeline.</p></section>"
     return (
@@ -323,9 +366,7 @@ def _job_detail(job: CodingAgentJob | None, events: list[CodingAgentEventRecord]
         f"{field('duration seconds', job.duration_seconds if job.duration_seconds is not None else '')}"
         f"{field('failure category', job.failure_category or '')}</div>"
         f"{_stop_form(job)}"
-        "</section>"
-        + _usage_summary(job)
-        + _event_timeline(events)
+        "</section>" + _usage_summary(job) + _event_timeline(events)
     )
 
 
@@ -391,7 +432,9 @@ async def _request_fields(request: Request) -> dict[str, object]:
             data = json.loads(raw_body)
         except (UnicodeError, json.JSONDecodeError):
             return {"invalid_request_body": "malformed_json"}
-        return data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
+        return (
+            data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
+        )
     decoded_body = raw_body.decode("utf-8", errors="ignore")
     return {
         key: values[0] if len(values) == 1 else tuple(values)

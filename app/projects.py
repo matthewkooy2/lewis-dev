@@ -45,9 +45,26 @@ MAP_STAGES: tuple[tuple[str, str], ...] = (
     ("consistency", "Final consistency check"),
 )
 INDEXABLE_SUFFIXES = {
-    ".cfg", ".css", ".csv", ".html", ".htm", ".ini", ".js", ".json",
-    ".jsx", ".md", ".mjs", ".py", ".rst", ".sql", ".toml", ".ts",
-    ".tsx", ".txt", ".yaml", ".yml",
+    ".cfg",
+    ".css",
+    ".csv",
+    ".html",
+    ".htm",
+    ".ini",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".mjs",
+    ".py",
+    ".rst",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".yaml",
+    ".yml",
 }
 DATABASE_SUFFIXES = {".sqlite", ".sqlite3", ".db"}
 RESUMABLE_RUN_STATES = {"failed", "cancelled", "paused"}
@@ -252,14 +269,28 @@ class ProjectStore:
                           'not_indexed', ?)
                 """,
                 (
-                    project_id, name, str(repository.root), _text(description, MAX_TEXT),
-                    clean_status, _text(color, 40), _text(icon, 40), now, now,
-                    metadata.get("branch"), metadata.get("head_commit"),
+                    project_id,
+                    name,
+                    str(repository.root),
+                    _text(description, MAX_TEXT),
+                    clean_status,
+                    _text(color, 40),
+                    _text(icon, 40),
+                    now,
+                    now,
+                    metadata.get("branch"),
+                    metadata.get("head_commit"),
                     "Repository map has not been generated yet.",
                 ),
             )
             self._replace_tags(conn, "project_tags", "project_id", project_id, tags)
-            self._activity(conn, project_id, "project_created", f"Created project {name}.", {"repository_root": str(repository.root)})
+            self._activity(
+                conn,
+                project_id,
+                "project_created",
+                f"Created project {name}.",
+                {"repository_root": str(repository.root)},
+            )
         return self.require_project(project_id)
 
     def update_project(
@@ -294,7 +325,13 @@ class ProjectStore:
             )
             if tags is not None:
                 self._replace_tags(conn, "project_tags", "project_id", project.id, tags)
-            self._activity(conn, project.id, "project_updated", "Project metadata updated.", {"status": updates.get("status", project.status)})
+            self._activity(
+                conn,
+                project.id,
+                "project_updated",
+                "Project metadata updated.",
+                {"status": updates.get("status", project.status)},
+            )
         return self.require_project(project.id)
 
     def archive_project(self, project_id: str, *, confirm: str) -> Project:
@@ -315,7 +352,9 @@ class ProjectStore:
 
     def get_project(self, project_id: str) -> Project | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
             if row is None:
                 return None
             return self._project_from_row(conn, row)
@@ -333,7 +372,9 @@ class ProjectStore:
         values: list[object] = []
         if query.strip():
             like = f"%{query.strip()}%"
-            filters.append("(display_name LIKE ? OR description LIKE ? OR repository_root LIKE ?)")
+            filters.append(
+                "(display_name LIKE ? OR description LIKE ? OR repository_root LIKE ?)"
+            )
             values.extend([like, like, like])
         if status and status != "all":
             filters.append("status = ?")
@@ -353,7 +394,9 @@ class ProjectStore:
 
     def list_project_tags(self) -> list[str]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT DISTINCT tag FROM project_tags ORDER BY tag COLLATE NOCASE").fetchall()
+            rows = conn.execute(
+                "SELECT DISTINCT tag FROM project_tags ORDER BY tag COLLATE NOCASE"
+            ).fetchall()
         return [str(row["tag"]) for row in rows]
 
     def list_categories(self, project_id: str) -> list[str]:
@@ -392,13 +435,24 @@ class ProjectStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)
                 """,
                 (
-                    note_id, project.id, _required(title, 180, "Note title"),
-                    _text(content_markdown, MAX_NOTE), category_id, int(is_pinned),
-                    now, now,
+                    note_id,
+                    project.id,
+                    _required(title, 180, "Note title"),
+                    _text(content_markdown, MAX_NOTE),
+                    category_id,
+                    int(is_pinned),
+                    now,
+                    now,
                 ),
             )
             self._replace_tags(conn, "project_note_tags", "note_id", note_id, tags)
-            self._activity(conn, project.id, "note_created", f"Created note {title}.", {"note_id": note_id})
+            self._activity(
+                conn,
+                project.id,
+                "note_created",
+                f"Created note {title}.",
+                {"note_id": note_id},
+            )
         return self.require_note(project.id, note_id)
 
     def update_note(
@@ -424,12 +478,23 @@ class ProjectStore:
                 WHERE project_id = ? AND id = ?
                 """,
                 (
-                    _required(title, 180, "Note title"), _text(content_markdown, MAX_NOTE),
-                    category_id, int(is_pinned), now, project_id, note.id,
+                    _required(title, 180, "Note title"),
+                    _text(content_markdown, MAX_NOTE),
+                    category_id,
+                    int(is_pinned),
+                    now,
+                    project_id,
+                    note.id,
                 ),
             )
             self._replace_tags(conn, "project_note_tags", "note_id", note.id, tags)
-            self._activity(conn, project_id, "note_updated", f"Updated note {title}.", {"note_id": note.id})
+            self._activity(
+                conn,
+                project_id,
+                "note_updated",
+                f"Updated note {title}.",
+                {"note_id": note.id},
+            )
         return self.require_note(project_id, note.id, include_archived=True)
 
     def duplicate_note(self, project_id: str, note_id: str) -> ProjectNote:
@@ -450,7 +515,13 @@ class ProjectStore:
                 "UPDATE project_notes SET status = 'archived', archived_at = ?, updated_at = ? WHERE project_id = ? AND id = ?",
                 (now, now, project_id, note.id),
             )
-            self._activity(conn, project_id, "note_archived", f"Archived note {note.title}.", {"note_id": note.id})
+            self._activity(
+                conn,
+                project_id,
+                "note_archived",
+                f"Archived note {note.title}.",
+                {"note_id": note.id},
+            )
 
     def restore_note(self, project_id: str, note_id: str) -> None:
         note = self.require_note(project_id, note_id, include_archived=True)
@@ -460,16 +531,33 @@ class ProjectStore:
                 "UPDATE project_notes SET status = 'active', archived_at = NULL, updated_at = ? WHERE project_id = ? AND id = ?",
                 (now, project_id, note.id),
             )
-            self._activity(conn, project_id, "note_restored", f"Restored note {note.title}.", {"note_id": note.id})
+            self._activity(
+                conn,
+                project_id,
+                "note_restored",
+                f"Restored note {note.title}.",
+                {"note_id": note.id},
+            )
 
-    def delete_note_permanently(self, project_id: str, note_id: str, *, confirm: str) -> None:
+    def delete_note_permanently(
+        self, project_id: str, note_id: str, *, confirm: str
+    ) -> None:
         if confirm != "delete-note":
             raise ProjectError("Explicit note deletion confirmation is required.")
         note = self.require_note(project_id, note_id, include_archived=True)
         with self._connect() as conn:
             conn.execute("DELETE FROM project_note_tags WHERE note_id = ?", (note.id,))
-            conn.execute("DELETE FROM project_notes WHERE project_id = ? AND id = ?", (project_id, note.id))
-            self._activity(conn, project_id, "note_deleted", f"Permanently deleted note {note.title}.", {"note_id": note.id})
+            conn.execute(
+                "DELETE FROM project_notes WHERE project_id = ? AND id = ?",
+                (project_id, note.id),
+            )
+            self._activity(
+                conn,
+                project_id,
+                "note_deleted",
+                f"Permanently deleted note {note.title}.",
+                {"note_id": note.id},
+            )
 
     def list_notes(
         self,
@@ -504,7 +592,7 @@ class ProjectStore:
                 SELECT n.*, c.name AS category_name
                 FROM project_notes n
                 LEFT JOIN project_note_categories c ON c.id = n.category_id
-                WHERE {' AND '.join(filters)}
+                WHERE {" AND ".join(filters)}
                 ORDER BY {order}
                 LIMIT ?
                 """,
@@ -512,7 +600,9 @@ class ProjectStore:
             ).fetchall()
             return [self._note_from_row(conn, row) for row in rows]
 
-    def require_note(self, project_id: str, note_id: str, *, include_archived: bool = False) -> ProjectNote:
+    def require_note(
+        self, project_id: str, note_id: str, *, include_archived: bool = False
+    ) -> ProjectNote:
         if not _is_hex_id(note_id):
             raise ProjectError("Note id is not valid.")
         status_sql = "" if include_archived else "AND n.status = 'active'"
@@ -558,10 +648,17 @@ class ProjectStore:
                           '[]', '{}', ?, ?, ?, ?, 0, ?, 0, ?, NULL, NULL, ?, NULL)
                 """,
                 (
-                    run_id, project.id, _text(run_type, 40) or "incremental",
-                    len(MAP_STAGES), project.current_branch, project.head_commit,
-                    previous_run_id, int(full_rebuild), int(model_summaries_enabled),
-                    now, now,
+                    run_id,
+                    project.id,
+                    _text(run_type, 40) or "incremental",
+                    len(MAP_STAGES),
+                    project.current_branch,
+                    project.head_commit,
+                    previous_run_id,
+                    int(full_rebuild),
+                    int(model_summaries_enabled),
+                    now,
+                    now,
                 ),
             )
             for index, (key, name) in enumerate(MAP_STAGES, start=1):
@@ -579,14 +676,22 @@ class ProjectStore:
                 "UPDATE projects SET mapping_state = 'queued', mapping_detail = ?, updated_at = ? WHERE id = ?",
                 ("Repository map refresh queued.", now, project.id),
             )
-            self._activity(conn, project.id, "map_queued", "Repository map refresh queued.", {"run_id": run_id})
+            self._activity(
+                conn,
+                project.id,
+                "map_queued",
+                "Repository map refresh queued.",
+                {"run_id": run_id},
+            )
         return self.require_map_run(run_id)
 
     def require_map_run(self, run_id: str) -> MapRun:
         if not _is_hex_id(run_id):
             raise ProjectError("Map run id is not valid.")
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM project_map_runs WHERE id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM project_map_runs WHERE id = ?", (run_id,)
+            ).fetchone()
         if row is None:
             raise ProjectError("Map run was not found.")
         return self._map_run_from_row(row)
@@ -623,7 +728,13 @@ class ProjectStore:
                 "UPDATE project_map_runs SET cancellation_requested = 1, updated_at = ? WHERE id = ?",
                 (now, run.id),
             )
-            self._activity(conn, run.project_id, "map_cancel_requested", "Repository map cancellation requested.", {"run_id": run.id})
+            self._activity(
+                conn,
+                run.project_id,
+                "map_cancel_requested",
+                "Repository map cancellation requested.",
+                {"run_id": run.id},
+            )
 
     def recover_interrupted_map_runs(self) -> int:
         now = _utc_now()
@@ -638,7 +749,11 @@ class ProjectStore:
                 )
                 conn.execute(
                     "UPDATE projects SET mapping_state = 'paused', mapping_detail = ?, updated_at = ? WHERE id = ?",
-                    ("Previous map run was interrupted and can be resumed.", now, row["project_id"]),
+                    (
+                        "Previous map run was interrupted and can be resumed.",
+                        now,
+                        row["project_id"],
+                    ),
                 )
         return len(rows)
 
@@ -665,7 +780,9 @@ class ProjectStore:
         diagnostics: dict[str, Any] | None = None,
     ) -> None:
         now = _utc_now()
-        stage_number = next((i for i, (key, _name) in enumerate(MAP_STAGES, 1) if key == stage_key), 0)
+        stage_number = next(
+            (i for i, (key, _name) in enumerate(MAP_STAGES, 1) if key == stage_key), 0
+        )
         completed = now if status in {"completed", "failed", "cancelled"} else None
         with self._connect() as conn:
             conn.execute(
@@ -677,19 +794,36 @@ class ProjectStore:
                 WHERE run_id = ? AND stage_key = ?
                 """,
                 (
-                    status, _percent(progress_percent), _json(diagnostics or {}),
-                    now, completed, now, run_id, stage_key,
+                    status,
+                    _percent(progress_percent),
+                    _json(diagnostics or {}),
+                    now,
+                    completed,
+                    now,
+                    run_id,
+                    stage_key,
                 ),
             )
             conn.execute(
                 "UPDATE project_map_runs SET current_stage = ?, stage_index = ?, progress_percent = ?, updated_at = ? WHERE id = ?",
-                (stage_key, stage_number, _overall_progress(stage_number, progress_percent), now, run_id),
+                (
+                    stage_key,
+                    stage_number,
+                    _overall_progress(stage_number, progress_percent),
+                    now,
+                    run_id,
+                ),
             )
 
     def update_run_counts(self, run_id: str, **counts: int) -> None:
         allowed = {
-            "files_scanned", "files_indexed", "files_reused", "files_changed",
-            "files_deleted", "files_skipped", "unsupported_files",
+            "files_scanned",
+            "files_indexed",
+            "files_reused",
+            "files_changed",
+            "files_deleted",
+            "files_skipped",
+            "unsupported_files",
         }
         assignments = []
         values: list[object] = []
@@ -703,7 +837,10 @@ class ProjectStore:
         values.append(_utc_now())
         values.append(run_id)
         with self._connect() as conn:
-            conn.execute(f"UPDATE project_map_runs SET {', '.join(assignments)} WHERE id = ?", tuple(values))
+            conn.execute(
+                f"UPDATE project_map_runs SET {', '.join(assignments)} WHERE id = ?",
+                tuple(values),
+            )
 
     def finish_run(
         self,
@@ -730,9 +867,16 @@ class ProjectStore:
                 WHERE id = ?
                 """,
                 (
-                    status, 100 if status in {"completed", "partial"} else run.progress_percent,
-                    _json(list(warnings)[:100]), _json(diagnostics or {}), branch, commit,
-                    int(status == "completed"), now, now, _text(last_error or "", 500) or None,
+                    status,
+                    100 if status in {"completed", "partial"} else run.progress_percent,
+                    _json(list(warnings)[:100]),
+                    _json(diagnostics or {}),
+                    branch,
+                    commit,
+                    int(status == "completed"),
+                    now,
+                    now,
+                    _text(last_error or "", 500) or None,
                     run.id,
                 ),
             )
@@ -748,16 +892,30 @@ class ProjectStore:
                 WHERE id = ?
                 """,
                 (
-                    status, detail, now if status in {"completed", "partial"} else run.completed_at,
-                    branch, commit, _json(language_summary) if language_summary is not None else None,
-                    now, run.project_id,
+                    status,
+                    detail,
+                    now if status in {"completed", "partial"} else run.completed_at,
+                    branch,
+                    commit,
+                    _json(language_summary) if language_summary is not None else None,
+                    now,
+                    run.project_id,
                 ),
             )
-            self._activity(conn, run.project_id, f"map_{status}", detail, {"run_id": run.id, "diagnostics": diagnostics or {}})
+            self._activity(
+                conn,
+                run.project_id,
+                f"map_{status}",
+                detail,
+                {"run_id": run.id, "diagnostics": diagnostics or {}},
+            )
 
     def indexed_hashes(self, project_id: str) -> dict[str, str]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT path, content_hash FROM project_indexed_files WHERE project_id = ?", (project_id,)).fetchall()
+            rows = conn.execute(
+                "SELECT path, content_hash FROM project_indexed_files WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
         return {str(row["path"]): str(row["content_hash"]) for row in rows}
 
     def replace_indexed_file(
@@ -786,13 +944,22 @@ class ProjectStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'deterministic', ?)
                 """,
                 (
-                    project_id, run_id, path, PurePosixPath(path).name, parent,
-                    descriptor.get("language", "other"), descriptor.get("role", "normal_source"),
+                    project_id,
+                    run_id,
+                    path,
+                    PurePosixPath(path).name,
+                    parent,
+                    descriptor.get("language", "other"),
+                    descriptor.get("role", "normal_source"),
                     PurePosixPath(path).suffix.lstrip(".") or "file",
-                    int(descriptor.get("size_bytes", 0) or 0), int(descriptor.get("line_count", 0) or 0),
-                    descriptor.get("content_hash", ""), git_status,
-                    descriptor.get("safety_classification", "safe"), _json(imports),
-                    descriptor.get("responsibility_summary", ""), indexed_at,
+                    int(descriptor.get("size_bytes", 0) or 0),
+                    int(descriptor.get("line_count", 0) or 0),
+                    descriptor.get("content_hash", ""),
+                    git_status,
+                    descriptor.get("safety_classification", "safe"),
+                    _json(imports),
+                    descriptor.get("responsibility_summary", ""),
+                    indexed_at,
                 ),
             )
             for symbol in extracted.symbols:
@@ -805,43 +972,91 @@ class ProjectStore:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                     """,
                     (
-                        project_id, run_id, path, _text(symbol.get("name", ""), 200),
-                        _text(symbol.get("kind", "symbol"), 80), int(symbol.get("line", 0) or 0),
+                        project_id,
+                        run_id,
+                        path,
+                        _text(symbol.get("name", ""), 200),
+                        _text(symbol.get("kind", "symbol"), 80),
+                        int(symbol.get("line", 0) or 0),
                         int(symbol.get("end_line", symbol.get("line", 0)) or 0),
-                        _optional(symbol.get("parent"), 200), _optional(symbol.get("signature"), 500) or "",
-                        _symbol_summary(symbol), indexed_at,
+                        _optional(symbol.get("parent"), 200),
+                        _optional(symbol.get("signature"), 500) or "",
+                        _symbol_summary(symbol),
+                        indexed_at,
                     ),
                 )
             for route in extracted.routes:
                 self._insert_relationship(
-                    conn, project_id, run_id, "route", path, str(route.get("route", "")),
-                    path, _optional(route.get("handler"), 200), "framework-registered",
-                    f"{route.get('method', 'GET')} {route.get('route', '')}", True, indexed_at,
+                    conn,
+                    project_id,
+                    run_id,
+                    "route",
+                    path,
+                    str(route.get("route", "")),
+                    path,
+                    _optional(route.get("handler"), 200),
+                    "framework-registered",
+                    f"{route.get('method', 'GET')} {route.get('route', '')}",
+                    True,
+                    indexed_at,
                 )
             for test in extracted.tests:
                 for module in test.get("referenced_modules", []):
                     self._insert_relationship(
-                        conn, project_id, run_id, "test_references_module", path, None,
-                        None, str(module), "inferred", f"Test references module {module}.", True, indexed_at,
+                        conn,
+                        project_id,
+                        run_id,
+                        "test_references_module",
+                        path,
+                        None,
+                        None,
+                        str(module),
+                        "inferred",
+                        f"Test references module {module}.",
+                        True,
+                        indexed_at,
                     )
             for rel in extracted.relationships:
                 source_path, source_symbol = _split_endpoint(str(rel.get("source", "")))
                 target_path, target_symbol = _split_endpoint(str(rel.get("target", "")))
                 self._insert_relationship(
-                    conn, project_id, run_id, _text(rel.get("kind", "related"), 80),
-                    source_path or path, source_symbol, target_path, target_symbol,
-                    "inferred", _text(rel.get("kind", "related"), 500), True, indexed_at,
+                    conn,
+                    project_id,
+                    run_id,
+                    _text(rel.get("kind", "related"), 80),
+                    source_path or path,
+                    source_symbol,
+                    target_path,
+                    target_symbol,
+                    "inferred",
+                    _text(rel.get("kind", "related"), 500),
+                    True,
+                    indexed_at,
                 )
 
-    def replace_import_relationships(self, project_id: str, run_id: str, relationships: Sequence[Relationship]) -> None:
+    def replace_import_relationships(
+        self, project_id: str, run_id: str, relationships: Sequence[Relationship]
+    ) -> None:
         now = _utc_now()
         with self._connect() as conn:
-            conn.execute("DELETE FROM project_relationships WHERE project_id = ? AND relationship_type = 'import'", (project_id,))
+            conn.execute(
+                "DELETE FROM project_relationships WHERE project_id = ? AND relationship_type = 'import'",
+                (project_id,),
+            )
             for rel in relationships:
                 self._insert_relationship(
-                    conn, project_id, run_id, rel.relationship_type, rel.source_path,
-                    rel.source_symbol, rel.target_path, rel.target_symbol,
-                    rel.resolution, rel.summary, rel.deterministic, now,
+                    conn,
+                    project_id,
+                    run_id,
+                    rel.relationship_type,
+                    rel.source_path,
+                    rel.source_symbol,
+                    rel.target_path,
+                    rel.target_symbol,
+                    rel.resolution,
+                    rel.summary,
+                    rel.deterministic,
+                    now,
                 )
 
     def delete_indexed_paths(self, project_id: str, paths: Sequence[str]) -> None:
@@ -849,7 +1064,9 @@ class ProjectStore:
             for path in paths[:10_000]:
                 self._delete_path(conn, project_id, path)
 
-    def files_for_project(self, project_id: str, *, language: str = "", role: str = "", limit: int = 300) -> list[IndexedFile]:
+    def files_for_project(
+        self, project_id: str, *, language: str = "", role: str = "", limit: int = 300
+    ) -> list[IndexedFile]:
         filters = ["project_id = ?"]
         values: list[object] = [project_id]
         if language:
@@ -867,10 +1084,15 @@ class ProjectStore:
 
     def get_indexed_file(self, project_id: str, path: str) -> IndexedFile | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM project_indexed_files WHERE project_id = ? AND path = ?", (project_id, path)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM project_indexed_files WHERE project_id = ? AND path = ?",
+                (project_id, path),
+            ).fetchone()
         return self._file_from_row(row) if row else None
 
-    def symbols_for_file(self, project_id: str, path: str, limit: int = 200) -> list[IndexedSymbol]:
+    def symbols_for_file(
+        self, project_id: str, path: str, limit: int = 200
+    ) -> list[IndexedSymbol]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM project_indexed_symbols WHERE project_id = ? AND file_path = ? ORDER BY line ASC, name COLLATE NOCASE LIMIT ?",
@@ -878,7 +1100,9 @@ class ProjectStore:
             ).fetchall()
         return [self._symbol_from_row(row) for row in rows]
 
-    def relationships_for_file(self, project_id: str, path: str, limit: int = 200) -> list[Relationship]:
+    def relationships_for_file(
+        self, project_id: str, path: str, limit: int = 200
+    ) -> list[Relationship]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -905,7 +1129,9 @@ class ProjectStore:
         file_filters = ["project_id = ?"]
         file_values: list[object] = [project_id]
         if q:
-            file_filters.append("(path LIKE ? OR summary LIKE ? OR imports_json LIKE ?)")
+            file_filters.append(
+                "(path LIKE ? OR summary LIKE ? OR imports_json LIKE ?)"
+            )
             file_values.extend([like, like, like])
         if language:
             file_filters.append("language = ?")
@@ -924,7 +1150,9 @@ class ProjectStore:
         rel_filters = ["project_id = ?"]
         rel_values: list[object] = [project_id]
         if q:
-            rel_filters.append("(source_path LIKE ? OR target_path LIKE ? OR source_symbol LIKE ? OR target_symbol LIKE ? OR summary LIKE ?)")
+            rel_filters.append(
+                "(source_path LIKE ? OR target_path LIKE ? OR source_symbol LIKE ? OR target_symbol LIKE ? OR summary LIKE ?)"
+            )
             rel_values.extend([like, like, like, like, like])
         with self._connect() as conn:
             files = conn.execute(
@@ -942,7 +1170,9 @@ class ProjectStore:
         return {
             "files": [self._file_from_row(row) for row in files],
             "symbols": [self._symbol_from_row(row) for row in symbols],
-            "relationships": [self._relationship_from_row(row) for row in relationships],
+            "relationships": [
+                self._relationship_from_row(row) for row in relationships
+            ],
         }
 
     def language_options(self, project_id: str) -> list[str]:
@@ -990,10 +1220,19 @@ class ProjectStore:
             ).fetchall()
         return [self._file_from_row(row) for row in rows]
 
-    def save_architecture_summaries(self, project_id: str, run_id: str, repo_summary: str, directory_summaries: dict[str, str]) -> None:
+    def save_architecture_summaries(
+        self,
+        project_id: str,
+        run_id: str,
+        repo_summary: str,
+        directory_summaries: dict[str, str],
+    ) -> None:
         now = _utc_now()
         with self._connect() as conn:
-            conn.execute("DELETE FROM project_summaries WHERE project_id = ? AND source = 'deterministic'", (project_id,))
+            conn.execute(
+                "DELETE FROM project_summaries WHERE project_id = ? AND source = 'deterministic'",
+                (project_id,),
+            )
             conn.execute(
                 """
                 INSERT INTO project_summaries
@@ -1026,7 +1265,9 @@ class ProjectStore:
             ).fetchone()
         return str(row["summary"]) if row else ""
 
-    def generate_diagram(self, project_id: str, *, title: str, diagram_type: str = "module_dependency") -> Diagram:
+    def generate_diagram(
+        self, project_id: str, *, title: str, diagram_type: str = "module_dependency"
+    ) -> Diagram:
         project = self.require_project(project_id)
         latest = self.latest_map_run(project.id)
         diagram_id = uuid.uuid4().hex
@@ -1054,15 +1295,28 @@ class ProjectStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, 'deterministic', 'active', ?, ?, NULL)
                 """,
                 (
-                    diagram_id, project.id, latest.id if latest else None,
-                    _required(title, 160, "Diagram title"), _text(diagram_type, 80),
-                    _json(definition), now, now,
+                    diagram_id,
+                    project.id,
+                    latest.id if latest else None,
+                    _required(title, 160, "Diagram title"),
+                    _text(diagram_type, 80),
+                    _json(definition),
+                    now,
+                    now,
                 ),
             )
-            self._activity(conn, project.id, "diagram_generated", f"Generated diagram {title}.", {"diagram_id": diagram_id})
+            self._activity(
+                conn,
+                project.id,
+                "diagram_generated",
+                f"Generated diagram {title}.",
+                {"diagram_id": diagram_id},
+            )
         return self.require_diagram(project.id, diagram_id)
 
-    def list_diagrams(self, project_id: str, include_archived: bool = False) -> list[Diagram]:
+    def list_diagrams(
+        self, project_id: str, include_archived: bool = False
+    ) -> list[Diagram]:
         filters = ["project_id = ?"]
         if not include_archived:
             filters.append("status = 'active'")
@@ -1077,12 +1331,17 @@ class ProjectStore:
         if not _is_hex_id(diagram_id):
             raise ProjectError("Diagram id is not valid.")
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM project_diagrams WHERE project_id = ? AND id = ?", (project_id, diagram_id)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM project_diagrams WHERE project_id = ? AND id = ?",
+                (project_id, diagram_id),
+            ).fetchone()
         if row is None:
             raise ProjectError("Diagram was not found.")
         return self._diagram_from_row(row)
 
-    def archive_diagram(self, project_id: str, diagram_id: str, *, confirm: str) -> None:
+    def archive_diagram(
+        self, project_id: str, diagram_id: str, *, confirm: str
+    ) -> None:
         if confirm != "archive-diagram":
             raise ProjectError("Explicit diagram archive confirmation is required.")
         diagram = self.require_diagram(project_id, diagram_id)
@@ -1092,7 +1351,13 @@ class ProjectStore:
                 "UPDATE project_diagrams SET status = 'archived', archived_at = ?, updated_at = ? WHERE project_id = ? AND id = ?",
                 (now, now, project_id, diagram.id),
             )
-            self._activity(conn, project_id, "diagram_archived", f"Archived diagram {diagram.title}.", {"diagram_id": diagram.id})
+            self._activity(
+                conn,
+                project_id,
+                "diagram_archived",
+                f"Archived diagram {diagram.title}.",
+                {"diagram_id": diagram.id},
+            )
 
     def recent_activity(self, project_id: str, limit: int = 40) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -1102,7 +1367,9 @@ class ProjectStore:
             ).fetchall()
         return [dict(row) | {"details": _dict(row["details_json"])} for row in rows]
 
-    def related_coding_agent_jobs(self, project_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    def related_coding_agent_jobs(
+        self, project_id: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
         project = self.require_project(project_id)
         with self._connect() as conn:
             rows = conn.execute(
@@ -1115,16 +1382,34 @@ class ProjectStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def trace_symbol(self, project_id: str, *, symbol: str, mode: str = "quick", file: str | None = None) -> dict[str, Any]:
+    def trace_symbol(
+        self,
+        project_id: str,
+        *,
+        symbol: str,
+        mode: str = "quick",
+        file: str | None = None,
+    ) -> dict[str, Any]:
         project = self.require_project(project_id)
-        outcome = CodeTracer(Path(project.repository_root)).trace(symbol, mode=mode, file=file)
+        outcome = CodeTracer(Path(project.repository_root)).trace(
+            symbol, mode=mode, file=file
+        )
         with self._connect() as conn:
-            self._activity(conn, project.id, "trace_run", f"Ran {mode} trace for {symbol}.", {"symbol": symbol, "mode": mode, "ok": outcome.result.ok})
+            self._activity(
+                conn,
+                project.id,
+                "trace_run",
+                f"Ran {mode} trace for {symbol}.",
+                {"symbol": symbol, "mode": mode, "ok": outcome.result.ok},
+            )
         return {"result": outcome.result, "report": outcome.report}
 
     def _project_from_row(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Project:
         project_id = str(row["id"])
-        tag_rows = conn.execute("SELECT tag FROM project_tags WHERE project_id = ? ORDER BY tag COLLATE NOCASE", (project_id,)).fetchall()
+        tag_rows = conn.execute(
+            "SELECT tag FROM project_tags WHERE project_id = ? ORDER BY tag COLLATE NOCASE",
+            (project_id,),
+        ).fetchall()
         counts = conn.execute(
             "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active FROM project_notes WHERE project_id = ?",
             (project_id,),
@@ -1155,75 +1440,129 @@ class ProjectStore:
             active_notes_count=int(counts["active"] or 0),
             latest_run_id=str(latest["id"]) if latest else None,
             latest_run_status=str(latest["status"]) if latest else None,
-            latest_run_error=str(latest["last_error"]) if latest and latest["last_error"] else None,
+            latest_run_error=str(latest["last_error"])
+            if latest and latest["last_error"]
+            else None,
         )
 
     def _note_from_row(self, conn: sqlite3.Connection, row: sqlite3.Row) -> ProjectNote:
-        tags = conn.execute("SELECT tag FROM project_note_tags WHERE note_id = ? ORDER BY tag COLLATE NOCASE", (row["id"],)).fetchall()
+        tags = conn.execute(
+            "SELECT tag FROM project_note_tags WHERE note_id = ? ORDER BY tag COLLATE NOCASE",
+            (row["id"],),
+        ).fetchall()
         return ProjectNote(
-            id=str(row["id"]), project_id=str(row["project_id"]), title=str(row["title"]),
+            id=str(row["id"]),
+            project_id=str(row["project_id"]),
+            title=str(row["title"]),
             content_markdown=str(row["content_markdown"] or ""),
-            category_id=int(row["category_id"]) if row["category_id"] is not None else None,
-            category_name=row["category_name"], is_pinned=bool(row["is_pinned"]),
-            status=str(row["status"]), created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]), archived_at=row["archived_at"],
+            category_id=int(row["category_id"])
+            if row["category_id"] is not None
+            else None,
+            category_name=row["category_name"],
+            is_pinned=bool(row["is_pinned"]),
+            status=str(row["status"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            archived_at=row["archived_at"],
             tags=tuple(str(tag["tag"]) for tag in tags),
         )
 
     def _map_run_from_row(self, row: sqlite3.Row) -> MapRun:
         return MapRun(
-            id=str(row["id"]), project_id=str(row["project_id"]), run_type=str(row["run_type"]),
-            status=str(row["status"]), current_stage=str(row["current_stage"] or ""),
-            stage_index=int(row["stage_index"] or 0), stage_count=int(row["stage_count"] or len(MAP_STAGES)),
-            progress_percent=int(row["progress_percent"] or 0), files_scanned=int(row["files_scanned"] or 0),
-            files_indexed=int(row["files_indexed"] or 0), files_reused=int(row["files_reused"] or 0),
-            files_changed=int(row["files_changed"] or 0), files_deleted=int(row["files_deleted"] or 0),
-            files_skipped=int(row["files_skipped"] or 0), unsupported_files=int(row["unsupported_files"] or 0),
-            warnings=tuple(str(item) for item in _list(row["warnings_json"])), diagnostics=_dict(row["diagnostics_json"]),
-            revision_branch=row["revision_branch"], revision_commit=row["revision_commit"],
-            previous_run_id=row["previous_run_id"], full_rebuild=bool(row["full_rebuild"]),
-            deterministic_complete=bool(row["deterministic_complete"]), model_summaries_enabled=bool(row["model_summaries_enabled"]),
-            cancellation_requested=bool(row["cancellation_requested"]), created_at=str(row["created_at"]),
-            started_at=row["started_at"], completed_at=row["completed_at"], updated_at=str(row["updated_at"]),
+            id=str(row["id"]),
+            project_id=str(row["project_id"]),
+            run_type=str(row["run_type"]),
+            status=str(row["status"]),
+            current_stage=str(row["current_stage"] or ""),
+            stage_index=int(row["stage_index"] or 0),
+            stage_count=int(row["stage_count"] or len(MAP_STAGES)),
+            progress_percent=int(row["progress_percent"] or 0),
+            files_scanned=int(row["files_scanned"] or 0),
+            files_indexed=int(row["files_indexed"] or 0),
+            files_reused=int(row["files_reused"] or 0),
+            files_changed=int(row["files_changed"] or 0),
+            files_deleted=int(row["files_deleted"] or 0),
+            files_skipped=int(row["files_skipped"] or 0),
+            unsupported_files=int(row["unsupported_files"] or 0),
+            warnings=tuple(str(item) for item in _list(row["warnings_json"])),
+            diagnostics=_dict(row["diagnostics_json"]),
+            revision_branch=row["revision_branch"],
+            revision_commit=row["revision_commit"],
+            previous_run_id=row["previous_run_id"],
+            full_rebuild=bool(row["full_rebuild"]),
+            deterministic_complete=bool(row["deterministic_complete"]),
+            model_summaries_enabled=bool(row["model_summaries_enabled"]),
+            cancellation_requested=bool(row["cancellation_requested"]),
+            created_at=str(row["created_at"]),
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            updated_at=str(row["updated_at"]),
             last_error=row["last_error"],
         )
 
     def _file_from_row(self, row: sqlite3.Row) -> IndexedFile:
         return IndexedFile(
-            path=str(row["path"]), name=str(row["name"]), parent_path=str(row["parent_path"] or ""),
-            language=str(row["language"] or ""), role=str(row["role"] or ""), file_type=str(row["file_type"] or ""),
-            size_bytes=int(row["size_bytes"] or 0), line_count=int(row["line_count"] or 0),
-            content_hash=str(row["content_hash"] or ""), git_status=str(row["git_status"] or ""),
+            path=str(row["path"]),
+            name=str(row["name"]),
+            parent_path=str(row["parent_path"] or ""),
+            language=str(row["language"] or ""),
+            role=str(row["role"] or ""),
+            file_type=str(row["file_type"] or ""),
+            size_bytes=int(row["size_bytes"] or 0),
+            line_count=int(row["line_count"] or 0),
+            content_hash=str(row["content_hash"] or ""),
+            git_status=str(row["git_status"] or ""),
             safety_classification=str(row["safety_classification"] or "safe"),
-            imports=tuple(str(item) for item in _list(row["imports_json"])), summary=str(row["summary"] or ""),
-            summary_source=str(row["summary_source"] or "deterministic"), indexed_at=str(row["indexed_at"] or ""),
+            imports=tuple(str(item) for item in _list(row["imports_json"])),
+            summary=str(row["summary"] or ""),
+            summary_source=str(row["summary_source"] or "deterministic"),
+            indexed_at=str(row["indexed_at"] or ""),
         )
 
     def _symbol_from_row(self, row: sqlite3.Row) -> IndexedSymbol:
         return IndexedSymbol(
-            id=int(row["id"]), file_path=str(row["file_path"]), name=str(row["name"]),
-            kind=str(row["kind"]), line=int(row["line"] or 0), end_line=int(row["end_line"] or 0),
-            parent=row["parent"], summary=str(row["summary"] or ""), deterministic=bool(row["deterministic"]),
+            id=int(row["id"]),
+            file_path=str(row["file_path"]),
+            name=str(row["name"]),
+            kind=str(row["kind"]),
+            line=int(row["line"] or 0),
+            end_line=int(row["end_line"] or 0),
+            parent=row["parent"],
+            summary=str(row["summary"] or ""),
+            deterministic=bool(row["deterministic"]),
         )
 
     def _relationship_from_row(self, row: sqlite3.Row) -> Relationship:
         return Relationship(
-            id=int(row["id"]), relationship_type=str(row["relationship_type"]),
-            source_path=str(row["source_path"] or ""), source_symbol=row["source_symbol"],
-            target_path=row["target_path"], target_symbol=row["target_symbol"],
-            resolution=str(row["resolution"] or "inferred"), summary=str(row["summary"] or ""),
+            id=int(row["id"]),
+            relationship_type=str(row["relationship_type"]),
+            source_path=str(row["source_path"] or ""),
+            source_symbol=row["source_symbol"],
+            target_path=row["target_path"],
+            target_symbol=row["target_symbol"],
+            resolution=str(row["resolution"] or "inferred"),
+            summary=str(row["summary"] or ""),
             deterministic=bool(row["deterministic"]),
         )
 
     def _diagram_from_row(self, row: sqlite3.Row) -> Diagram:
         return Diagram(
-            id=str(row["id"]), project_id=str(row["project_id"]), map_run_id=row["map_run_id"],
-            title=str(row["title"]), diagram_type=str(row["diagram_type"]), definition=_dict(row["definition_json"]),
-            generation_source=str(row["generation_source"]), status=str(row["status"]),
-            created_at=str(row["created_at"]), updated_at=str(row["updated_at"]), archived_at=row["archived_at"],
+            id=str(row["id"]),
+            project_id=str(row["project_id"]),
+            map_run_id=row["map_run_id"],
+            title=str(row["title"]),
+            diagram_type=str(row["diagram_type"]),
+            definition=_dict(row["definition_json"]),
+            generation_source=str(row["generation_source"]),
+            status=str(row["status"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            archived_at=row["archived_at"],
         )
 
-    def _ensure_category(self, conn: sqlite3.Connection, project_id: str, name: str) -> int | None:
+    def _ensure_category(
+        self, conn: sqlite3.Connection, project_id: str, name: str
+    ) -> int | None:
         clean = _text(name, 80).strip()
         if not clean:
             return None
@@ -1233,7 +1572,10 @@ class ProjectStore:
         ).fetchone()
         now = _utc_now()
         if row:
-            conn.execute("UPDATE project_note_categories SET status = 'active', updated_at = ? WHERE id = ?", (now, int(row["id"])))
+            conn.execute(
+                "UPDATE project_note_categories SET status = 'active', updated_at = ? WHERE id = ?",
+                (now, int(row["id"])),
+            )
             return int(row["id"])
         cursor = conn.execute(
             "INSERT INTO project_note_categories (project_id, name, status, created_at, updated_at) VALUES (?, ?, 'active', ?, ?)",
@@ -1241,14 +1583,32 @@ class ProjectStore:
         )
         return int(cursor.lastrowid)
 
-    def _replace_tags(self, conn: sqlite3.Connection, table: str, owner_column: str, owner_id: str, tags: Sequence[str]) -> None:
+    def _replace_tags(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        owner_column: str,
+        owner_id: str,
+        tags: Sequence[str],
+    ) -> None:
         conn.execute(f"DELETE FROM {table} WHERE {owner_column} = ?", (owner_id,))
         for tag in _tags(tags):
-            conn.execute(f"INSERT OR IGNORE INTO {table} ({owner_column}, tag) VALUES (?, ?)", (owner_id, tag))
+            conn.execute(
+                f"INSERT OR IGNORE INTO {table} ({owner_column}, tag) VALUES (?, ?)",
+                (owner_id, tag),
+            )
 
-    def _delete_path(self, conn: sqlite3.Connection, project_id: str, path: str) -> None:
-        conn.execute("DELETE FROM project_indexed_files WHERE project_id = ? AND path = ?", (project_id, path))
-        conn.execute("DELETE FROM project_indexed_symbols WHERE project_id = ? AND file_path = ?", (project_id, path))
+    def _delete_path(
+        self, conn: sqlite3.Connection, project_id: str, path: str
+    ) -> None:
+        conn.execute(
+            "DELETE FROM project_indexed_files WHERE project_id = ? AND path = ?",
+            (project_id, path),
+        )
+        conn.execute(
+            "DELETE FROM project_indexed_symbols WHERE project_id = ? AND file_path = ?",
+            (project_id, path),
+        )
         conn.execute(
             "DELETE FROM project_relationships WHERE project_id = ? AND (source_path = ? OR target_path = ?)",
             (project_id, path, path),
@@ -1278,17 +1638,37 @@ class ProjectStore:
             ) VALUES (?, ?, ?, 'file', ?, ?, 'file', ?, ?, ?, ?, ?, ?)
             """,
             (
-                project_id, run_id, relationship_type[:80], source_path[:500],
-                _optional(source_symbol, 300), _optional(target_path, 500),
-                _optional(target_symbol, 300), resolution[:80], summary[:1_000],
-                int(deterministic), indexed_at,
+                project_id,
+                run_id,
+                relationship_type[:80],
+                source_path[:500],
+                _optional(source_symbol, 300),
+                _optional(target_path, 500),
+                _optional(target_symbol, 300),
+                resolution[:80],
+                summary[:1_000],
+                int(deterministic),
+                indexed_at,
             ),
         )
 
-    def _activity(self, conn: sqlite3.Connection, project_id: str, event_type: str, summary: str, details: dict[str, Any] | None = None) -> None:
+    def _activity(
+        self,
+        conn: sqlite3.Connection,
+        project_id: str,
+        event_type: str,
+        summary: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         conn.execute(
             "INSERT INTO project_activity (project_id, event_type, summary, details_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            (project_id, event_type[:80], _text(summary, 500), _bounded_json(details or {}, 4_000), _utc_now()),
+            (
+                project_id,
+                event_type[:80],
+                _text(summary, 500),
+                _bounded_json(details or {}, 4_000),
+                _utc_now(),
+            ),
         )
 
 
@@ -1300,7 +1680,13 @@ class ProjectMapService:
         self._lock = threading.Lock()
         self.store.recover_interrupted_map_runs()
 
-    def start_refresh(self, project_id: str, *, full_rebuild: bool = False, resume_run_id: str | None = None) -> MapRun:
+    def start_refresh(
+        self,
+        project_id: str,
+        *,
+        full_rebuild: bool = False,
+        resume_run_id: str | None = None,
+    ) -> MapRun:
         project = self.store.require_project(project_id)
         latest = self.store.latest_map_run(project.id)
         if latest and latest.status in {"queued", "running"}:
@@ -1308,19 +1694,30 @@ class ProjectMapService:
         previous = None
         if resume_run_id:
             previous = self.store.require_map_run(resume_run_id)
-            if previous.project_id != project.id or previous.status not in RESUMABLE_RUN_STATES:
-                raise ProjectError("Only a paused, failed, or cancelled map run can be resumed.")
+            if (
+                previous.project_id != project.id
+                or previous.status not in RESUMABLE_RUN_STATES
+            ):
+                raise ProjectError(
+                    "Only a paused, failed, or cancelled map run can be resumed."
+                )
         run = self.store.create_map_run(
             project.id,
-            run_type="full" if full_rebuild else ("resume" if previous else "incremental"),
+            run_type="full"
+            if full_rebuild
+            else ("resume" if previous else "incremental"),
             full_rebuild=full_rebuild,
-            previous_run_id=previous.id if previous else (latest.id if latest else None),
+            previous_run_id=previous.id
+            if previous
+            else (latest.id if latest else None),
             model_summaries_enabled=self.settings.project_map_model_summaries,
         )
         cancel_event = threading.Event()
         with self._lock:
             self._active[run.id] = cancel_event
-        thread = threading.Thread(target=self._run_refresh, args=(run.id, cancel_event), daemon=True)
+        thread = threading.Thread(
+            target=self._run_refresh, args=(run.id, cancel_event), daemon=True
+        )
         thread.start()
         return run
 
@@ -1340,7 +1737,9 @@ class ProjectMapService:
 
 
 class ProjectMapWorker:
-    def __init__(self, settings: Settings, store: ProjectStore, cancel_event: threading.Event):
+    def __init__(
+        self, settings: Settings, store: ProjectStore, cancel_event: threading.Event
+    ):
         self.settings = settings
         self.store = store
         self.cancel_event = cancel_event
@@ -1351,9 +1750,14 @@ class ProjectMapWorker:
         project = self.store.require_project(run.project_id)
         self.store.mark_run_started(run.id)
         warnings: list[str] = []
-        diagnostics: dict[str, Any] = {"model_generated": False, "deterministic_facts": True}
+        diagnostics: dict[str, Any] = {
+            "model_generated": False,
+            "deterministic_facts": True,
+        }
         try:
-            repository = validate_project_repository(self.settings, repository_path=project.repository_root)
+            repository = validate_project_repository(
+                self.settings, repository_path=project.repository_root
+            )
             root = repository.root
             metadata = read_git_metadata(root)
             tracked = git_tracked_paths(root)
@@ -1376,7 +1780,9 @@ class ProjectMapWorker:
             self._stage(run.id, "inventory", "running", 5)
             candidates = list(iter_project_files(root, self.settings))
             self._check_cancel(run.id)
-            self._stage(run.id, "inventory", "completed", 100, {"candidates": len(candidates)})
+            self._stage(
+                run.id, "inventory", "completed", 100, {"candidates": len(candidates)}
+            )
 
             self._stage(run.id, "classification", "running", 10)
             for item in candidates:
@@ -1393,51 +1799,94 @@ class ProjectMapWorker:
                 if prior_hashes.get(item.relative) == digest:
                     counts["files_reused"] += 1
                     continue
-                approval_sensitive = _is_approval_sensitive(item.relative, PurePosixPath(item.relative).name, item.text)
-                extracted = extract_file(item.relative, item.text, approval_sensitive=approval_sensitive)
-                git_status = status_by_path.get(item.relative, "tracked" if item.relative in tracked else "untracked")
+                approval_sensitive = _is_approval_sensitive(
+                    item.relative, PurePosixPath(item.relative).name, item.text
+                )
+                extracted = extract_file(
+                    item.relative, item.text, approval_sensitive=approval_sensitive
+                )
+                git_status = status_by_path.get(
+                    item.relative,
+                    "tracked" if item.relative in tracked else "untracked",
+                )
                 extracted_records.append((extracted, git_status))
                 counts["files_changed"] += 1
             deleted = sorted(set(existing_hashes) - seen_paths)
             counts["files_deleted"] = len(deleted)
             self.store.update_run_counts(run.id, **counts)
-            self._stage(run.id, "classification", "completed", 100, {"skipped": skipped})
+            self._stage(
+                run.id, "classification", "completed", 100, {"skipped": skipped}
+            )
 
             self._stage(run.id, "symbols", "running", 10)
             now = _utc_now()
             self.store.delete_indexed_paths(project.id, deleted)
             for index, (extracted, git_status) in enumerate(extracted_records, start=1):
                 self._check_cancel(run.id)
-                self.store.replace_indexed_file(project.id, run.id, extracted, git_status=git_status, indexed_at=now)
+                self.store.replace_indexed_file(
+                    project.id, run.id, extracted, git_status=git_status, indexed_at=now
+                )
                 counts["files_indexed"] += 1
                 if index % 20 == 0:
                     self.store.update_run_counts(run.id, **counts)
-                    self._stage(run.id, "symbols", "running", int(index / max(1, len(extracted_records)) * 100))
+                    self._stage(
+                        run.id,
+                        "symbols",
+                        "running",
+                        int(index / max(1, len(extracted_records)) * 100),
+                    )
             self.store.update_run_counts(run.id, **counts)
             self._stage(run.id, "symbols", "completed", 100)
 
             self._stage(run.id, "dependencies", "running", 20)
-            files = self.store.files_for_project(project.id, limit=self.settings.project_map_max_files)
+            files = self.store.files_for_project(
+                project.id, limit=self.settings.project_map_max_files
+            )
             imports = derive_import_relationships(files)
             self.store.replace_import_relationships(project.id, run.id, imports)
-            self._stage(run.id, "dependencies", "completed", 100, {"relationships": len(imports)})
+            self._stage(
+                run.id,
+                "dependencies",
+                "completed",
+                100,
+                {"relationships": len(imports)},
+            )
 
             self._stage(run.id, "relationships", "completed", 100)
             self._stage(run.id, "tests", "completed", 100)
             self._stage(run.id, "architecture", "running", 50)
             language_summary = language_counts(files)
             repo_summary, directory_summaries = build_deterministic_summaries(files)
-            self.store.save_architecture_summaries(project.id, run.id, repo_summary, directory_summaries)
+            self.store.save_architecture_summaries(
+                project.id, run.id, repo_summary, directory_summaries
+            )
             self._stage(run.id, "architecture", "completed", 100)
 
             if skipped.get("scan_limit"):
-                warnings.append("File discovery reached the configured maximum file limit.")
+                warnings.append(
+                    "File discovery reached the configured maximum file limit."
+                )
             if skipped.get("oversized"):
                 warnings.append("Some files exceeded the configured file-size limit.")
-            if self.settings.project_map_model_summaries and self.settings.project_map_max_model_calls <= 0:
-                warnings.append("Model summaries were enabled but model call budget is zero; deterministic summaries were stored only.")
-            diagnostics.update({"skipped": skipped, "changed_paths": [r.descriptor.path for r, _ in extracted_records[:200]], "deleted_paths": deleted[:200]})
-            self._stage(run.id, "summaries", "completed", 100, {"source": "deterministic"})
+            if (
+                self.settings.project_map_model_summaries
+                and self.settings.project_map_max_model_calls <= 0
+            ):
+                warnings.append(
+                    "Model summaries were enabled but model call budget is zero; deterministic summaries were stored only."
+                )
+            diagnostics.update(
+                {
+                    "skipped": skipped,
+                    "changed_paths": [
+                        r.descriptor.path for r, _ in extracted_records[:200]
+                    ],
+                    "deleted_paths": deleted[:200],
+                }
+            )
+            self._stage(
+                run.id, "summaries", "completed", 100, {"source": "deterministic"}
+            )
             self._stage(run.id, "consistency", "completed", 100)
             self.store.finish_run(
                 run.id,
@@ -1449,36 +1898,78 @@ class ProjectMapWorker:
                 language_summary=language_summary,
             )
         except ProjectCancelled:
-            self.store.finish_run(run.id, status="cancelled", warnings=warnings, diagnostics=diagnostics, last_error="Repository map refresh was cancelled.")
+            self.store.finish_run(
+                run.id,
+                status="cancelled",
+                warnings=warnings,
+                diagnostics=diagnostics,
+                last_error="Repository map refresh was cancelled.",
+            )
         except Exception as exc:
-            self.store.finish_run(run.id, status="failed", warnings=warnings, diagnostics=diagnostics, last_error=str(exc)[:500])
+            self.store.finish_run(
+                run.id,
+                status="failed",
+                warnings=warnings,
+                diagnostics=diagnostics,
+                last_error=str(exc)[:500],
+            )
 
-    def _stage(self, run_id: str, key: str, status: str, progress: int, diagnostics: dict[str, Any] | None = None) -> None:
+    def _stage(
+        self,
+        run_id: str,
+        key: str,
+        status: str,
+        progress: int,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> None:
         self._check_timeout()
-        self.store.update_stage(run_id, key, status=status, progress_percent=progress, diagnostics=diagnostics)
+        self.store.update_stage(
+            run_id,
+            key,
+            status=status,
+            progress_percent=progress,
+            diagnostics=diagnostics,
+        )
 
     def _check_cancel(self, run_id: str) -> None:
-        if self.cancel_event.is_set() or self.store.require_map_run(run_id).cancellation_requested:
+        if (
+            self.cancel_event.is_set()
+            or self.store.require_map_run(run_id).cancellation_requested
+        ):
             raise ProjectCancelled()
         self._check_timeout()
 
     def _check_timeout(self) -> None:
-        if time.monotonic() - self.started > max(30, self.settings.project_map_timeout_seconds):
-            raise ProjectError("Repository map refresh exceeded the configured timeout.")
+        if time.monotonic() - self.started > max(
+            30, self.settings.project_map_timeout_seconds
+        ):
+            raise ProjectError(
+                "Repository map refresh exceeded the configured timeout."
+            )
 
 
-def configured_project_repository_options(settings: Settings) -> list[ApprovedRepository]:
-    repo_settings = replace(settings, coding_agent_repositories=settings.approved_project_repository_roots)
+def configured_project_repository_options(
+    settings: Settings,
+) -> list[ApprovedRepository]:
+    repo_settings = replace(
+        settings, coding_agent_repositories=settings.approved_project_repository_roots
+    )
     return coding_agents.configured_repository_options(repo_settings)
 
 
 def approved_project_repositories(settings: Settings) -> list[ApprovedRepository]:
-    repo_settings = replace(settings, coding_agent_repositories=settings.approved_project_repository_roots)
+    repo_settings = replace(
+        settings, coding_agent_repositories=settings.approved_project_repository_roots
+    )
     return coding_agents.approved_repositories(repo_settings)
 
 
-def validate_project_repository(settings: Settings, *, repository_id: str = "", repository_path: str = "") -> ApprovedRepository:
-    repo_settings = replace(settings, coding_agent_repositories=settings.approved_project_repository_roots)
+def validate_project_repository(
+    settings: Settings, *, repository_id: str = "", repository_path: str = ""
+) -> ApprovedRepository:
+    repo_settings = replace(
+        settings, coding_agent_repositories=settings.approved_project_repository_roots
+    )
     if repository_id.strip():
         return coding_agents.repository_by_id(repo_settings, repository_id.strip())
     if not repository_path.strip():
@@ -1488,9 +1979,14 @@ def validate_project_repository(settings: Settings, *, repository_id: str = "", 
     except OSError as exc:
         raise RepositoryRefusedError("Repository path could not be resolved.") from exc
     for repository in coding_agents.approved_repositories(repo_settings):
-        if repository.valid and str(repository.root).casefold() == str(requested).casefold():
+        if (
+            repository.valid
+            and str(repository.root).casefold() == str(requested).casefold()
+        ):
             return repository
-    raise RepositoryRefusedError("Repository path must exactly match one configured approved root.")
+    raise RepositoryRefusedError(
+        "Repository path must exactly match one configured approved root."
+    )
 
 
 def read_git_metadata(root: Path) -> dict[str, str | None]:
@@ -1501,13 +1997,27 @@ def read_git_metadata(root: Path) -> dict[str, str | None]:
 
 def git_tracked_paths(root: Path) -> set[str]:
     output = _git_bytes(["git", "ls-files", "-z"], root)
-    return {item.decode("utf-8", errors="replace") for item in output.split(b"\x00") if item}
+    return {
+        item.decode("utf-8", errors="replace") for item in output.split(b"\x00") if item
+    }
 
 
 def git_status_by_path(root: Path) -> dict[str, str]:
-    output = _git_bytes(["git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"], root)
+    output = _git_bytes(
+        [
+            "git",
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ],
+        root,
+    )
     values: dict[str, str] = {}
-    chunks = [item.decode("utf-8", errors="replace") for item in output.split(b"\x00") if item]
+    chunks = [
+        item.decode("utf-8", errors="replace") for item in output.split(b"\x00") if item
+    ]
     index = 0
     while index < len(chunks):
         item = chunks[index]
@@ -1528,7 +2038,9 @@ def iter_project_files(root: Path, settings: Settings) -> Iterator[CandidateFile
     ignored = {item.casefold() for item in settings.project_map_ignored_directories}
     ignored.update(part.casefold() for part in GENERATED_OR_CACHE_PARTS)
     scanned = 0
-    for directory, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+    for directory, directory_names, file_names in os.walk(
+        root, topdown=True, followlinks=False
+    ):
         directory_path = Path(directory)
         kept_dirs = []
         for name in sorted(directory_names):
@@ -1539,7 +2051,9 @@ def iter_project_files(root: Path, settings: Settings) -> Iterator[CandidateFile
         directory_names[:] = kept_dirs
         for name in sorted(file_names):
             if scanned >= max_files:
-                yield CandidateFile("<scan-limit>", directory_path / name, "", "scan_limit")
+                yield CandidateFile(
+                    "<scan-limit>", directory_path / name, "", "scan_limit"
+                )
                 return
             scanned += 1
             path = directory_path / name
@@ -1552,7 +2066,9 @@ def iter_project_files(root: Path, settings: Settings) -> Iterator[CandidateFile
             yield CandidateFile(relative, path, text, reason)
 
 
-def read_indexable_text(relative: str, path: Path, root: Path, settings: Settings) -> tuple[str, str | None]:
+def read_indexable_text(
+    relative: str, path: Path, root: Path, settings: Settings
+) -> tuple[str, str | None]:
     posix = PurePosixPath(relative)
     parts = tuple(part.casefold() for part in posix.parts)
     ignored = {item.casefold() for item in settings.project_map_ignored_directories}
@@ -1614,7 +2130,12 @@ def derive_import_relationships(files: Sequence[IndexedFile]) -> list[Relationsh
                     target_path=target,
                     target_symbol=imported,
                     resolution="confirmed" if target else "external",
-                    summary=f"{record.path} imports {imported}" + (f" from {target}." if target else " outside the indexed repository."),
+                    summary=f"{record.path} imports {imported}"
+                    + (
+                        f" from {target}."
+                        if target
+                        else " outside the indexed repository."
+                    ),
                     deterministic=True,
                 )
             )
@@ -1629,7 +2150,9 @@ def language_counts(files: Sequence[IndexedFile]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def build_deterministic_summaries(files: Sequence[IndexedFile]) -> tuple[str, dict[str, str]]:
+def build_deterministic_summaries(
+    files: Sequence[IndexedFile],
+) -> tuple[str, dict[str, str]]:
     languages = language_counts(files)
     roles: dict[str, int] = {}
     directories: dict[str, int] = {}
@@ -1637,8 +2160,14 @@ def build_deterministic_summaries(files: Sequence[IndexedFile]) -> tuple[str, di
         roles[record.role] = roles.get(record.role, 0) + 1
         top = record.path.split("/", 1)[0] if "/" in record.path else "(root)"
         directories[top] = directories.get(top, 0) + 1
-    language_text = ", ".join(f"{name}: {count}" for name, count in list(languages.items())[:8]) or "none"
-    role_text = ", ".join(f"{name}: {count}" for name, count in sorted(roles.items())[:8]) or "none"
+    language_text = (
+        ", ".join(f"{name}: {count}" for name, count in list(languages.items())[:8])
+        or "none"
+    )
+    role_text = (
+        ", ".join(f"{name}: {count}" for name, count in sorted(roles.items())[:8])
+        or "none"
+    )
     repo = (
         f"Deterministic repository map with {len(files)} indexed files. "
         f"Languages: {language_text}. Roles: {role_text}. "
@@ -1646,12 +2175,19 @@ def build_deterministic_summaries(files: Sequence[IndexedFile]) -> tuple[str, di
     )
     directory_summaries = {
         path: f"{path} contains {count} indexed files in the current deterministic map."
-        for path, count in sorted(directories.items(), key=lambda item: (-item[1], item[0]))
+        for path, count in sorted(
+            directories.items(), key=lambda item: (-item[1], item[0])
+        )
     }
     return repo, directory_summaries
 
 
-def _resolve_import(record: IndexedFile, imported: str, by_python_module: dict[str, str], by_path: dict[str, IndexedFile]) -> str | None:
+def _resolve_import(
+    record: IndexedFile,
+    imported: str,
+    by_python_module: dict[str, str],
+    by_path: dict[str, IndexedFile],
+) -> str | None:
     if record.language == "python":
         parts = imported.split(".")
         while parts:
@@ -1667,8 +2203,14 @@ def _resolve_import(record: IndexedFile, imported: str, by_python_module: dict[s
             return None
         candidates = [normalized]
         if not PurePosixPath(normalized).suffix:
-            candidates.extend(f"{normalized}{suffix}" for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs"))
-            candidates.extend(f"{normalized}/index{suffix}" for suffix in (".ts", ".tsx", ".js", ".jsx"))
+            candidates.extend(
+                f"{normalized}{suffix}"
+                for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs")
+            )
+            candidates.extend(
+                f"{normalized}/index{suffix}"
+                for suffix in (".ts", ".tsx", ".js", ".jsx")
+            )
         for candidate in candidates:
             if candidate in by_path:
                 return candidate
@@ -1749,7 +2291,14 @@ def _allowed_git_command(args: Sequence[str]) -> bool:
         ("git", "rev-parse", "--abbrev-ref", "HEAD"),
         ("git", "rev-parse", "HEAD"),
         ("git", "ls-files", "-z"),
-        ("git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"),
+        (
+            "git",
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ),
     }
 
 
@@ -1782,7 +2331,9 @@ def _mapping_detail(status: str, last_error: str | None) -> str:
 def _overall_progress(stage_number: int, stage_progress: int) -> int:
     if stage_number <= 0:
         return _percent(stage_progress)
-    return _percent(int((((stage_number - 1) + stage_progress / 100) / len(MAP_STAGES)) * 100))
+    return _percent(
+        int((((stage_number - 1) + stage_progress / 100) / len(MAP_STAGES)) * 100)
+    )
 
 
 def _percent(value: int) -> int:
@@ -1803,7 +2354,9 @@ def _split_endpoint(endpoint: str) -> tuple[str | None, str | None]:
 
 
 def _symbol_summary(symbol: dict[str, object]) -> str:
-    return f"Deterministic {symbol.get('kind', 'symbol')} definition {symbol.get('name', '')}."[:500]
+    return f"Deterministic {symbol.get('kind', 'symbol')} definition {symbol.get('name', '')}."[
+        :500
+    ]
 
 
 def _short_label(path: str) -> str:
@@ -1882,7 +2435,11 @@ def _dict(value: object) -> dict[str, Any]:
 
 
 def _is_hex_id(value: str) -> bool:
-    return isinstance(value, str) and len(value) == 32 and all(ch in "0123456789abcdef" for ch in value)
+    return (
+        isinstance(value, str)
+        and len(value) == 32
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
 
 
 def _utc_now() -> str:

@@ -322,7 +322,9 @@ def _validate_deepseek_fields(config: ProviderProposalConfig) -> None:
             and re.fullmatch(r"deepseek-[A-Za-z0-9._-]+", model, re.IGNORECASE) is None
         )
     ):
-        raise FreestyleJobRefusedError("DEEPSEEK_CODE_MODEL must name a DeepSeek model.")
+        raise FreestyleJobRefusedError(
+            "DEEPSEEK_CODE_MODEL must name a DeepSeek model."
+        )
     if not loopback_endpoint and (
         parsed.scheme != "https"
         or parsed.hostname != "api.deepseek.com"
@@ -385,9 +387,7 @@ def provider_config_from_settings(settings: Any) -> ProviderProposalConfig:
     if provider in _LOCAL_PROVIDER_ALIASES:
         return ProviderProposalConfig(
             api_key=str(getattr(settings, "local_llm_api_key", "") or ""),
-            model=str(
-                getattr(settings, "local_llm_model", "") or DEFAULT_LOCAL_MODEL
-            ),
+            model=str(getattr(settings, "local_llm_model", "") or DEFAULT_LOCAL_MODEL),
             base_url=str(
                 getattr(settings, "local_llm_base_url", "") or DEFAULT_LOCAL_BASE_URL
             ),
@@ -536,7 +536,10 @@ def _validate_structured_output_mode(config: ProviderProposalConfig) -> None:
             "Freestyle structured output mode must be text, json_object, or "
             "json_schema."
         )
-    if config.provider == LOCAL_OPENAI_PROVIDER and mode == STRUCTURED_OUTPUT_JSON_OBJECT:
+    if (
+        config.provider == LOCAL_OPENAI_PROVIDER
+        and mode == STRUCTURED_OUTPUT_JSON_OBJECT
+    ):
         raise FreestyleJobRefusedError(
             "The local-openai provider does not use json_object strict output; "
             "set LEWIS_LOCAL_JSON_MODE for json_schema or leave it disabled for text."

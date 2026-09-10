@@ -51,7 +51,9 @@ MAX_FUNCTION_LINES = 90
 MAX_EVIDENCE_SNIPPETS = 8
 
 _SQL_KEYWORDS = re.compile(r"\b(select|insert|update|delete|create|drop)\b", re.I)
-_SQL_DYNAMIC = re.compile(r"""execute\w*\s*\(\s*(?:f["']|["'][^"']*["']\s*[%+]|.*\.format\()""")
+_SQL_DYNAMIC = re.compile(
+    r"""execute\w*\s*\(\s*(?:f["']|["'][^"']*["']\s*[%+]|.*\.format\()"""
+)
 _SHELL_TRUE = re.compile(r"\bshell\s*=\s*True\b")
 _LOOSE_EQUALITY = re.compile(r"[^=!<>]==[^=]|[^!]!=[^=]")
 _NONE_COMPARISON = re.compile(r"[=!]=\s*None\b")
@@ -171,11 +173,7 @@ def _check_error_handling(
     # Raising callees whose exceptions have no matching catch in the target
     # (static name comparison only).
     target_info = next(
-        (
-            info
-            for info in result.error_handling
-            if info.qualname == target.qualname
-        ),
+        (info for info in result.error_handling if info.qualname == target.qualname),
         None,
     )
     caught_text = " ".join(target_info.catches) if target_info else ""
@@ -367,9 +365,7 @@ def _check_side_effects(
 ) -> None:
     direct_categories = {effect.category for effect in result.side_effects}
     if _QUERY_NAME.match(target.name) and direct_categories & _WRITE_EFFECTS:
-        effect = next(
-            e for e in result.side_effects if e.category in _WRITE_EFFECTS
-        )
+        effect = next(e for e in result.side_effects if e.category in _WRITE_EFFECTS)
         findings.append(
             ReviewFinding(
                 category=CATEGORY_SIDE_EFFECTS,
@@ -445,8 +441,7 @@ def _check_maintainability(
                 path=target.path,
                 line=target.line,
                 message=(
-                    f"Function body spans {length} lines; consider extracting "
-                    "helpers."
+                    f"Function body spans {length} lines; consider extracting helpers."
                 ),
             )
         )
@@ -497,8 +492,7 @@ def _check_consistency(
                     path=target.path,
                     line=target.line,
                     message=(
-                        "Most sibling definitions have docstrings; this one "
-                        "does not."
+                        "Most sibling definitions have docstrings; this one does not."
                     ),
                 )
             )
@@ -516,8 +510,7 @@ def _check_consistency(
                     path=target.path,
                     line=target.line,
                     message=(
-                        "Sibling functions annotate return types; this one "
-                        "does not."
+                        "Sibling functions annotate return types; this one does not."
                     ),
                 )
             )
@@ -557,7 +550,9 @@ def _check_testing(
                 severity=SEVERITY_NOTE,
                 confidence=CONFIDENCE_HEURISTIC,
                 path=target.path,
-                line=target_info.raise_lines[0] if target_info.raise_lines else target.line,
+                line=target_info.raise_lines[0]
+                if target_info.raise_lines
+                else target.line,
                 message=(
                     f"{len(direct)} direct test(s) found; verify the error paths "
                     f"({', '.join(target_info.raises[:3])}) are covered as well."
@@ -697,9 +692,10 @@ def _check_js_specifics(
 
 def _find_def_node(tree: ast.Module, target: SymbolDefinition) -> ast.AST | None:
     for node in ast.walk(tree):
-        if isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ) and getattr(node, "lineno", None) == target.line:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and getattr(node, "lineno", None) == target.line
+        ):
             return node
     return None
 
@@ -732,7 +728,10 @@ def _callback_context_snippets(
             continue
         seen.add(key)
         snippet = _bounded_context_snippet(
-            engine, item.supplier_path, item.supplier_line, before=1,
+            engine,
+            item.supplier_path,
+            item.supplier_line,
+            before=1,
             after=CONTEXT_SNIPPET_LINES - 2,
         )
         if snippet is not None:

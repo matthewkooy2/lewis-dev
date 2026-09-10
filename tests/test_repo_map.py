@@ -221,9 +221,7 @@ def test_deleted_file_is_invalidated(tmp_path: Path) -> None:
     assert refreshed.manifest["deleted_file_count"] == 1
     assert "app/static/calendar.js" in refreshed.manifest["deleted_paths"]
     assert all(f["path"] != "app/static/calendar.js" for f in refreshed.files)
-    assert all(
-        c["path"] != "app/static/calendar.js" for c in refreshed.chunks
-    )
+    assert all(c["path"] != "app/static/calendar.js" for c in refreshed.chunks)
 
 
 def test_indexing_does_not_mutate_source(tmp_path: Path) -> None:
@@ -306,9 +304,7 @@ def test_js_asset_extraction(tmp_path: Path) -> None:
 
 def test_test_map_extraction(tmp_path: Path) -> None:
     index, _, _ = _worktree_index(tmp_path)
-    record = next(
-        t for t in index.tests if t["path"] == "tests/test_web_routes.py"
-    )
+    record = next(t for t in index.tests if t["path"] == "tests/test_web_routes.py")
     assert "test_calendar_route" in record["test_functions"]
     assert "app.web_routes" in record["referenced_modules"]
 
@@ -331,11 +327,7 @@ def test_relationship_map_connects_surfaces(tmp_path: Path) -> None:
     assert "route_to_handler" in kinds
     assert "page_to_asset" in kinds
     # Page references the calendar stylesheet/script.
-    targets = {
-        r["target"]
-        for r in index.relationships
-        if r["kind"] == "page_to_asset"
-    }
+    targets = {r["target"] for r in index.relationships if r["kind"] == "page_to_asset"}
     assert any("lewis.css" in t for t in targets)
     assert any("calendar.js" in t for t in targets)
 

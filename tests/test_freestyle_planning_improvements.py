@@ -587,9 +587,10 @@ def test_tests_only_bundle_for_implementation_goal_is_flagged(tmp_path):
     )
     artifact = _read_state_artifact(root, completed.edit_generation_artifact_path)
     assert artifact["semantic_critique"]["advisory_only"] is True
-    assert CRITIQUE_TESTS_ONLY_FOR_IMPLEMENTATION in artifact["semantic_critique"][
-        "warnings"
-    ]
+    assert (
+        CRITIQUE_TESTS_ONLY_FOR_IMPLEMENTATION
+        in artifact["semantic_critique"]["warnings"]
+    )
 
 
 def test_empty_proposal_response_records_rich_secret_free_diagnostics(tmp_path):

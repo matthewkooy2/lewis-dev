@@ -92,12 +92,7 @@ _CALCULATOR_FILES = {
     "README.md": "# Calculator fixture\n",
     "calculator/__init__.py": "",
     "calculator/core.py": (
-        "def add(a, b):\n"
-        "    return a + b\n"
-        "\n"
-        "\n"
-        "def subtract(a, b):\n"
-        "    return a - b\n"
+        "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"
     ),
     "tests/test_freestyle_core.py": (
         "from calculator.core import add, multiply, subtract\n"
@@ -133,14 +128,13 @@ _GREETER_FILES = {
     ),
 }
 
-_REPAIR_EDGE_PADDING = "".join(f"# omitted edge-context filler {index}\n" for index in range(3200))
+_REPAIR_EDGE_PADDING = "".join(
+    f"# omitted edge-context filler {index}\n" for index in range(3200)
+)
 
 _REPAIRABLE_FILES = {
     "README.md": "# Repairable fixture\n",
-    "normalizer.py": (
-        "def normalize_status(value):\n"
-        "    return str(value).strip()\n"
-    ),
+    "normalizer.py": ("def normalize_status(value):\n    return str(value).strip()\n"),
     "tests/test_freestyle_normalizer.py": (
         "from normalizer import normalize_status\n"
         "\n"
@@ -176,7 +170,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "description": "Small multi-file change",
         "files": _GREETER_FILES,
         "goal": (
-            "Change greeter/messages.py so GREETING_TEMPLATE is \"Hi, {name}!\" "
+            'Change greeter/messages.py so GREETING_TEMPLATE is "Hi, {name}!" '
             "and keep tests/test_freestyle_greeter.py passing."
         ),
         "expect_rejection": False,
@@ -236,13 +230,13 @@ CASES: tuple[dict[str, Any], ...] = (
 def _probe_endpoint(base_url: str) -> dict[str, Any]:
     url = base_url.rstrip("/") + "/models"
     try:
-        with urllib.request.urlopen(url, timeout=ENDPOINT_PROBE_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+            url, timeout=ENDPOINT_PROBE_TIMEOUT_SECONDS
+        ) as response:
             body = response.read(65_536).decode("utf-8", errors="replace")
         payload = json.loads(body)
         models = [
-            item.get("id")
-            for item in payload.get("data", [])
-            if isinstance(item, dict)
+            item.get("id") for item in payload.get("data", []) if isinstance(item, dict)
         ]
         return {"reachable": True, "models": models[:20]}
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
@@ -461,9 +455,7 @@ def _success_rates(report: dict[str, Any]) -> dict[str, Any]:
             1 for case in cases if OUTCOME_SAFETY_STOP in case.get("milestones", [])
         ),
         "loop_exhausted_count": sum(
-            1
-            for case in cases
-            if case.get("outcome") == OUTCOME_LOOP_EXHAUSTED
+            1 for case in cases if case.get("outcome") == OUTCOME_LOOP_EXHAUSTED
         ),
     }
 
@@ -506,9 +498,7 @@ def _per_case_statistics(report: dict[str, Any]) -> dict[str, Any]:
             "mean_duration_seconds": (
                 round(sum(durations) / len(durations), 3) if durations else None
             ),
-            "mean_model_calls": (
-                round(sum(calls) / len(calls), 2) if calls else None
-            ),
+            "mean_model_calls": (round(sum(calls) / len(calls), 2) if calls else None),
             "generation_recoveries_total": recoveries,
             "recovery_calls_total": recovery_calls,
         }
@@ -536,7 +526,9 @@ def _resolve_benchmark_config(
             source = "LEWIS_LOCAL_JSON_MODE"
         else:
             chosen = STRUCTURED_OUTPUT_JSON_SCHEMA
-            source = "benchmark default (json_schema; pass --structured-output to override)"
+            source = (
+                "benchmark default (json_schema; pass --structured-output to override)"
+            )
         config = replace(
             config,
             structured_output_mode=chosen,
@@ -605,9 +597,7 @@ def main(argv: list[str] | None = None) -> int:
     config = _resolve_benchmark_config(args.structured_output, args.seed)
     print(f"Benchmark provider: {describe_provider_config(config)}")
     selected = [
-        case
-        for case in CASES
-        if not args.cases or case["case_id"] in args.cases
+        case for case in CASES if not args.cases or case["case_id"] in args.cases
     ]
     report: dict[str, Any] = {
         "benchmark": "freestyle-local-loop",

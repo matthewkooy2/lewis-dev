@@ -269,8 +269,14 @@ class ProjectIndex:
         star_sources: list[str] = []
         for binding in module.exports:
             if binding.kind == "star":
-                if binding.source_module and binding.exported_name in {"*", exported_name}:
-                    if binding.exported_name == exported_name and binding.exported_name != "*":
+                if binding.source_module and binding.exported_name in {
+                    "*",
+                    exported_name,
+                }:
+                    if (
+                        binding.exported_name == exported_name
+                        and binding.exported_name != "*"
+                    ):
                         # `export * as ns from "m"`: the namespace itself.
                         target = self.resolve_js_module(
                             module_path, binding.source_module
@@ -338,7 +344,10 @@ class ProjectIndex:
                 # Attribute access below an imported symbol (Class.method).
                 path, qualname = resolved
                 nested = self.definitions.get(
-                    (path, f"{qualname}.{name_in_module}" if qualname else name_in_module)
+                    (
+                        path,
+                        f"{qualname}.{name_in_module}" if qualname else name_in_module,
+                    )
                 )
                 if nested is not None:
                     return path, nested.qualname
@@ -346,7 +355,10 @@ class ProjectIndex:
         target_module = self.resolve_js_module(module.path, binding.source_module)
         if target_module is None:
             return "external"
-        if binding.kind in {"namespace", "require", "module"} and binding.source_name is None:
+        if (
+            binding.kind in {"namespace", "require", "module"}
+            and binding.source_name is None
+        ):
             if name_in_module is None:
                 return target_module, ""
             resolved = self.resolve_js_symbol(target_module, name_in_module)
@@ -490,7 +502,7 @@ def _apply_alias(pattern: str, target: str, specifier: str) -> str | None:
     if pattern.endswith("/*") and target.endswith("/*"):
         prefix = pattern[:-1]
         if specifier.startswith(prefix):
-            return target[:-1] + specifier[len(prefix):]
+            return target[:-1] + specifier[len(prefix) :]
         return None
     if pattern == specifier:
         return target

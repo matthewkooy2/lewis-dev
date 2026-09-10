@@ -68,9 +68,7 @@ def _source_snapshot(root: Path) -> dict[str, bytes]:
 
 
 def _maintenance_artifacts(root: Path, job_id: str) -> list[Path]:
-    directory = (
-        root / freestyle.DEV_STATE_DIR_NAME / "maintenance" / job_id
-    )
+    directory = root / freestyle.DEV_STATE_DIR_NAME / "maintenance" / job_id
     return sorted(directory.glob("*.json"))
 
 
@@ -88,9 +86,7 @@ def test_cleanup_status_is_read_only_and_reports_key_cases(tmp_path):
         _job(root).job_id, project_root=root
     )
     dirty = freestyle.materialize_freestyle_job(_job(root).job_id, project_root=root)
-    (Path(dirty.worktree_path) / "tracked.txt").write_text(
-        "dirty\n", encoding="utf-8"
-    )
+    (Path(dirty.worktree_path) / "tracked.txt").write_text("dirty\n", encoding="utf-8")
     orphan_id = "f" * 32
     orphan_dir = root / freestyle.DEV_STATE_DIR_NAME / "reviews" / orphan_id
     orphan_dir.mkdir(parents=True)
@@ -394,12 +390,11 @@ def test_recover_requires_stronger_confirmation_for_inconsistent(tmp_path):
     _set_metadata(root, job.job_id, edit_apply_status="inconsistent")
 
     with pytest.raises(FreestyleJobRefusedError, match="confirm-inconsistent"):
-        maintenance.recover_freestyle_job(
-            job.job_id, confirm=True, project_root=root
-        )
-    assert freestyle.get_freestyle_job(
-        job.job_id, project_root=root
-    ).edit_apply_status == "inconsistent"
+        maintenance.recover_freestyle_job(job.job_id, confirm=True, project_root=root)
+    assert (
+        freestyle.get_freestyle_job(job.job_id, project_root=root).edit_apply_status
+        == "inconsistent"
+    )
 
     recovered = maintenance.recover_freestyle_job(
         job.job_id,
@@ -423,9 +418,7 @@ def test_maintenance_git_allowlist_has_no_remotes_or_unrestricted_commands():
     prefix = maintenance._MAINTENANCE_GIT_PREFIX
     assert allowed((*prefix, "worktree", "list", "--porcelain"))
     assert not allowed(("git", "status"))
-    assert not allowed(
-        (*prefix, "worktree", "remove", f"/tmp/{'a' * 32}")
-    )
+    assert not allowed((*prefix, "worktree", "remove", f"/tmp/{'a' * 32}"))
     for suffix in (
         ("fetch",),
         ("pull",),

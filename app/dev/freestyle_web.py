@@ -118,9 +118,7 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
         return _redirect(job_id, message="Materialized the isolated worktree.")
 
     @app.post("/dev/freestyle/{job_id}/run")
-    async def run_freestyle_job_web(
-        request: Request, job_id: str
-    ) -> RedirectResponse:
+    async def run_freestyle_job_web(request: Request, job_id: str) -> RedirectResponse:
         if await _request_fields(request):
             return _redirect(job_id, error="Default run accepts no input fields.")
         try:
@@ -158,6 +156,12 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
             root = _project_root(request)
             job = get_freestyle_job(job_id, project_root=root)
             bundle_path = _required_bundle_path(job, root / DEV_STATE_DIR_NAME)
+            handoff = get_freestyle_handoff(job_id, project_root=root)
+            if handoff["result"]["bundle_state"] == "applied":
+                return _redirect(
+                    job_id,
+                    message="This bundle is already applied. Review the diff and check results.",
+                )
             apply_freestyle_edit_bundle(
                 job_id,
                 str(bundle_path),
@@ -290,7 +294,8 @@ def register_freestyle_web_routes(app: FastAPI) -> None:
             )
         if fields.get("confirm_recover") != "recover":
             return _redirect(
-                job_id, error="Explicit confirmation is required to recover stale state."
+                job_id,
+                error="Explicit confirmation is required to recover stale state.",
             )
         inconsistent = fields.get("confirm_inconsistent")
         if inconsistent is not None and inconsistent != "verified-inconsistent":
@@ -369,7 +374,9 @@ def _page_response(
 
 
 def _project_root(request: Request) -> Path:
-    return Path(getattr(request.app.state, "freestyle_project_root", ROOT_DIR)).resolve()
+    return Path(
+        getattr(request.app.state, "freestyle_project_root", ROOT_DIR)
+    ).resolve()
 
 
 def _deepseek_config(request: Request) -> DeepSeekProposalConfig:
@@ -408,7 +415,9 @@ async def _request_fields(request: Request) -> dict[str, object]:
             data = json.loads(raw_body)
         except (UnicodeError, json.JSONDecodeError):
             return {"invalid_request_body": "malformed_json"}
-        return data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
+        return (
+            data if isinstance(data, dict) else {"invalid_request_body": "not_object"}
+        )
     decoded_body = raw_body.decode("utf-8", errors="ignore")
     return {
         key: values[0] if len(values) == 1 else tuple(values)
@@ -421,11 +430,12 @@ def _selected_check_ids(value: object) -> tuple[str, ...]:
     allowed = ", ".join(definition.check_id for definition in CHECK_REGISTRY)
     if not values or values == (None,):
         raise ValueError(f"Select at least one static backend check ID: {allowed}.")
-    if (
-        any(not isinstance(item, str) or item not in CHECKS_BY_ID for item in values)
-        or len(set(values)) != len(values)
-    ):
-        raise ValueError(f"Run checks accepts only static backend check IDs: {allowed}.")
+    if any(
+        not isinstance(item, str) or item not in CHECKS_BY_ID for item in values
+    ) or len(set(values)) != len(values):
+        raise ValueError(
+            f"Run checks accepts only static backend check IDs: {allowed}."
+        )
     return tuple(values)
 
 
@@ -446,23 +456,29 @@ def freestyle_page(
                 "Inspect and lightly operate approved, isolated-worktree coding jobs.",
                 "<a class='button' href='/dev/freestyle'>Refresh</a>",
             ),
-            _safety_notice(),
-            _provider_notice(provider_description),
+            _safety_notice()
+            if selected_job is None
+            else "<p class='muted'>Changes stay in the job worktree. Human review and manual integration are required.</p>",
+            _provider_notice(provider_description) if selected_job is None else "",
             flash(message),
             _error_notice(error),
             "<section class='freestyle-layout'><div class='freestyle-rail'>",
-            _create_form(),
             _job_list(jobs, selected_job.job_id if selected_job else None),
+            (
+                "<details class='band'><summary>Create another job</summary>"
+                + _create_form()
+                + "</details>"
+            )
+            if selected_job
+            else _create_form(),
             "</div><div class='freestyle-detail'>",
-            _job_detail(selected_job, handoff, previews or {}),
+            _job_detail(selected_job, handoff, previews or {}, provider_description),
             "</div></section>",
         ]
     )
 
 
-def read_artifact_previews(
-    handoff: dict[str, Any], state_root: Path
-) -> dict[str, str]:
+def read_artifact_previews(handoff: dict[str, Any], state_root: Path) -> dict[str, str]:
     previews: dict[str, str] = {}
     for label, reference in handoff.get("artifacts", {}).items():
         if label == "proposal_failure":
@@ -564,31 +580,43 @@ def _job_detail(
     job: FreestyleJob | None,
     handoff: dict[str, Any] | None,
     previews: dict[str, str],
+    provider_description: str,
 ) -> str:
     if job is None or handoff is None:
         return empty_state_html("Select a job to inspect its status and handoff.")
+    result = handoff.get("result", {})
     return "".join(
         [
             "<section class='band freestyle-summary'><div class='card-head'>",
-            f"<h2>{escape(job.title)}</h2>",
-            f"<div class='meta'>{status_badge(job.status)}"
-            f"{status_badge(job.approval_state)}</div></div>",
-            f"<p>{escape(job.goal)}</p><div class='fields'>",
+            f"<h2>{escape(job.title)}</h2></div>",
+            f"<p class='job-outcome'>{escape(result.get('label', job.status))}</p>",
+            f"<p>{escape(job.goal)}</p>" if job.goal != job.title else "",
+            _job_actions(job, handoff),
+            "</section>",
+            _check_summary(handoff),
+            _review_diff(handoff),
+            _changed_files(handoff),
+            _handoff_lists(handoff),
+            "<details class='band'><summary>Refine or rerun checks</summary>",
+            _provider_notice(provider_description),
+            _refine_form(job, bool(handoff.get("blocked", {}).get("running_lock"))),
+            _review_and_checks_actions(job, handoff),
+            "</details>",
+            "<details class='band'><summary>Job details and artifacts</summary><div class='fields'>",
             field("job id", job.job_id),
             field("base commit (current clean repo HEAD at creation)", job.base_commit),
             field("isolated branch", job.branch),
             field("isolated worktree", job.worktree_path),
             field("updated", job.updated_at),
             "</div>",
-            _job_actions(job, handoff),
-            "</section>",
+            _safety_notice(),
             _stage_status(handoff),
+            _implementation_plan_block(handoff),
             _refinement_status(handoff),
             _proposal_failure_diagnostics(handoff),
             _artifact_paths_and_previews(handoff, previews),
-            _changed_files(handoff),
-            _check_summary(handoff),
-            _handoff_lists(handoff),
+            _danger_actions(job),
+            "</details>",
         ]
     )
 
@@ -615,68 +643,123 @@ def _proposal_failure_diagnostics(handoff: dict[str, Any]) -> str:
 
 
 def _job_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
-    running = bool(handoff.get("blocked", {}).get("running_lock"))
-    generated_bundle = (
-        handoff.get("artifacts", {}).get("generated_bundle") or "none available"
-    )
-    setup_actions = [
-        f"<a class='button secondary' href='/dev/freestyle/{escape(job.job_id)}'>Refresh Status</a>"
-    ]
-    if (
-        job.approval_state == "approved"
-        and job.status == "ready"
-        and job.materialization_status == "not_materialized"
-        and not running
-    ):
-        setup_actions.append(
-            f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/materialize'>"
-            "<button class='secondary' type='submit'>Materialize Isolated Worktree</button>"
-            "</form>"
-        )
-    if (
-        job.approval_state == "approved"
-        and job.edit_apply_status != "applied"
-        and job.status in {"ready", "materialized"}
-        and not running
-    ):
-        setup_actions.append(
-            f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/run'>"
-            "<button type='submit'>Run To Generated Bundle</button></form>"
-        )
-    return "".join(
-        [
-            "<div class='actions'>",
-            "".join(setup_actions),
-            "</div><p class='muted'>Run stops at the generated bundle boundary. "
-            "Every later action below is separate and manual.</p>",
-            _ui_review_warning_block(handoff),
-            _repo_map_warning_block(handoff),
-            _implementation_plan_block(handoff),
-            _refine_form(job, running),
-            "<section class='action-zone primary-zone'><h3>Primary Action</h3>",
-            "<p>Apply only the latest generated bundle through the deterministic "
-            "applier. It revalidates the generated reference and bundle, mutates "
-            "only the isolated worktree, and makes no model call.</p>",
-            f"<p class='action-target'>Current bundle: <code>{escape(generated_bundle)}</code></p>",
-            _goal_fit_warning_block(handoff),
-            f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/apply'>",
-            _confirmation(
+    result = handoff.get("result", {})
+    action = result.get("action", "inspect")
+    url = f"/dev/freestyle/{escape(job.job_id)}"
+    if action == "apply":
+        body = (
+            "<p>Inspect the latest generated bundle in Job details and artifacts before applying it.</p>"
+            + _goal_fit_warning_block(handoff)
+            + f"<form method='post' action='{url}/apply'>"
+            + _confirmation(
                 "confirm_apply",
                 "apply-latest-generated",
                 "I explicitly confirm applying the latest generated bundle to the isolated worktree.",
-            ),
-            "<button type='submit'>Apply Latest Generated Bundle</button></form></section>",
-            "<section class='action-zone secondary-zone'><h3>Secondary Actions</h3>",
-            "<div class='secondary-actions'>",
-            f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/review'>"
-            "<p>Create a deterministic read-only review of the current isolated "
-            "worktree. This makes no model call.</p>"
-            "<button class='secondary' type='submit'>Review Current Worktree</button></form>",
-            _checks_form(job),
-            "</div></section>",
-            _danger_actions(job),
-        ]
+            )
+            + "<button type='submit'>Apply Latest Generated Bundle</button></form>"
+        )
+    elif action in {"materialize", "generate", "review"}:
+        suffix, label = {
+            "materialize": ("materialize", "Materialize Isolated Worktree"),
+            "generate": ("run", "Run To Generated Bundle"),
+            "review": ("review", "Review Current Worktree"),
+        }[action]
+        body = f"<form method='post' action='{url}/{suffix}'><button type='submit'>{label}</button></form>"
+    elif action == "checks":
+        body = (
+            "<p>Inspect any failures below, then run the appropriate checks. Checks execute trusted repository code.</p>"
+            + _checks_form(job)
+        )
+    elif action == "handoff":
+        body = "<p>Review the recorded diff and check results below. Integrate manually outside Lewis only when satisfied.</p><a class='button' href='#review-diff'>Review diff</a>"
+    elif action == "wait":
+        body = "<p>A stage is running. Refresh its status before taking another action.</p>"
+    elif action == "recover":
+        body = "<p>Inspect the errors and verify the worktree before using recovery in Job details and artifacts.</p>"
+    elif action == "refine":
+        body = "<p>Inspect the recorded failure, then use Refine or rerun checks to generate a corrected bundle.</p>"
+    else:
+        body = "<p>Inspect the recorded errors and job details before continuing. No edit action is available.</p>"
+    return (
+        "<section class='job-next-action'><h3>Next action</h3>"
+        + body
+        + f"<a href='{url}'>Refresh Status</a></section>"
+        + _ui_review_warning_block(handoff)
+        + _repo_map_warning_block(handoff)
     )
+
+
+def _review_and_checks_actions(job: FreestyleJob, handoff: dict[str, Any]) -> str:
+    if (
+        job.materialization_status != "materialized"
+        or job.approval_state != "approved"
+        or handoff.get("blocked", {}).get("running_lock")
+        or job.edit_apply_status == "inconsistent"
+    ):
+        return ""
+    return (
+        f"<form method='post' action='/dev/freestyle/{escape(job.job_id)}/review'>"
+        "<button class='secondary' type='submit'>Review Current Worktree</button></form>"
+        + _checks_form(job)
+    )
+
+
+def _review_diff(handoff: dict[str, Any]) -> str:
+    review = handoff.get("review_snapshot", {})
+    result = handoff.get("result", {})
+    parts = ["<section class='band' id='review-diff'><h2>Recorded diff</h2>"]
+    parts.append(
+        "<p class='muted'>Snapshot from the last review, not a live diff. Rerun review and checks after manual edits.</p>"
+    )
+    if not result.get("review_current") and review:
+        parts.append(
+            "<p class='warning'>This review predates the latest edits or generated bundle. Review again after applying the latest bundle.</p>"
+        )
+    if review.get("generated_at"):
+        parts.append(f"<p>Reviewed {escape(review['generated_at'])}</p>")
+    remaining = MAX_WEB_PREVIEW_CHARS
+    snippets = review.get("diff_snippets", [])
+    for snippet in snippets if isinstance(snippets, list) else []:
+        if not isinstance(snippet, dict) or not isinstance(
+            snippet.get("unified_diff"), str
+        ):
+            continue
+        text = snippet["unified_diff"]
+        shown = text[:remaining]
+        remaining -= len(shown)
+        parts.append(
+            f"<h3>{escape(snippet.get('path', ''))}</h3><pre class='patch-preview job-diff'>"
+        )
+        for line in shown.splitlines(keepends=True):
+            style = (
+                "diff-addition"
+                if line.startswith("+")
+                else "diff-deletion"
+                if line.startswith("-")
+                else "diff-context"
+            )
+            parts.append(f"<span class='{style}'>{escape(line)}</span>")
+        parts.append("</pre>")
+        if snippet.get("truncated") or len(shown) < len(text):
+            parts.append(
+                "<p class='muted'>Diff truncated. Inspect the full change locally.</p>"
+            )
+        if remaining <= 0:
+            parts.append(
+                "<p class='muted'>Web diff limit reached; remaining snippets omitted.</p>"
+            )
+            break
+    if not snippets:
+        parts.append(
+            "<p>No recorded diff is available. Run Review Current Worktree after applying edits.</p>"
+        )
+    omissions = review.get("files_omitted_from_diff_snippets", [])
+    if omissions:
+        parts.append(
+            "<p class='warning'>Some files were omitted from the recorded diff for safety or size limits. Inspect the review artifact before integration.</p>"
+        )
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def _refine_form(job: FreestyleJob, running: bool) -> str:
@@ -716,8 +799,7 @@ def _refinement_status(handoff: dict[str, Any]) -> str:
     original_stages = refinement.get("original_stages", {})
     history = refinement.get("history", [])
     rows = "".join(
-        field(label.replace("_", " "), path or "none")
-        for label, path in latest.items()
+        field(label.replace("_", " "), path or "none") for label, path in latest.items()
     )
     original_rows = "".join(
         field(f"original {label.replace('_', ' ')}", path or "none")
@@ -825,9 +907,7 @@ def _implementation_plan_block(handoff: dict[str, Any]) -> str:
         ):
             value = plan.get(key)
             if value:
-                rows.append(
-                    f"<li><strong>{label}:</strong> {escape(str(value))}</li>"
-                )
+                rows.append(f"<li><strong>{label}:</strong> {escape(str(value))}</li>")
         for label, key in (
             ("Expected files", "expected_files"),
             ("Forbidden files", "forbidden_files"),
@@ -843,7 +923,9 @@ def _implementation_plan_block(handoff: dict[str, Any]) -> str:
             rows.append(f"<li><strong>Validation tests:</strong> {escape(joined)}</li>")
         for warning in plan.get("warnings") or []:
             if isinstance(warning, str) and warning:
-                rows.append(f"<li><strong>Plan warning:</strong> {escape(warning)}</li>")
+                rows.append(
+                    f"<li><strong>Plan warning:</strong> {escape(warning)}</li>"
+                )
         if rows:
             parts.append("<ul class='plan-summary'>" + "".join(rows) + "</ul>")
         parts.append(
@@ -865,9 +947,7 @@ def _implementation_plan_block(handoff: dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def _confirmation(
-    name: str, value: str, label: str, *, required: bool = True
-) -> str:
+def _confirmation(name: str, value: str, label: str, *, required: bool = True) -> str:
     required_attribute = " required" if required else ""
     return (
         "<label class='approval-check action-confirm'>"
@@ -982,18 +1062,50 @@ def _changed_files(handoff: dict[str, Any]) -> str:
 
 def _check_summary(handoff: dict[str, Any]) -> str:
     checks = handoff.get("checks", {})
-    return (
-        "<section class='band'><h2>Check Summary</h2>"
-        f"<div class='meta'>{status_badge(checks.get('overall_status', 'not_run'))}</div>"
-        "<div class='fields'>"
-        f"{field('selected', ', '.join(checks.get('selected_ids', [])) or 'none')}"
-        f"{field('passed', checks.get('passed', 0))}"
-        f"{field('failed', checks.get('failed', 0))}"
-        f"{field('timed out', checks.get('timeout', 0))}"
-        f"{field('infrastructure errors', checks.get('infra_error', 0))}"
-        f"{field('modified isolated worktree', checks.get('modified_worktree', False))}"
-        "</div></section>"
-    )
+    result = handoff.get("result", {})
+    parts = [
+        "<section class='band' id='check-results'><h2>Check results</h2>",
+        f"<p><strong>{escape(checks.get('overall_status', 'not_run'))}</strong> · {escape(checks.get('passed', 0))} passed · {escape(checks.get('failed', 0))} failed · {escape(checks.get('timeout', 0))} timed out · {escape(checks.get('infra_error', 0))} infrastructure errors</p>",
+    ]
+    if result.get("check_attempt_status") != checks.get("overall_status"):
+        parts.append(
+            f"<p class='warning'>Latest check attempt: {escape(result.get('check_attempt_status', 'unknown'))}. The saved results below are from an earlier attempt.</p>"
+        )
+    if result.get("checked_at"):
+        parts.append(
+            f"<p class='muted'>Recorded {escape(result['checked_at'])}. These are saved results, not a live verification.</p>"
+        )
+    if not result.get("checks_current"):
+        parts.append(
+            "<p class='warning'>No check results cover the latest edits or generated bundle. Run checks after applying it.</p>"
+        )
+    if checks.get("modified_worktree"):
+        parts.append(
+            "<p class='warning'>Checks changed files in the worktree. Review those changes before proceeding.</p>"
+        )
+    results = handoff.get("check_results", [])
+    for check in results[: len(CHECK_REGISTRY)] if isinstance(results, list) else []:
+        if not isinstance(check, dict):
+            continue
+        parts.append(
+            f"<details><summary>{escape(check.get('check_id', 'Check'))}: {escape(check.get('status', 'unknown'))}</summary>"
+        )
+        parts.append(
+            f"<p>Exit code: {escape(check.get('exit_code'))} · Duration: {escape(check.get('duration_seconds'))} seconds</p>"
+        )
+        if check.get("note"):
+            parts.append(f"<p>{escape(check['note'])}</p>")
+        for stream in ("stdout", "stderr"):
+            text = str(check.get(stream, ""))
+            if text:
+                parts.append(
+                    f"<h3>{stream}</h3><pre class='patch-preview'>{escape(text[:MAX_WEB_PREVIEW_CHARS])}</pre>"
+                )
+            if check.get(f"{stream}_truncated") or len(text) > MAX_WEB_PREVIEW_CHARS:
+                parts.append("<p>Output truncated.</p>")
+        parts.append("</details>")
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def _handoff_lists(handoff: dict[str, Any]) -> str:

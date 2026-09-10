@@ -107,9 +107,7 @@ def critique_bundle(
     dead_helpers = _uncalled_created_helpers(operations)
     if dead_helpers:
         warnings.append(
-            CRITIQUE_HELPER_CREATED_NOT_CALLED.format(
-                paths=_format_paths(dead_helpers)
-            )
+            CRITIQUE_HELPER_CREATED_NOT_CALLED.format(paths=_format_paths(dead_helpers))
         )
 
     touched_forbidden = [

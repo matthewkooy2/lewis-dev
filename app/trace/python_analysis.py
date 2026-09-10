@@ -128,7 +128,13 @@ FILESYSTEM_METHOD_NAMES = {
     "symlink_to",
     "hardlink_to",
 }
-DATABASE_METHOD_NAMES = {"execute", "executemany", "executescript", "commit", "rollback"}
+DATABASE_METHOD_NAMES = {
+    "execute",
+    "executemany",
+    "executescript",
+    "commit",
+    "rollback",
+}
 CONTAINER_MUTATORS = {
     "append",
     "add",
@@ -608,9 +614,9 @@ class _Collector:
     ) -> None:
         head, chain, dynamic = _callee_parts(node.func)
         callee_text = _bounded(_safe_unparse(node.func), MAX_CALLEE_TEXT_CHARS)
-        argument_names = tuple(arg.id for arg in node.args if isinstance(arg, ast.Name))[
-            :MAX_ARGUMENT_NAMES
-        ]
+        argument_names = tuple(
+            arg.id for arg in node.args if isinstance(arg, ast.Name)
+        )[:MAX_ARGUMENT_NAMES]
         receiver_type = scope.local_types.get(head) if head else None
         if dynamic and chain:
             # `Service(...).record(...)`: the chain is anchored on a call whose
@@ -826,7 +832,9 @@ def _iter_expressions(node: ast.AST):
 
 
 def _child_statements(node: ast.AST) -> list[ast.stmt]:
-    return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.stmt)]
+    return [
+        child for child in ast.iter_child_nodes(node) if isinstance(child, ast.stmt)
+    ]
 
 
 def _annotated_args(

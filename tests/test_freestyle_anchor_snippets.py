@@ -25,7 +25,7 @@ _TETRIS_GOAL = (
 # block, marker-free page routes, and approval routes in the same file.
 # Assembled with the concatenated class name so this test file never
 # contains the literal text.
-_ROUTES_TEXT = f'''from __future__ import annotations
+_ROUTES_TEXT = f"""from __future__ import annotations
 
 from app.approvals import {APPROVAL_STORE_CLASS_NAME}
 from app.approval_service import approve_approval, reject_approval
@@ -57,7 +57,7 @@ def register_web_routes(app):
     @app.get("/chat")
     def chat(request):
         return _page("Chat", request, chat_page())
-'''
+"""
 
 
 def test_harvester_extracts_exact_import_block_and_route_snippets():
@@ -71,7 +71,7 @@ def test_harvester_extracts_exact_import_block_and_route_snippets():
     assert "usage_page," in import_block
     assert "route:/usage" in by_label
     assert "route:/chat" in by_label
-    assert 'def usage(request):' in by_label["route:/usage"]
+    assert "def usage(request):" in by_label["route:/usage"]
     for snippet in result.snippets:
         assert snippet.exact_text in _ROUTES_TEXT
         assert len(snippet.exact_text) <= MAX_SNIPPET_CHARS
@@ -96,9 +96,7 @@ def test_snippets_never_contain_approval_sensitive_markers():
 
     for snippet in result.snippets:
         assert approval_sensitive_region_labels(snippet.exact_text) == ()
-    omitted_reasons = {
-        record["label"]: record["reason"] for record in result.omitted
-    }
+    omitted_reasons = {record["label"]: record["reason"] for record in result.omitted}
     assert omitted_reasons["route:/dashboard"] == "approval_sensitive_region"
     assert (
         omitted_reasons["route:/approvals/{approval_id}/approve"]
@@ -163,20 +161,16 @@ def test_sensitive_content_and_oversized_blocks_are_bounded_or_dropped():
     text = (
         '@app.get("/tokens")\n'
         "def tokens(request):\n"
-        "    secret = \"hunter2-hunter2\"\n"
+        '    secret = "hunter2-hunter2"\n'
         "    return secret\n"
     )
     result = harvest_anchor_snippets("app/web_routes.py", text, "Update /tokens.")
-    assert all(
-        "hunter2" not in snippet.exact_text for snippet in result.snippets
-    )
+    assert all("hunter2" not in snippet.exact_text for snippet in result.snippets)
     reasons = {record["reason"] for record in result.omitted}
     assert "sensitive_content" in reasons
 
-    big_route = (
-        '@app.get("/big")\n'
-        "def big(request):\n"
-        + "\n".join(f"    value_{index} = {index}" for index in range(200))
+    big_route = '@app.get("/big")\ndef big(request):\n' + "\n".join(
+        f"    value_{index} = {index}" for index in range(200)
     )
     bounded = harvest_anchor_snippets("app/web_routes.py", big_route, "big")
     assert bounded.snippets
@@ -204,7 +198,7 @@ def test_module_is_pure_with_no_io_model_or_runtime_dependencies():
         "httpx",
     ):
         assert forbidden not in lowered, forbidden
-    assert "Approval" "Store" not in source
+    assert "ApprovalStore" not in source
     app_imports = [
         line
         for line in source.splitlines()

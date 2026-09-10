@@ -2,6 +2,23 @@
 name = "lewis"
 version = "0.1.0"
 requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0,<1",
+    "openai>=1.0.0,<3",
+    "pypdf>=4.0.0,<7",
+    "uvicorn>=0.30.0,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1,<0.29",
+    "pytest>=8.0.0,<10",
+    "ruff==0.15.16",
+]
+
+[tool.uv]
+required-version = "==0.12.11"
+package = false
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -31,3 +48,4 @@ filterwarnings = [
 
 [tool.ruff]
 target-version = "py311"
+extend-exclude = ["runtime"]

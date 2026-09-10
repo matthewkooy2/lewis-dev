@@ -441,9 +441,7 @@ def generate_freestyle_proposal(
         )
         if artifact_metadata is not None:
             artifact["refinement"] = artifact_metadata
-        artifact_path = _write_artifact(
-            artifact, state, started.job_id, artifact_name
-        )
+        artifact_path = _write_artifact(artifact, state, started.job_id, artifact_name)
     except Exception as exc:
         proposal_context = getattr(exc, "proposal_context", None)
         if isinstance(proposal_context, ProposalContext):
@@ -472,9 +470,7 @@ def generate_freestyle_proposal(
             )
         except Exception as artifact_exc:
             errors.append(
-                _bounded_proposal_error(
-                    artifact_exc, getattr(config, "api_key", "")
-                )
+                _bounded_proposal_error(artifact_exc, getattr(config, "api_key", ""))
             )
         failed = replace(
             started,
@@ -1251,8 +1247,8 @@ def _build_proposal_request(
         "with exactly these keys: "
         "proposed_implementation_steps, likely_files_to_edit, risks_unknowns, "
         "suggested_allowlisted_checks. The first three values are concise arrays of "
-        "strings. suggested_allowlisted_checks may contain only \"pytest\" and/or "
-        "\"ruff\". Do not suggest shell or package-manager commands. Do not "
+        'strings. suggested_allowlisted_checks may contain only "pytest" and/or '
+        '"ruff". Do not suggest shell or package-manager commands. Do not '
         "include patches, diffs, markdown, or commentary."
         + _ui_goal_guidance(plan, for_edit_bundle=False)
     )
@@ -1287,7 +1283,9 @@ def _fit_proposal_request(
     total_context_tokens = getattr(limits, "proposal_total_context_tokens", None)
     reserved_output_tokens = getattr(limits, "proposal_reserved_output_tokens", None)
     implementation_plan_section = (
-        implementation_plan.prompt_section() if implementation_plan is not None else None
+        implementation_plan.prompt_section()
+        if implementation_plan is not None
+        else None
     )
     files = list(context.files)
     removed = list(context.budget_removed_sections)
@@ -1317,7 +1315,9 @@ def _fit_proposal_request(
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+                    "content": json.dumps(
+                        payload, separators=(",", ":"), ensure_ascii=True
+                    ),
                 },
                 *extra_messages,
             ],
@@ -1455,9 +1455,7 @@ def _parse_proposal_response(response: Any, worktree: Path) -> dict[str, list[st
             details={"validator_category": "absent"},
         )
     if set(payload) != expected_fields:
-        raise _ProposalFormatError(
-            "The proposal response contained unexpected fields."
-        )
+        raise _ProposalFormatError("The proposal response contained unexpected fields.")
 
     steps = _validated_string_list(
         payload.get("proposed_implementation_steps"),
@@ -1684,9 +1682,7 @@ def _build_failure_artifact(
     if requested_model:
         model_metadata["requested_model"] = requested_model
     errors = [
-        record["error"]
-        for record in attempts
-        if isinstance(record.get("error"), str)
+        record["error"] for record in attempts if isinstance(record.get("error"), str)
     ]
     errors.append(_bounded_proposal_error(exc, getattr(config, "api_key", "")))
     return {
@@ -1993,7 +1989,12 @@ def _rejected_path_category(raw_path: str) -> str:
         or "approvalstore" in normalized_name
     ):
         return "approval_store"
-    if any(re.search(r"secret|credential|password|token|api[_-]?key|private[_-]?key", part, re.I) for part in parts):
+    if any(
+        re.search(
+            r"secret|credential|password|token|api[_-]?key|private[_-]?key", part, re.I
+        )
+        for part in parts
+    ):
         return "secrets"
     return "path_validation"
 

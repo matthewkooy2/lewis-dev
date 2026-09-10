@@ -639,9 +639,9 @@ def _goal_profile(requested_goal: str) -> _GoalProfile:
         concepts.add(_ASCII_ART_CONCEPT)
     if _CHARACTER_FIGURE_PATTERN.search(normalized):
         concepts.add(_CHARACTER_FIGURE_CONCEPT)
-    if any(
-        term in normalized for term in _ANIMATION_REPLACEMENT_TRIGGER_TERMS
-    ) and any(term in normalized for term in _ANIMATION_REPLACEMENT_TARGET_TERMS):
+    if any(term in normalized for term in _ANIMATION_REPLACEMENT_TRIGGER_TERMS) and any(
+        term in normalized for term in _ANIMATION_REPLACEMENT_TARGET_TERMS
+    ):
         concepts.add(_ANIMATION_REPLACEMENT_CONCEPT)
     if "bubble" in normalized and any(
         term in normalized for term in _BUBBLE_CONTENT_CHANGE_TERMS
@@ -771,7 +771,6 @@ def _generic_feature_queries(requested_goal: str) -> list[str]:
             "project_search",
             "search_project_files",
             "code_proposal_engine",
-            "search_first_code_proposal",
         ):
             _append_unique_term(surface_terms, term)
 
@@ -1378,8 +1377,7 @@ def _failure_lead_in(
             "An explicit removal/revert strategy is not currently available."
         )
     if any(
-        concept.lower() in lowered
-        for concept in _UNSUPPORTED_THINKING_CONTENT_CONCEPTS
+        concept.lower() in lowered for concept in _UNSUPPORTED_THINKING_CONTENT_CONCEPTS
     ):
         return _UNSUPPORTED_THINKING_CONTENT_LEAD_IN
     if any(term in requested_goal.lower() for term in _DESTRUCTIVE_GOAL_TERMS):
