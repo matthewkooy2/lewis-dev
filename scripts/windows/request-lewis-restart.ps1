@@ -7,7 +7,7 @@
 # the marker only after the new process is healthy. This script never stops,
 # starts, or kills any process itself.
 
-$Repo = "C:\Users\Example\OneDrive\Desktop\Lewis"
+$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $RuntimeDir = "$Repo\runtime"
 $Marker = "$RuntimeDir\lewis-restart-requested"
 

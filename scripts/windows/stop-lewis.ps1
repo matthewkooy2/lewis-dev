@@ -1,4 +1,4 @@
-﻿$Repo = "C:\Users\Example\OneDrive\Desktop\Lewis"
+﻿$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $PidFile = "$Repo\runtime\lewis-web.pid"
 
 if (-not (Test-Path $PidFile)) {

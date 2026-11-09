@@ -1,27 +1,33 @@
 # Lewis
 
-A local coding-workflow prototype built with Python, FastAPI, and SQLite.
-Lewis traces Python and JavaScript/TypeScript code, stages proposed edits in
-separate Git worktrees, and records checks and review results for human handoff.
-
-The focus is inspectable changes: source citations, explicit uncertainty,
-exact-content edit validation, and an unchanged original checkout. This is a
-single-user prototype, with deterministic integration tests rather than a claim
-of production readiness or measured model accuracy.
+Lewis is a local coding-workflow prototype built with Python, FastAPI, and
+SQLite. It traces Python and JavaScript/TypeScript source, then gives you a
+separate Git worktree to review proposed edits and their check results before
+you decide whether to integrate the changes.
 
 ## See it work
 
-[Five-minute walkthrough](docs/showcase.md) · [Architecture](docs/architecture.md) ·
-[Usage reference](docs/usage.md) · [Contributing](CONTRIBUTING.md)
+After [setup](#quick-start), trace the FastAPI app factory without a model or
+API key:
 
-- **Static tracing:** find callers, callees, side effects, and related tests,
-  with source locations and confidence labels. Runs without a model or API key.
-- **Supervised edits (Freestyle):** validate structured edits, run approved
-  checks in a worktree, and stop for human review. Model responses can come
-  from DeepSeek or a local OpenAI-compatible server.
-- **Optional tools:** Projects provides repository maps and notes; Coding
-  Agents wraps installed Codex/Claude CLIs for restricted analysis. The
-  personal-assistant dashboard retains local approvals, memories, and search.
+```sh
+uv run --locked python -m app.main trace create_app --file app/web.py --mode deep
+```
+
+Excerpt from the trace:
+
+```text
+DEEP TRACE: create_app [function, python]
+Defined at app/web.py:19-37  signature: (settings: Settings | None=None) -> FastAPI
+  [confirmed] app/web.py:52  run_web_server  calls  create_app
+```
+
+Traces cite source locations and label uncertain relationships. The supervised
+edit workflow checks that the original text matches before applying an edit,
+runs approved checks in the separate worktree, and stops for human review.
+
+[Five-minute walkthrough](docs/showcase.md) · [Architecture](docs/architecture.md) ·
+[Usage reference](docs/usage.md)
 
 ## Quick start
 
@@ -65,7 +71,8 @@ model; dashboard pages, tests, document search, and the static tracer do not.
 For chat, copy `.env.example` to `.env` (`cp .env.example .env` on macOS/Linux,
 or `Copy-Item .env.example .env` in PowerShell) and set `DEEPSEEK_API_KEY`.
 The default model is `deepseek-v4-flash`; change `DEEPSEEK_MODEL` as needed.
-`.env` and the local SQLite database are ignored by Git.
+`.env`, the local SQLite database, and personal files under `data/documents/`
+are ignored by Git.
 
 ## Engineering checks
 

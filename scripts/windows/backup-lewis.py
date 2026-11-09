@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-REPO = Path(r"C:\Users\Example\OneDrive\Desktop\Lewis")
+REPO = Path(__file__).resolve().parents[2]
 SOURCE = REPO / "data" / "lewis.sqlite3"
 BACKUP_DIR = REPO / "backups"
 RETENTION_DAYS = 14

@@ -1,8 +1,8 @@
 ﻿$ErrorActionPreference = "Stop"
 
-$Repo = "C:\Users\Example\OneDrive\Desktop\Lewis"
+$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Python = "$Repo\.venv\Scripts\python.exe"
-$Lms = "C:\Users\Example\.lmstudio\bin\lms.exe"
+$Lms = (Join-Path $env:USERPROFILE ".lmstudio\bin\lms.exe")
 $Model = "qwen2.5-coder-7b-instruct"
 
 $RuntimeDir = "$Repo\runtime"

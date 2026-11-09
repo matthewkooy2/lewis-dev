@@ -1,7 +1,7 @@
 # Contributing to Lewis
 
-Follow the [README setup](README.md#setup) from the repository root. Development
-uses Python 3.11.15 and uv 0.12.11. CI exercises that Python version on Linux,
+Follow the [README setup](README.md#quick-start) from the repository root.
+Development uses Python 3.11.15 and uv 0.12.11. CI exercises that Python version on Linux,
 macOS, and Windows; other Python versions are not currently in the CI matrix.
 The interpreter and Python packages are pinned, while the hosted runner images
 and their system tools still receive updates.

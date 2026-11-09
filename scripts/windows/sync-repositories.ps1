@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 
-$LewisRepo = "C:\Users\Example\OneDrive\Desktop\Lewis"
+$LewisRepo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $ProjectsRoot = "C:\Projects"
 $LogFile = "$LewisRepo\logs\repo-sync.log"
 

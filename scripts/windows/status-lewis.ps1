@@ -1,4 +1,4 @@
-﻿$Repo = "C:\Users\Example\OneDrive\Desktop\Lewis"
+﻿$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $PidFile = "$Repo\runtime\lewis-web.pid"
 $StdoutLog = "$Repo\logs\lewis-web.log"
 $StderrLog = "$Repo\logs\lewis-web-error.log"

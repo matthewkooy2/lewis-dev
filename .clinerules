@@ -1,13 +1,11 @@
 # Lewis Project Rules
 
 Project: Lewis
-Root: C:\Users\Example\Lewis
+Root: the local Git checkout
 Environment: Windows PowerShell, Python 3.11.9
 Virtual environment: .\.venv relative to the project root
 
-Always run commands from the project root:
-
-C:\Users\Example\Lewis
+Always run commands from the project root.
 
 Always run Python tools using the project venv explicitly:
 

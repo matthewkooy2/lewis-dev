@@ -12,8 +12,7 @@ uv run --locked python -m app.main trace create_app --file app/web.py --mode dee
 ```
 
 The report names the definition, callers, callees, and effects with file/line
-citations. Explain one confirmed relationship and one uncertain relationship.
-The tool analyzes source; it does not execute the repository it traces.
+citations. The tool analyzes source; it does not execute the repository it traces.
 
 For structured output:
 
@@ -32,9 +31,9 @@ inference. They create real temporary Git repositories, stage a change in a
 separate worktree, run checks, and verify the original source remains unchanged.
 The second case verifies that a safety refusal stops the loop.
 
-Explain the distinction between edit isolation and process isolation: repository
-tests still run with the current user's permissions. Do not present this as a
-sandbox for untrusted code or evidence of model accuracy.
+The worktree isolates changes to the checkout. Checks run with the current
+user's permissions, and these fixtures exercise the workflow with scripted
+responses.
 
 ## 3. Inspect the dashboard
 
@@ -46,16 +45,3 @@ Open <http://127.0.0.1:8787>. The dashboard works without a model; chat requires
 one. Optional Freestyle and Projects screens are enabled through the explicit
 flags in the [usage reference](usage.md). Do not use your personal database,
 conversation history, or existing job artifacts in a public recording.
-
-## A concise project explanation
-
-“I built a local coding-workflow prototype that combines static source tracing
-with validated edits in Git worktrees. The orchestration records failures and
-stops for human review. I tested the boundaries with real Git fixtures and
-scripted model responses across Linux, macOS, and Windows. Worktree separation
-is not a security sandbox, and live model reliability remains unmeasured.”
-
-Use that description only to the extent it accurately describes your own work.
-For interviews, be ready to explain an exact-match refusal, a failed/recovered
-job, and why the tracer labels uncertain relationships. A short real recording
-of these steps is more useful than a screenshot of the test count.

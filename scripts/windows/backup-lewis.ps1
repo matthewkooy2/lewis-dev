@@ -1,4 +1,4 @@
-﻿$Repo = "C:\Users\Example\OneDrive\Desktop\Lewis"
+﻿$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Python = "$Repo\.venv\Scripts\python.exe"
 $BackupScript = "$Repo\scripts\windows\backup-lewis.py"
 $Log = "$Repo\logs\backup-lewis.log"

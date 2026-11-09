@@ -26,6 +26,8 @@ dist/
 
 # Local runtime data
 data/lewis.sqlite3
+data/documents/*
+!data/documents/example_note.md
 *.sqlite
 *.sqlite3
 *.db
@@ -43,5 +45,6 @@ data/lewis.sqlite3
 Thumbs.db
 .idea/
 .vscode/
+.VSCodeCounter/
 
 runtime/
